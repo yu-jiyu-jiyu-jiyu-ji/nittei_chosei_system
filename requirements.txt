@@ -1,4 +1,5 @@
 streamlit==1.55.0
+requests>=2.31.0
 google-cloud-firestore>=2.17.0
 google-api-python-client>=2.151.0
 google-auth>=2.36.0

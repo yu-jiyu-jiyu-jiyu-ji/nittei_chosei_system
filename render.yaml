@@ -1,0 +1,14 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# 既存の Web サービスがある場合はダッシュボードの Settings で
+# Build / Start が次と一致しているか確認してください。
+services:
+  - type: web
+    name: nittei-chosei-system
+    runtime: python
+    plan: starter
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
