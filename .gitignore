@@ -1,0 +1,19 @@
+# 環境変数（秘密情報を含む）
+.env
+
+# Firebase サービスアカウント鍵（秘密情報）
+*-firebase-adminsdk-*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
+.venv
+venv/
+ENV/
+
+# Streamlit（秘密のみ除外。config.toml はリポジトリに含める）
+.streamlit/secrets.toml
