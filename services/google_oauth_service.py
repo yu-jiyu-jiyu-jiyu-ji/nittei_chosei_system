@@ -45,10 +45,14 @@ def build_authorization_url(state: str) -> Optional[str]:
     """職人連携用の Google 認証 URL を返す."""
     if not oauth_client_configured():
         return None
+    # PKCE を付けると authorization_url と fetch_token で Flow を別々に作る本アプリでは
+    # code_verifier が引き継がれず invalid_grant / Missing code verifier になる。
+    # 機密クライアント（client_secret あり）では PKCE なしで交換してよい。
     flow = Flow.from_client_config(
         _client_config(),
         scopes=_SCOPES,
         redirect_uri=get_redirect_uri(),
+        autogenerate_code_verifier=False,
     )
     # include_granted_scopes=True にすると、過去に付いた calendar.readonly 等がマージされ、
     # トークン応答の scope 文字列が _SCOPES のみと一致せず「Scope has changed」で交換失敗することがある。
@@ -68,6 +72,7 @@ def exchange_code_for_credentials(code: str) -> tuple[Optional[Credentials], Opt
         _client_config(),
         scopes=_SCOPES,
         redirect_uri=get_redirect_uri(),
+        autogenerate_code_verifier=False,
     )
     try:
         flow.fetch_token(code=code)
