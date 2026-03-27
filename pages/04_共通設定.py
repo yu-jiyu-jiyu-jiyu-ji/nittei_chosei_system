@@ -312,6 +312,11 @@ def _render_worker_tab() -> None:
         )
         st.code(get_redirect_uri(), language="text")
         st.caption(
+            "認証画面で **400: redirect_uri_mismatch** になる場合は、上の URI を Google Cloud Console の"
+            " **OAuth 2.0 クライアント → 承認済みのリダイレクト URI** に**一字一句同じ**で追加してください。"
+            " 本番（Render 等）では環境変数 `GOOGLE_OAUTH_REDIRECT_URI` も同じ URL にし、Console に **localhost 用と本番用の両方**を登録しておくと切り替えが楽です。"
+        )
+        st.caption(
             "認証画面で **OAuth client was not found / invalid_client** となる場合は、"
             "Console の「OAuth 2.0 クライアント ID」と `.env` の `GOOGLE_OAUTH_CLIENT_ID` が**完全一致**しているか確認してください（**0 と O** の誤りがよくあります）。"
         )

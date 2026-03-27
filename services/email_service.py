@@ -11,8 +11,13 @@ load_env_file(Path(__file__).resolve().parent.parent / ".env")
 import html as html_module
 import smtplib
 import ssl
+from email import policy as email_policy
 from email.message import EmailMessage
 from typing import Optional, Tuple
+
+# OAuth の認可 URL は非常に長い。SMTP の既定（行長制限）で折り返すと URL が壊れ、
+# Gmail 等でリンクがクリックできなくなる。送信時は行折り返しを無効にする。
+_SMTP_SEND_POLICY = email_policy.SMTP.clone(max_line_length=0)
 
 
 def _smtp_password() -> str:
@@ -79,7 +84,7 @@ def send_plain_email(
             context = ssl.create_default_context()
             with smtplib.SMTP_SSL(host, port, context=context, timeout=30) as server:
                 server.login(user, password)
-                server.send_message(msg)
+                server.send_message(msg, policy=_SMTP_SEND_POLICY)
         else:
             with smtplib.SMTP(host, port, timeout=30) as server:
                 server.ehlo()
@@ -87,7 +92,7 @@ def send_plain_email(
                     server.starttls(context=ssl.create_default_context())
                     server.ehlo()
                 server.login(user, password)
-                server.send_message(msg)
+                server.send_message(msg, policy=_SMTP_SEND_POLICY)
         return True, ""
     except OSError as e:
         return False, f"接続エラー: {e}"
@@ -104,6 +109,7 @@ def build_worker_oauth_email_body(worker_display_name: str, auth_url: str) -> st
         "日程調整システムで、あなたの Google カレンダーを読み取れるようにするため、"
         "次のリンクをブラウザで開き、表示された Google アカウントで許可してください。\n\n"
         f"{auth_url}\n\n"
+        "（上記が途中で改行されている場合は、1行に繋げてから開いてください。）\n\n"
         "許可後、ブラウザはアプリに戻ります。心当たりがない場合はこのメールを破棄してください。\n"
     )
 
