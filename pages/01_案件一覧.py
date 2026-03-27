@@ -5,16 +5,16 @@ from typing import Any, Dict, Optional
 
 import streamlit as st
 
-from config.constants import APP_TITLE, CONSTRUCTION_TYPE_OPTIONS, CONSTRUCTION_TYPE_OTHER
+from config.constants import APP_TITLE, CONSTRUCTION_TYPE_OPTIONS, CONSTRUCTION_TYPE_OTHER, DB_UNAVAILABLE_MESSAGE
 from config.status_labels import STATUS_LABELS
 from services.firestore_service import FirestoreConnectionError, FirestoreSaveError
-from services.project_service import create_project, list_projects, update_project
+from services.project_service import create_project, delete_project, list_projects, update_project
 from services.schedule_commit_service import remove_project_schedule_from_google
 from services.setting_service import get_settings
 from services.vehicle_service import list_vehicles
 from services.worker_service import list_workers
 from utils.display_util import format_status
-from utils.layout_util import inject_sidebar_nav, inject_wide_layout
+from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
 from utils.session_util import init_session_state
 from utils.validation_util import validate_project_input
 
@@ -28,6 +28,38 @@ def _format_scheduled_at(raw: Optional[str]) -> str:
         return dt.strftime("%Y-%m-%d %H:%M")
     except (TypeError, ValueError):
         return str(raw)
+
+
+def _clear_detail_on_filter_change() -> None:
+    st.session_state.pop("project_detail_id", None)
+
+
+def _render_delete_dialog(project_id: str, project_name: str) -> None:
+    @st.dialog("案件の削除")
+    def _dlg() -> None:
+        st.markdown(f"**{project_name}** を削除してもいいですか？")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("はい", type="primary", key="delete_confirm_yes"):
+                try:
+                    ok = delete_project(project_id, current_user_name=st.session_state.get("current_user_name"))
+                    if ok:
+                        st.session_state.pop("pending_delete_project_id", None)
+                        st.session_state.pop("project_detail_id", None)
+                        st.session_state["project_deleted_flash"] = True
+                        st.rerun()
+                    else:
+                        st.error("削除対象の案件が見つかりません。")
+                except FirestoreSaveError as e:
+                    st.error(f"削除に失敗しました。{e}")
+                except FirestoreConnectionError:
+                    st.error(DB_UNAVAILABLE_MESSAGE)
+        with c2:
+            if st.button("いいえ", key="delete_confirm_no"):
+                st.session_state.pop("pending_delete_project_id", None)
+                st.rerun()
+
+    _dlg()
 
 
 def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
@@ -60,8 +92,6 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
             st.write(f"**必要人数**：{project.get('required_workers', '-')}")
             st.write(f"**作業時間（分）**：{project.get('work_duration_minutes', '-')}")
             st.write(f"**必要車両数**：{project.get('required_vehicle_count') or '-'}")
-            vdt = project.get("vehicle_decision_type")
-            st.write(f"**車両決定方式**：{'自動' if vdt == 'auto' else '手動' if vdt == 'manual' else '-'}")
             st.write(f"**備考**：{project.get('note') or '-'}")
             ss = project.get("scheduled_start_at")
             se = project.get("scheduled_end_at")
@@ -111,10 +141,15 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
                                 del st.session_state[edit_key]
                             st.rerun()
 
-            col_edit, col_close = st.columns(2)
+            col_edit, col_del, col_close = st.columns(3)
             with col_edit:
                 if st.button("編集", key="project_dialog_edit"):
                     st.session_state[edit_key] = True
+                    st.rerun()
+            with col_del:
+                if st.button("削除", key="project_dialog_delete"):
+                    st.session_state["pending_delete_project_id"] = str(project.get("project_id") or "")
+                    st.session_state.pop("project_detail_id", None)
                     st.rerun()
             with col_close:
                 if st.button("閉じる", key="project_dialog_close"):
@@ -161,16 +196,6 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
                     value=int(project.get("required_vehicle_count") or 0),
                     key="edit_required_vehicle_count",
                 )
-                vdt_opts = ["", "auto", "manual"]
-                vdt_val = project.get("vehicle_decision_type") or ""
-                vdt_idx = vdt_opts.index(vdt_val) if vdt_val in vdt_opts else 0
-                edit_vehicle_decision_type = st.selectbox(
-                    "車両決定方式",
-                    options=vdt_opts,
-                    format_func=lambda v: {"": "", "auto": "自動", "manual": "手動"}.get(v, v),
-                    index=vdt_idx,
-                    key="edit_vehicle_decision_type",
-                )
                 edit_note = st.text_area("備考", value=project.get("note") or "", key="edit_note")
                 _status_keys = list(STATUS_LABELS.keys())
                 _cur_st = str(project.get("status") or "draft")
@@ -204,7 +229,6 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
                     "required_workers": edit_required_workers,
                     "work_duration_minutes": edit_work_duration,
                     "required_vehicle_count": edit_required_vehicle_count,
-                    "vehicle_decision_type": edit_vehicle_decision_type or None,
                     "note": edit_note,
                     "status": edit_status,
                 }
@@ -232,7 +256,7 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
                     except FirestoreSaveError as e:
                         st.error(f"更新に失敗しました。{e}")
                     except FirestoreConnectionError:
-                        st.error("Firestore 接続に失敗しました。")
+                        st.error(DB_UNAVAILABLE_MESSAGE)
                     except Exception as exc:
                         st.error("想定外エラーが発生しました。")
                         st.exception(exc)
@@ -242,20 +266,29 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
 
 def render_page() -> None:
     """案件一覧画面（案件登録・案件詳細を集約）."""
-    st.set_page_config(page_title=f"{APP_TITLE} - 案件一覧", layout="wide")
+    st.set_page_config(
+        page_title=f"{APP_TITLE} - 案件一覧",
+        layout="wide",
+        menu_items=STREAMLIT_MENU_ITEMS,
+    )
     init_session_state()
     inject_wide_layout()
     inject_sidebar_nav()
 
+    if st.session_state.pop("project_deleted_flash", False):
+        st.success("削除しました。")
+
     st.title("案件一覧")
     st.caption("案件の登録・一覧・詳細を管理します。")
+
+    if st.session_state.pop("register_done_flash", False):
+        st.success("案件を登録しました。")
 
     # ----------------------------
     # 上部：新規登録フォーム
     # ----------------------------
     st.subheader("新規登録")
     with st.expander("案件を新規登録", expanded=False):
-        # 施工内容はフォーム外（選択変更でrerunし、「その他」時のみ入力欄を表示）
         st.write("施工内容*（複数選択可）")
         new_construction_type = []
         for opt in CONSTRUCTION_TYPE_OPTIONS:
@@ -296,16 +329,11 @@ def render_page() -> None:
                     step=1,
                     key="new_required_vehicle_count",
                 )
-                new_vehicle_decision_type = st.selectbox(
-                    "車両決定方式（任意）",
-                    options=["", "auto", "manual"],
-                    format_func=lambda v: {"": "", "auto": "自動", "manual": "手動"}.get(v, v),
-                    key="new_vehicle_decision_type",
-                )
 
             new_note = st.text_area("備考", key="new_note")
 
-            if st.form_submit_button("新規登録"):
+            submitted_reg = st.form_submit_button("新規登録")
+            if submitted_reg:
                 form_values = {
                     "project_name": new_project_name,
                     "customer_name": new_customer_name,
@@ -315,7 +343,6 @@ def render_page() -> None:
                     "work_duration_minutes": new_work_duration,
                     "required_workers": new_required_workers,
                     "required_vehicle_count": new_required_vehicle_count,
-                    "vehicle_decision_type": new_vehicle_decision_type or None,
                     "note": new_note,
                 }
                 is_valid, errors = validate_project_input(form_values)
@@ -325,18 +352,17 @@ def render_page() -> None:
                         st.write(f"- {msg}")
                 else:
                     try:
-                        created = create_project(
-                            form_values,
-                            current_user_name=st.session_state.get("current_user_name"),
-                        )
-                        st.success("案件を登録しました。")
-                        st.session_state["selected_project"] = created
-                        st.session_state["selected_project_id"] = created.get("project_id")
+                        with st.spinner("登録中…"):
+                            create_project(
+                                form_values,
+                                current_user_name=st.session_state.get("current_user_name"),
+                            )
+                        st.session_state["register_done_flash"] = True
                         st.rerun()
                     except FirestoreSaveError as e:
                         st.error(f"保存に失敗しました。{e}")
                     except FirestoreConnectionError:
-                        st.error("Firestore 接続に失敗しました。")
+                        st.error(DB_UNAVAILABLE_MESSAGE)
                     except Exception as exc:
                         st.error("想定外エラーが発生しました。")
                         st.exception(exc)
@@ -351,12 +377,14 @@ def render_page() -> None:
             "案件名（部分一致）",
             key="filter_project_name",
             placeholder="入力で絞り込み",
+            on_change=_clear_detail_on_filter_change,
         )
     with col2:
         filter_customer_name = st.text_input(
             "顧客名（部分一致）",
             key="filter_customer_name",
             placeholder="入力で絞り込み",
+            on_change=_clear_detail_on_filter_change,
         )
     with col3:
         filter_status = st.selectbox(
@@ -364,6 +392,7 @@ def render_page() -> None:
             options=[""] + list(STATUS_LABELS.keys()),
             format_func=lambda v: STATUS_LABELS.get(v, "") if v else "（全て）",
             key="filter_status",
+            on_change=_clear_detail_on_filter_change,
         )
     with col_btn:
         st.write("")
@@ -372,13 +401,14 @@ def render_page() -> None:
             for k in ("filter_project_name", "filter_customer_name", "filter_status"):
                 if k in st.session_state:
                     del st.session_state[k]
+            st.session_state.pop("project_detail_id", None)
             st.rerun()
 
     # 全案件を取得し、絞り込み条件でフィルタ
     try:
         all_projects = list_projects({})
     except FirestoreConnectionError:
-        st.error("Firestore 接続に失敗しました。認証情報を確認してください。")
+        st.error(DB_UNAVAILABLE_MESSAGE)
         return
     except Exception as exc:
         st.error("案件一覧の取得中に想定外エラーが発生しました。")
@@ -391,6 +421,16 @@ def render_page() -> None:
         "status": (filter_status or "").strip(),
     }
     projects = list_projects(filters)
+
+    # 削除確認ダイアログ
+    pending_del = st.session_state.get("pending_delete_project_id")
+    if pending_del:
+        pname = "-"
+        for p in all_projects:
+            if str(p.get("project_id")) == str(pending_del):
+                pname = str(p.get("project_name") or pending_del)
+                break
+        _render_delete_dialog(str(pending_del), pname)
 
     # ----------------------------
     # 案件詳細ポップアップ（クリック時に表示）

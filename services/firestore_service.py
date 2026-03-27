@@ -20,6 +20,8 @@ from typing import Any, Optional
 from google.cloud import firestore
 from google.cloud.firestore_v1 import Client as FirestoreClient
 
+from config.constants import DB_UNAVAILABLE_MESSAGE
+
 
 class FirestoreConnectionError(Exception):
     """Firestore 接続失敗."""
@@ -73,6 +75,14 @@ def get_firestore_client() -> FirestoreClient:
 def try_get_firestore_client() -> Optional[FirestoreClient]:
     """Firestore クライアントを取得（接続不可の場合は None を返す）."""
     return _get_client_cached()
+
+
+def require_firestore_client() -> FirestoreClient:
+    """Firestore クライアントを取得。未接続時は FirestoreConnectionError を送出する."""
+    client = _get_client_cached()
+    if client is None:
+        raise FirestoreConnectionError(DB_UNAVAILABLE_MESSAGE)
+    return client
 
 
 def clear_client_cache() -> None:

@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import pandas as pd
 
-from config.constants import APP_TITLE
+from config.constants import APP_TITLE, DB_UNAVAILABLE_MESSAGE
 from services.candidate_search_service import (
     collect_missing_previous_locations,
     collect_week_busy_events,
@@ -27,7 +27,7 @@ from services.schedule_commit_service import (
 from services.setting_service import get_settings
 from services.vehicle_service import list_vehicles
 from services.worker_service import list_workers
-from utils.layout_util import inject_sidebar_nav, inject_wide_layout
+from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
 from utils.session_util import init_session_state
 
 
@@ -381,7 +381,11 @@ def _render_week_calendar(
 
 def render_page() -> None:
     """候補検索画面."""
-    st.set_page_config(page_title=f"{APP_TITLE} - 候補検索", layout="wide")
+    st.set_page_config(
+        page_title=f"{APP_TITLE} - 候補検索",
+        layout="wide",
+        menu_items=STREAMLIT_MENU_ITEMS,
+    )
     init_session_state()
     inject_wide_layout()
     inject_sidebar_nav()
@@ -502,7 +506,7 @@ button {
             # 対応済み（リフォーム完了）は日程候補の対象外
             projects = [p for p in _all_projects if str(p.get("status") or "") != "completed"]
         except FirestoreConnectionError:
-            st.error("Firestore 接続に失敗しました。認証情報を確認してください。")
+            st.error(DB_UNAVAILABLE_MESSAGE)
             return
         except Exception as exc:
             st.error("案件一覧の取得中に想定外エラーが発生しました。")
@@ -512,7 +516,7 @@ button {
         try:
             workers = list_workers()
         except FirestoreConnectionError:
-            st.error("Firestore 接続に失敗しました。職人データを取得できません。")
+            st.error(DB_UNAVAILABLE_MESSAGE)
             return
         except Exception as exc:
             st.error("職人一覧の取得中に想定外エラーが発生しました。")
@@ -522,7 +526,7 @@ button {
         try:
             vehicles = list_vehicles()
         except FirestoreConnectionError:
-            st.error("Firestore 接続に失敗しました。車両データを取得できません。")
+            st.error(DB_UNAVAILABLE_MESSAGE)
             return
         except Exception as exc:
             st.error("車両一覧の取得中に想定外エラーが発生しました。")
@@ -576,32 +580,14 @@ button {
     col_cap, col_worker, col_buttons = st.columns([2.2, 4.8, 2.0])
     with col_cap:
         st.write("人数")
-        c1, c2, c3 = st.columns([1.2, 2.0, 1.2])
-        with c1:
-            if st.button("－", key="cap_minus"):
-                st.session_state["candidate_search_capacity"] = max(
-                    0, int(st.session_state["candidate_search_capacity"]) - 1
-                )
-        with c2:
-            # number_input は端末によって +/- が自動表示されるため、テキスト入力＋手動ボタンに統一する
-            cap_text = st.text_input(
-                " ",
-                value=str(int(st.session_state["candidate_search_capacity"])),
-                label_visibility="collapsed",
-                key="cap_input_text",
-            )
-            try:
-                st.session_state["candidate_search_capacity"] = max(0, int(cap_text or "0"))
-            except ValueError:
-                st.session_state["candidate_search_capacity"] = 0
-        with c3:
-            if st.button("＋", key="cap_plus"):
-                st.session_state["candidate_search_capacity"] = int(
-                    st.session_state["candidate_search_capacity"]
-                ) + 1
-
-        required_capacity = int(st.session_state["candidate_search_capacity"])
-        # 「枠外の人数表示」は不要（画像仕様に合わせて非表示）
+        # text_input と別キーで上書きされていたため ± が効かなかった。number_input で同一キーに統一する。
+        st.number_input(
+            "人数の値",
+            min_value=0,
+            step=1,
+            key="candidate_search_capacity",
+            label_visibility="collapsed",
+        )
 
     with col_worker:
         st.write("職人")
@@ -693,7 +679,6 @@ button {
             "worker_single_select",
             "worker_include_mode",
             "candidate_search_capacity",
-            "cap_input_text",
             "candidate_location_overrides",
         ):
             if k in st.session_state:
@@ -1075,7 +1060,7 @@ button {
                             st.error(f"案件の保存に失敗しました: {e}")
                             return
                         except FirestoreConnectionError:
-                            st.error("Firestore 接続に失敗しました。")
+                            st.error(DB_UNAVAILABLE_MESSAGE)
                             return
                         st.session_state["schedule_commit_notice"] = (
                             "カレンダーに予定を登録し、案件に予定日時を保存しました。"

@@ -15,5 +15,8 @@ __pycache__/
 venv/
 ENV/
 
+# アプリファイルログ（本番サーバー上の追記用）
+logs/
+
 # Streamlit（秘密のみ除外。config.toml はリポジトリに含める）
 .streamlit/secrets.toml

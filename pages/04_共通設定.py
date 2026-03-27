@@ -30,7 +30,8 @@ from services.email_service import (
     smtp_configured,
 )
 from services.worker_service import create_worker, deactivate_worker, delete_worker, list_workers, update_worker
-from utils.layout_util import inject_sidebar_nav, inject_wide_layout
+from config.constants import APP_TITLE, DB_UNAVAILABLE_MESSAGE
+from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
 from utils.session_util import init_session_state
 
 
@@ -83,7 +84,7 @@ def _render_common_settings_tab() -> None:
     try:
         settings = get_settings()
     except FirestoreConnectionError:
-        st.error("Firestore 接続に失敗しました。認証情報を確認してください。")
+        st.error(DB_UNAVAILABLE_MESSAGE)
         return
     except Exception as exc:
         st.error("設定の取得中に想定外エラーが発生しました。")
@@ -138,7 +139,7 @@ def _render_common_settings_tab() -> None:
                 except FirestoreSaveError as e:
                     st.error(f"リセットに失敗しました。{e}")
                 except FirestoreConnectionError:
-                    st.error("Firestore 接続に失敗しました。")
+                    st.error(DB_UNAVAILABLE_MESSAGE)
                 except Exception as exc:
                     st.error("想定外エラーが発生しました。")
                     st.exception(exc)
@@ -278,7 +279,7 @@ def _render_common_settings_tab() -> None:
             except FirestoreSaveError as e:
                 st.error(f"保存に失敗しました。{e}")
             except FirestoreConnectionError:
-                st.error("Firestore 接続に失敗しました。")
+                st.error(DB_UNAVAILABLE_MESSAGE)
             except Exception as exc:
                 st.error("想定外エラーが発生しました。")
                 st.exception(exc)
@@ -289,7 +290,7 @@ def _render_worker_tab() -> None:
     try:
         workers = list_workers()
     except FirestoreConnectionError:
-        st.error("Firestore 接続に失敗しました。職人データを取得できません。")
+        st.error(DB_UNAVAILABLE_MESSAGE)
         return
     except Exception as exc:
         st.error("職人一覧の取得中に想定外エラーが発生しました。")
@@ -503,7 +504,7 @@ def _render_worker_tab() -> None:
                 except FirestoreSaveError as e:
                     st.error(f"保存に失敗しました。{e}")
                 except FirestoreConnectionError:
-                    st.error("Firestore 接続に失敗しました。")
+                    st.error(DB_UNAVAILABLE_MESSAGE)
                 except Exception as exc:
                     st.error("想定外エラーが発生しました。")
                     st.exception(exc)
@@ -521,7 +522,7 @@ def _render_vehicle_tab() -> None:
     try:
         vehicles = list_vehicles()
     except FirestoreConnectionError:
-        st.error("Firestore 接続に失敗しました。車両データを取得できません。")
+        st.error(DB_UNAVAILABLE_MESSAGE)
         return
     except Exception as exc:
         st.error("車両一覧の取得中に想定外エラーが発生しました。")
@@ -776,7 +777,7 @@ def _render_vehicle_tab() -> None:
                 except FirestoreSaveError as e:
                     st.error(f"保存に失敗しました。{e}")
                 except FirestoreConnectionError:
-                    st.error("Firestore 接続に失敗しました。")
+                    st.error(DB_UNAVAILABLE_MESSAGE)
                 except Exception as exc:
                     st.error("想定外エラーが発生しました。")
                     st.exception(exc)
@@ -791,9 +792,11 @@ def _render_vehicle_tab() -> None:
 
 def render_page() -> None:
     """共通設定画面（タブ: 共通設定 / 職人マスタ / 車両マスタ）."""
-    from config.constants import APP_TITLE
-
-    st.set_page_config(page_title=f"{APP_TITLE} - 共通設定", layout="wide")
+    st.set_page_config(
+        page_title=f"{APP_TITLE} - 共通設定",
+        layout="wide",
+        menu_items=STREAMLIT_MENU_ITEMS,
+    )
     init_session_state()
     inject_wide_layout()
     inject_sidebar_nav()

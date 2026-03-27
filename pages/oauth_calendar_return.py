@@ -14,12 +14,16 @@ from services.google_oauth_service import (
 from services.setting_service import save_settings
 from services.vehicle_service import update_vehicle
 from services.worker_service import update_worker
-from utils.layout_util import inject_wide_layout
+from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_wide_layout
 from utils.session_util import init_session_state
 
 
 def render_page() -> None:
-    st.set_page_config(page_title="Googleカレンダー連携", layout="centered")
+    st.set_page_config(
+        page_title="Googleカレンダー連携",
+        layout="centered",
+        menu_items=STREAMLIT_MENU_ITEMS,
+    )
     init_session_state()
     inject_wide_layout()
 

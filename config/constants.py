@@ -2,8 +2,10 @@ APP_TITLE = "日程調整システム"
 
 APP_DESCRIPTION = (
     "リフォーム案件に対して、必要な職人・車両・時間を考慮した日程調整を行うシステムです。"
-    " 現在は Phase1（画面 + ダミーデータ）として、案件登録・案件一覧のみ動作します。"
 )
+
+# Firestore 未接続時に UI へ表示する共通文言
+DB_UNAVAILABLE_MESSAGE = "データベースに接続していません。"
 
 # 入力バリデーション関連（要件より）
 MIN_WORK_DURATION_MINUTES = 60  # 最小1時間

@@ -1,63 +1,34 @@
+"""アプリ用ファイルログ（サーバー上の logs/app.log に追記）.
+
+画面からは参照しない。運用・障害調査時にエンジニアがファイルを直接確認する想定。
+"""
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from pathlib import Path
+from threading import Lock
+from typing import Any, Dict, Optional
 
-import streamlit as st
-
-
-def _get_log_store() -> List[Dict[str, Any]]:
-    """ログのダミーストアを取得.
-
-    Firestore 未接続のため、Phase1 ではセッション内リストを疑似ストアとして利用する。
-    """
-    if "dummy_logs" not in st.session_state:
-        # 初期ダミーログ
-        st.session_state["dummy_logs"] = [
-            {
-                "log_id": "LOG_0001",
-                "action": "confirm_schedule",
-                "project_id": "PJT_0001",
-                "schedule_id": "SCH_0001",
-                "user_name": "事務担当A",
-                "detail": "仮登録から確定へ変更",
-                "created_at": datetime.utcnow().isoformat(),
-            },
-            {
-                "log_id": "LOG_0002",
-                "action": "create_project",
-                "project_id": "PJT_0002",
-                "schedule_id": None,
-                "user_name": "開発ユーザー",
-                "detail": "新規案件を登録",
-                "created_at": datetime.utcnow().isoformat(),
-            },
-        ]
-    return st.session_state["dummy_logs"]
+_lock = Lock()
 
 
-def list_logs(filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    """ログ一覧を取得（簡易フィルタ付き）."""
-    logs = list(_get_log_store())
-    filters = filters or {}
+def _log_path() -> Path:
+    root = Path(__file__).resolve().parent.parent
+    d = root / "logs"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "app.log"
 
-    action = (filters.get("action") or "").strip()
-    user_name = (filters.get("user_name") or "").strip()
-    date_from = filters.get("date_from")
-    date_to = filters.get("date_to")
 
-    def matches(log: Dict[str, Any]) -> bool:
-        if action and action not in str(log.get("action", "")):
-            return False
-        if user_name and user_name not in str(log.get("user_name", "")):
-            return False
-        created = log.get("created_at", "")
-        if date_from and created < str(date_from):
-            return False
-        if date_to and created > str(date_to):
-            return False
-        return True
-
-    filtered = [l for l in logs if matches(l)]
-    filtered.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    return filtered
+def append_app_log(message: str, *, extra: Optional[Dict[str, Any]] = None) -> None:
+    """1行テキストを logs/app.log に追記する。"""
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    line = f"{ts}\t{message}"
+    if extra:
+        line += f"\t{extra!r}"
+    line += "\n"
+    try:
+        with _lock:
+            with open(_log_path(), "a", encoding="utf-8") as f:
+                f.write(line)
+    except OSError:
+        pass
