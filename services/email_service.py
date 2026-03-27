@@ -20,6 +20,14 @@ from typing import Optional, Tuple
 _SMTP_SEND_POLICY = email_policy.SMTP.clone(max_line_length=0)
 
 
+def _send_message_compat(server: smtplib.SMTP, msg: EmailMessage) -> None:
+    """Python 3.9+ の send_message(..., policy=) を使う。3.8 以前は policy 未対応のため従来どおり。"""
+    try:
+        server.send_message(msg, policy=_SMTP_SEND_POLICY)
+    except TypeError:
+        server.send_message(msg)
+
+
 def _smtp_password() -> str:
     """Gmail アプリ パスワードは表示時にスペース区切りがあるため除去する."""
     return os.environ.get("SMTP_PASSWORD", "").strip().replace(" ", "")
@@ -84,7 +92,7 @@ def send_plain_email(
             context = ssl.create_default_context()
             with smtplib.SMTP_SSL(host, port, context=context, timeout=30) as server:
                 server.login(user, password)
-                server.send_message(msg, policy=_SMTP_SEND_POLICY)
+                _send_message_compat(server, msg)
         else:
             with smtplib.SMTP(host, port, timeout=30) as server:
                 server.ehlo()
@@ -92,7 +100,7 @@ def send_plain_email(
                     server.starttls(context=ssl.create_default_context())
                     server.ehlo()
                 server.login(user, password)
-                server.send_message(msg, policy=_SMTP_SEND_POLICY)
+                _send_message_compat(server, msg)
         return True, ""
     except OSError as e:
         return False, f"接続エラー: {e}"
