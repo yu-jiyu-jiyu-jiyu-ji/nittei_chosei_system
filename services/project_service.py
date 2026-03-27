@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import streamlit as st
 
 from config.constants import CONSTRUCTION_TYPE_OTHER
+from config.status_labels import STATUS_LABELS
 from models.project_model import Project
 from services.firestore_service import (
     FirestoreConnectionError,
@@ -217,12 +218,17 @@ def update_project(
                 return None
             now = datetime.utcnow()
             base = _prepare_project_data(data)
+            doc_data = doc.to_dict() or {}
             updated = {
-                **doc.to_dict(),
+                **doc_data,
                 **base,
                 "updated_at": now,
                 "updated_by": current_user_name,
             }
+            if "status" in data:
+                s = str(data.get("status") or "").strip()
+                if s in STATUS_LABELS:
+                    updated["status"] = s
             ref.set(updated)
             return {**updated, "updated_at": now.isoformat(), "updated_by": current_user_name}
         except FirestoreConnectionError:

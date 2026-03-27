@@ -53,6 +53,10 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
             if CONSTRUCTION_TYPE_OTHER in ct_list and ct_other:
                 ct_display = ct_display.replace(CONSTRUCTION_TYPE_OTHER, f"{CONSTRUCTION_TYPE_OTHER}（{ct_other}）", 1)
             st.write(f"**施工内容**：{ct_display}")
+            st.write(
+                f"**ステータス**：{format_status(str(project.get('status') or ''))} "
+                "（確定＝顧客合意／対応済み＝リフォーム完了）"
+            )
             st.write(f"**必要人数**：{project.get('required_workers', '-')}")
             st.write(f"**作業時間（分）**：{project.get('work_duration_minutes', '-')}")
             st.write(f"**必要車両数**：{project.get('required_vehicle_count') or '-'}")
@@ -168,6 +172,17 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
                     key="edit_vehicle_decision_type",
                 )
                 edit_note = st.text_area("備考", value=project.get("note") or "", key="edit_note")
+                _status_keys = list(STATUS_LABELS.keys())
+                _cur_st = str(project.get("status") or "draft")
+                _st_idx = _status_keys.index(_cur_st) if _cur_st in _status_keys else 0
+                edit_status = st.selectbox(
+                    "ステータス",
+                    options=_status_keys,
+                    format_func=lambda k: STATUS_LABELS.get(k, k),
+                    index=_st_idx,
+                    key=f"edit_status_{project.get('project_id')}",
+                    help="確定＝顧客合意。対応済み＝リフォーム完了（候補検索の案件一覧に表示されません）。",
+                )
 
                 col_save, col_cancel = st.columns(2)
                 with col_save:
@@ -191,6 +206,7 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
                     "required_vehicle_count": edit_required_vehicle_count,
                     "vehicle_decision_type": edit_vehicle_decision_type or None,
                     "note": edit_note,
+                    "status": edit_status,
                 }
                 is_valid, errors = validate_project_input(form_values)
                 if not is_valid:

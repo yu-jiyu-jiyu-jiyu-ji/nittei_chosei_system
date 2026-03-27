@@ -498,7 +498,9 @@ button {
     # 案件・職人・車両は Firestore（またはダミーフォールバック）から取得
     with st.spinner("データを読み込み中…"):
         try:
-            projects = list_projects_from_service({})
+            _all_projects = list_projects_from_service({})
+            # 対応済み（リフォーム完了）は日程候補の対象外
+            projects = [p for p in _all_projects if str(p.get("status") or "") != "completed"]
         except FirestoreConnectionError:
             st.error("Firestore 接続に失敗しました。認証情報を確認してください。")
             return
@@ -531,6 +533,9 @@ button {
     # 上部：検索条件（画像UIの再現）
     # ----------------------------
     st.subheader("条件")
+    st.caption(
+        "ステータスが「対応済み（リフォーム完了）」の案件は、日程候補の対象外のためここには表示されません。"
+    )
 
     project_options = {p["project_name"]: p for p in projects}
     project_name_list = list(project_options.keys())
