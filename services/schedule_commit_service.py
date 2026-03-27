@@ -82,10 +82,15 @@ def _insert_work_and_travel_blocks(
     project_addr: str,
     messages: List[str],
     new_refs: List[Dict[str, Any]],
+    candidate: Optional[Dict[str, Any]] = None,
+    settings: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """現場の前後に移動ブロックを挟んで登録する（職人・車両の両カレンダーで共通）.
 
     移動（前→現場）→現場→移動（現場→次）の順で挿入。現場が失敗した場合は直前に入れた移動（前）を削除する。
+
+    車両カレンダーは予定が少なく前後イベントが取れないことが多いため、kind==vehicle では
+    候補検索の travel_to_site_minutes_max と拠点住所で移動ブロックを補完する。
     """
     refs_before = len(new_refs)
     addr = (project_addr or "").strip()
@@ -153,6 +158,78 @@ def _insert_work_and_travel_blocks(
                                 messages.append(
                                     f"{label}: 移動（前現場→現場）の登録に失敗 — {eid_t}"
                                 )
+
+    # 車両カレンダーに「前」予定が無いと上記がスキップされる → 候補検索の移動時間で補完
+    if (
+        kind == "vehicle"
+        and travel_before_eid is None
+        and addr
+        and maps_api_key_configured()
+        and candidate
+    ):
+        mx = candidate.get("travel_to_site_minutes_max")
+        if mx is not None:
+            try:
+                m = float(mx)
+            except (TypeError, ValueError):
+                m = 0.0
+            if m > 0:
+                tr_end = start_at
+                tr_start = tr_end - timedelta(minutes=m)
+                day_floor = datetime.combine(start_at.date(), time.min)
+                if tr_start < day_floor:
+                    tr_start = day_floor
+                if tr_end > tr_start:
+                    office = str((settings or {}).get("office_address") or "").strip()
+                    extra = (
+                        f"\n（候補検索の最大移動 約{m:.0f} 分。車両カレンダーに前件が無い場合の目安）"
+                    )
+                    if office:
+                        desc = (
+                            "[移動] 前→現場（目安）\n"
+                            f"出発〜到着: 拠点付近〜現場\n拠点: {office}\n現場: {addr}"
+                            + extra
+                        )
+                    else:
+                        desc = (
+                            "[移動] 前→現場（目安）\n"
+                            f"到着: {addr}"
+                            + extra
+                            + "\n※共通設定の拠点住所が未設定のため、地図リンクは省略しています。"
+                        )
+                    ok_t, eid_t = insert_calendar_event(
+                        creds,
+                        cal_id,
+                        "[移動] 前→現場（目安）",
+                        tr_start,
+                        tr_end,
+                        location=addr,
+                        description=desc,
+                    )
+                    if ok_t:
+                        eid_fb = str(eid_t).strip()
+                        if eid_fb:
+                            travel_before_eid = eid_fb
+                            _append_ref(
+                                new_refs,
+                                kind=kind,
+                                ref_id=ref_id,
+                                calendar_id=cal_id,
+                                event_id=eid_fb,
+                            )
+                            messages.append(
+                                f"{label}: 移動（前→現場）をカレンダーに登録しました（候補検索の移動時間）。"
+                            )
+                        else:
+                            ok_all = False
+                            messages.append(
+                                f"{label}: 移動（前→現場・目安）の登録に失敗（イベントIDが空）"
+                            )
+                    else:
+                        ok_all = False
+                        messages.append(
+                            f"{label}: 移動（前→現場・目安）の登録に失敗 — {eid_t}"
+                        )
 
     ok_w, detail_w = insert_calendar_event(
         creds,
@@ -234,6 +311,51 @@ def _insert_work_and_travel_blocks(
                             ok_all = False
                             messages.append(
                                 f"{label}: 移動（現場→次現場）の登録に失敗 — {eid_a}"
+                            )
+        elif kind == "vehicle":
+            # 車両カレンダーに「次」予定が無い → 現場→拠点（戻り）を登録
+            office = str((settings or {}).get("office_address") or "").strip()
+            if office:
+                tr_back = travel_duration_minutes(addr, office)
+                if tr_back is not None and tr_back > 0:
+                    travel_start = end_at
+                    travel_end = travel_start + timedelta(minutes=float(tr_back))
+                    if travel_end > travel_start:
+                        desc = _travel_block_description(
+                            "[移動] 現場→拠点（戻り）", addr, office
+                        )
+                        ok_a, eid_a = insert_calendar_event(
+                            creds,
+                            cal_id,
+                            "[移動] 現場→拠点（戻り）",
+                            travel_start,
+                            travel_end,
+                            location=office,
+                            description=desc
+                            + "\n（車両カレンダーに次件が無い場合。共通設定の拠点住所を使用）",
+                        )
+                        if ok_a:
+                            eid_after = str(eid_a).strip()
+                            if eid_after:
+                                _append_ref(
+                                    new_refs,
+                                    kind=kind,
+                                    ref_id=ref_id,
+                                    calendar_id=cal_id,
+                                    event_id=eid_after,
+                                )
+                                messages.append(
+                                    f"{label}: 移動（現場→拠点）をカレンダーに登録しました。"
+                                )
+                            else:
+                                ok_all = False
+                                messages.append(
+                                    f"{label}: 移動（現場→拠点）の登録に失敗（イベントIDが空）"
+                                )
+                        else:
+                            ok_all = False
+                            messages.append(
+                                f"{label}: 移動（現場→拠点）の登録に失敗 — {eid_a}"
                             )
 
     return ok_all
@@ -451,6 +573,8 @@ def commit_candidate_to_calendars(
             project_addr=addr,
             messages=messages,
             new_refs=new_refs,
+            candidate=candidate,
+            settings=settings,
         )
         if ok_entity:
             any_calendar_registered = True
@@ -489,6 +613,8 @@ def commit_candidate_to_calendars(
             project_addr=addr,
             messages=messages,
             new_refs=new_refs,
+            candidate=candidate,
+            settings=settings,
         )
         if ok_entity:
             any_calendar_registered = True
