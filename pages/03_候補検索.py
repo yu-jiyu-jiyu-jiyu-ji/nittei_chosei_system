@@ -396,9 +396,6 @@ def render_page() -> None:
     notice = st.session_state.pop("schedule_commit_notice", None)
     if notice:
         st.success(notice)
-    for _w in st.session_state.pop("candidate_search_warnings_flash", []) or []:
-        st.warning(_w)
-
     # 旧実装の ?candidate_id= リンクは multipage で白画面になることがあるため廃止。残っていればクエリだけ除去して案内する。
     if "candidate_id" in st.query_params:
         try:
@@ -630,55 +627,6 @@ button {
     required_capacity = int(st.session_state.get("candidate_search_capacity", 0))
     loc_ov: Dict[str, str] = st.session_state.setdefault("candidate_location_overrides", {})
 
-    # 分割検索（F）: 週を1日ずつ検索し、1リクエストあたりの処理時間を短くする
-    cjob = st.session_state.get("candidate_search_job")
-    if cjob is not None:
-        step = int(cjob.get("step", 0))
-        if step < 7:
-            ws_job = cjob["week_start"]
-            d = ws_job + timedelta(days=step)
-            excl_job = {str(x) for x in cjob.get("excluded", [])}
-            must_inc_job = [str(x) for x in cjob.get("must_include", [])]
-            pj_n = (cjob.get("project_name") or "").strip()
-            proj_job = project_options.get(pj_n) if pj_n else None
-            cap_job = int(cjob.get("required_capacity", 0))
-            try:
-                settings_job = get_settings()
-            except FirestoreConnectionError:
-                settings_job = {}
-            gcal_tok = st.session_state.get("google_calendar_tokens") or {}
-            vf_sess = gcal_tok.get("vehicle_fleet") if isinstance(gcal_tok, dict) else None
-            with st.spinner(f"検索中…（{step + 1}/7日）"):
-                part, warns = search_candidates(
-                    project=proj_job,
-                    workers=workers,
-                    vehicles=vehicles,
-                    settings=settings_job,
-                    ui_capacity=cap_job,
-                    session_tokens=st.session_state.get("google_calendar_tokens"),
-                    vehicle_fleet_session=vf_sess,
-                    location_overrides=st.session_state.get("candidate_location_overrides") or {},
-                    excluded_worker_ids=excl_job,
-                    must_include_worker_ids=must_inc_job,
-                    search_week_start=ws_job,
-                    limit_search_days=[d],
-                )
-            cjob["accum"].extend(part)
-            cjob["warnings_acc"].extend(warns)
-            cjob["step"] = step + 1
-            st.rerun()
-        else:
-            st.session_state["candidate_results"] = cjob["accum"]
-            st.session_state["candidate_search_warnings_flash"] = list(
-                dict.fromkeys(cjob.get("warnings_acc") or [])
-            )
-            st.session_state.pop("candidate_search_job", None)
-            st.session_state.pop("_week_nav_undo", None)
-            for _k in list(st.session_state.keys()):
-                if isinstance(_k, str) and _k.startswith("calendar_week_events_"):
-                    del st.session_state[_k]
-            st.rerun()
-
     if selected_project:
         missing_prev = collect_missing_previous_locations(
             project=selected_project,
@@ -736,7 +684,6 @@ button {
                 del st.session_state[k]
         if "candidate_results" in st.session_state:
             del st.session_state["candidate_results"]
-        st.session_state.pop("candidate_search_job", None)
         st.session_state["candidate_calendar_week_start"] = sunday_week_containing(date.today())
         st.rerun()
 
@@ -817,7 +764,6 @@ button {
         not search_clicked
         and not week_nav_trigger
         and "candidate_results" not in st.session_state
-        and not st.session_state.get("candidate_search_job")
     ):
         # 検索結果がないのに候補だけ開こうとした（URL直打ち等）
         if st.session_state.get("candidate_dialog_id"):
@@ -839,27 +785,45 @@ button {
         return
 
     try:
-        # 検索ボタン／週ナビ再検索 → 分割ジョブを開始（各日は candidate_search_job ブロックで実行）
+        # 検索ボタン／週ナビ再検索（週のカレンダーは search_candidates 内で1回だけ取得）
         run_search = search_clicked or week_nav_trigger
         if run_search:
-            excluded_for_real: set = set()
-            if include_mode == "含まない" and selected_worker_ids:
-                excluded_for_real = {str(x) for x in selected_worker_ids}
-                must_include_worker_ids: List[str] = []
-            else:
-                must_include_worker_ids = selected_worker_ids
+            with st.spinner("検索中…"):
+                excluded_for_real: set = set()
+                if include_mode == "含まない" and selected_worker_ids:
+                    excluded_for_real = {str(x) for x in selected_worker_ids}
+                    must_include_worker_ids: List[str] = []
+                else:
+                    must_include_worker_ids = selected_worker_ids
 
-            st.session_state["candidate_search_job"] = {
-                "step": 0,
-                "accum": [],
-                "warnings_acc": [],
-                "week_start": st.session_state["candidate_calendar_week_start"],
-                "project_name": selected_project_name or "",
-                "required_capacity": required_capacity,
-                "excluded": list(excluded_for_real),
-                "must_include": list(must_include_worker_ids),
-            }
-            st.rerun()
+                try:
+                    settings = get_settings()
+                except FirestoreConnectionError:
+                    settings = {}
+                    st.warning("共通設定を取得できませんでした。デフォルトの検索パラメータを使います。")
+
+                gcal_tok = st.session_state.get("google_calendar_tokens") or {}
+                vf_sess = gcal_tok.get("vehicle_fleet") if isinstance(gcal_tok, dict) else None
+                filtered, search_warnings = search_candidates(
+                    project=selected_project,
+                    workers=workers,
+                    vehicles=vehicles,
+                    settings=settings,
+                    ui_capacity=required_capacity,
+                    session_tokens=st.session_state.get("google_calendar_tokens"),
+                    vehicle_fleet_session=vf_sess,
+                    location_overrides=st.session_state.get("candidate_location_overrides") or {},
+                    excluded_worker_ids=excluded_for_real,
+                    must_include_worker_ids=must_include_worker_ids,
+                    search_week_start=st.session_state["candidate_calendar_week_start"],
+                )
+                for wmsg in search_warnings:
+                    st.warning(wmsg)
+                st.session_state.pop("_week_nav_undo", None)
+                st.session_state["candidate_results"] = filtered
+                for _k in list(st.session_state.keys()):
+                    if isinstance(_k, str) and _k.startswith("calendar_week_events_"):
+                        del st.session_state[_k]
         else:
             filtered = list(st.session_state.get("candidate_results") or [])
     except Exception as exc:
