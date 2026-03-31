@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, Optional, Tuple
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple
 
 # googlemaps はオプション扱い（未インストール時は requests で代替）
 try:
@@ -89,6 +90,85 @@ def travel_duration_minutes(
         _dm_cache_maybe_trim()
         _DM_CACHE[cache_key] = None
         return None
+
+
+def travel_duration_minutes_prefetch(
+    pairs: List[Tuple[str, str]],
+    *,
+    mode: str = "driving",
+) -> None:
+    """複数 OD を Distance Matrix にまとめて問い合わせ、キャッシュを埋める.
+
+    同一 origin に対して最大 25 destinations / リクエスト（API 制限）。
+    既にキャッシュにある組はスキップする。
+    """
+    key = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
+    if not key or not pairs:
+        return
+
+    missing_by_origin: Dict[str, List[str]] = defaultdict(list)
+    for o, d in pairs:
+        o = (o or "").strip()
+        d = (d or "").strip()
+        if not o or not d:
+            continue
+        ck = (o, d, mode)
+        if ck in _DM_CACHE:
+            continue
+        missing_by_origin[o].append(d)
+
+    if not missing_by_origin:
+        return
+
+    if googlemaps is not None:
+        client = _get_gmaps_client()
+        if client is None:
+            return
+        for origin, dests in missing_by_origin.items():
+            seen: set = set()
+            unique_d: List[str] = []
+            for x in dests:
+                if x not in seen:
+                    seen.add(x)
+                    unique_d.append(x)
+            for i in range(0, len(unique_d), 25):
+                chunk = unique_d[i : i + 25]
+                try:
+                    result = client.distance_matrix(
+                        origins=[origin],
+                        destinations=chunk,
+                        mode=mode,
+                        units="metric",
+                        language="ja",
+                    )
+                except Exception:
+                    for d in chunk:
+                        _DM_CACHE[(origin, d, mode)] = None
+                    _dm_cache_maybe_trim()
+                    continue
+                rows = result.get("rows") or []
+                if not rows:
+                    for d in chunk:
+                        _DM_CACHE[(origin, d, mode)] = None
+                    continue
+                elems = rows[0].get("elements") or []
+                for j, d in enumerate(chunk):
+                    el = elems[j] if j < len(elems) else {}
+                    if el.get("status") != "OK":
+                        _DM_CACHE[(origin, d, mode)] = None
+                        continue
+                    sec = el.get("duration", {}).get("value")
+                    if sec is None:
+                        _DM_CACHE[(origin, d, mode)] = None
+                    else:
+                        _DM_CACHE[(origin, d, mode)] = float(sec) / 60.0
+                _dm_cache_maybe_trim()
+    else:
+        for origin, dests in missing_by_origin.items():
+            for d in dict.fromkeys(dests):
+                if (origin, d, mode) not in _DM_CACHE:
+                    out = _distance_matrix_requests(key, origin, d, mode)
+                    _DM_CACHE[(origin, d, mode)] = out
 
 
 def _dm_cache_maybe_trim() -> None:

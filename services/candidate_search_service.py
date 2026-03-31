@@ -25,7 +25,11 @@ from services.google_oauth_service import (
     credentials_from_refresh_token,
     load_vehicle_token_json_path,
 )
-from services.maps_service import maps_api_key_configured, travel_duration_minutes
+from services.maps_service import (
+    maps_api_key_configured,
+    travel_duration_minutes,
+    travel_duration_minutes_prefetch,
+)
 from services.vehicle_assignment_service import assign_vehicles_for_crew
 
 TZ = ZoneInfo("Asia/Tokyo")
@@ -235,10 +239,12 @@ def search_candidates(
     excluded_worker_ids: Optional[Set[str]] = None,
     must_include_worker_ids: Optional[List[str]] = None,
     search_week_start: Optional[date] = None,
+    limit_search_days: Optional[List[date]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """候補一覧と警告メッセージ群を返す.
 
     search_week_start: 検索対象週の「含まれる任意の日」。None のときは今週（当日を含む日曜始まり）。
+    limit_search_days: 指定時はその日だけを走査（UI の分割検索・タイムアウト対策用）。
     """
     warnings: List[str] = []
     loc_ov = location_overrides or {}
@@ -342,6 +348,12 @@ def search_candidates(
         _sunday_week_start(search_week_start) if search_week_start is not None else _sunday_week_start(today)
     )
     search_days = [week_start + timedelta(days=i) for i in range(7)]
+    if limit_search_days is not None:
+        lim = set(limit_search_days)
+        search_days = [d for d in search_days if d in lim]
+        if not search_days:
+            warnings.append("指定された検索日が対象週に含まれません。")
+            return [], warnings
 
     # 各カレンダーは週（＋端の余白）で1回だけ取得し、スロットごとの API 再取得を避ける
     time_min_fetch = datetime.combine(week_start, time.min, tzinfo=TZ) - timedelta(days=1)
@@ -396,6 +408,9 @@ def search_candidates(
                 except Exception:
                     event_cache[cache_key] = []
 
+    # 「含む」職人（スロットごとに組み合わせを絞るときに利用）
+    anchor_ids: Set[str] = {str(x) for x in (must_include_worker_ids or []) if x}
+
     for d in search_days:
         day_start = datetime.combine(d, time.min, tzinfo=TZ)
         day_end = day_start + timedelta(days=1)
@@ -415,16 +430,142 @@ def search_candidates(
                 if sm_rel < work_start_min or em_rel > work_end_min:
                     continue
 
-            combo_list = list(combinations(sorted(ready_ids), headcount))
-            anchor = {str(x) for x in (must_include_worker_ids or []) if x}
-            if anchor:
-                combo_list = [c for c in combo_list if anchor.issubset(set(c))]
+            # カレンダー上その枠が空いている職人だけに絞ってから組み合わせる（C(n,k) の n を大幅削減）
+            slot_free_ids: List[str] = []
+            for wid in sorted(ready_ids):
+                w = wid_to_worker[wid]
+                cal_id = str(w.get("calendar_id") or "").strip()
+                if not cal_id:
+                    continue
+                wc = creds_map[wid]
+                ev_w = _week_events(wc, cal_id)
+                if interval_free_cached(ev_w, slot_start, slot_end):
+                    slot_free_ids.append(wid)
 
-            if not combo_list:
+            if len(slot_free_ids) < headcount:
+                continue
+            if anchor_ids and not anchor_ids.issubset(set(slot_free_ids)):
                 continue
 
             assigned_vids_slot = assign_vehicles_for_crew(headcount, vehicles)
             if not assigned_vids_slot:
+                continue
+
+            # B: Distance Matrix をスロット単位でまとめて取得（同一 OD はキャッシュ）
+            if project_address and maps_ok:
+                dm_pairs: List[Tuple[str, str]] = []
+                pa = project_address.strip()
+                for wid in slot_free_ids:
+                    w = wid_to_worker[wid]
+                    cal_id = str(w.get("calendar_id") or "").strip()
+                    if not cal_id:
+                        continue
+                    wc = creds_map[wid]
+                    ev_w = _week_events(wc, cal_id)
+                    prev = get_previous_event_before_cached(ev_w, slot_start, day_start=day_start)
+                    if prev:
+                        loc = event_location(prev)
+                        pid = prev.get("id") or ""
+                        okey = _location_override_key(wid, str(pid))
+                        if not loc and okey in loc_ov:
+                            loc = loc_ov[okey]
+                        if loc:
+                            dm_pairs.append((loc.strip(), pa))
+                    nxt = get_next_event_after_cached(
+                        ev_w, slot_end, day_start=day_start, day_end=day_end
+                    )
+                    if nxt:
+                        loc_n = event_location(nxt)
+                        nid = nxt.get("id") or ""
+                        okey_n = _location_override_key(wid, str(nid))
+                        if not loc_n and okey_n in loc_ov:
+                            loc_n = loc_ov[okey_n]
+                        if loc_n:
+                            dm_pairs.append((pa, loc_n.strip()))
+                if office:
+                    oa = office.strip()
+                    for vid in assigned_vids_slot:
+                        v = vehicle_by_id.get(str(vid))
+                        if not v:
+                            continue
+                        vcreds = _vehicle_calendar_credentials(
+                            v, session_tokens, settings, vehicle_fleet_session
+                        )
+                        vcal = str(v.get("calendar_id") or "").strip()
+                        if not vcreds or not vcal:
+                            continue
+                        ev_v = _week_events(vcreds, vcal)
+                        prev_v = get_previous_event_before_cached(ev_v, slot_start, day_start=day_start)
+                        origin = event_location(prev_v) if prev_v else ""
+                        if not origin.strip():
+                            origin = office
+                        if origin.strip() and oa:
+                            dm_pairs.append((origin.strip(), oa))
+                        if oa and pa:
+                            dm_pairs.append((oa, pa))
+                travel_duration_minutes_prefetch(dm_pairs)
+
+            # C: 移動・住所だけで不可能な職人を組み合わせ前に除外（内側ループと同じ判定）
+            slot_pruned: List[str] = []
+            for wid in slot_free_ids:
+                w = wid_to_worker[wid]
+                cal_id = str(w.get("calendar_id") or "").strip()
+                if not cal_id:
+                    continue
+                wc = creds_map[wid]
+                ev_w = _week_events(wc, cal_id)
+                ok_w = True
+                prev = get_previous_event_before_cached(ev_w, slot_start, day_start=day_start)
+                if prev:
+                    loc = event_location(prev)
+                    pid = prev.get("id") or ""
+                    okey = _location_override_key(wid, str(pid))
+                    if not loc and okey in loc_ov:
+                        loc = loc_ov[okey]
+                    if not loc:
+                        ok_w = False
+                    elif project_address and maps_ok:
+                        b = event_time_bounds(prev)
+                        pe = b[1] if b else None
+                        if pe:
+                            tr = travel_duration_minutes(loc, project_address)
+                            if tr is not None and pe + timedelta(minutes=tr) > slot_start:
+                                ok_w = False
+                if ok_w and project_address and maps_ok:
+                    nxt = get_next_event_after_cached(
+                        ev_w, slot_end, day_start=day_start, day_end=day_end
+                    )
+                    if nxt:
+                        loc_n = event_location(nxt)
+                        nid = nxt.get("id") or ""
+                        okey_n = _location_override_key(wid, str(nid))
+                        if not loc_n and okey_n in loc_ov:
+                            loc_n = loc_ov[okey_n]
+                        if not loc_n:
+                            ok_w = False
+                        else:
+                            nb = event_time_bounds(nxt)
+                            ns = nb[0] if nb else None
+                            if ns:
+                                tr_n = travel_duration_minutes(
+                                    project_address.strip(), loc_n.strip()
+                                )
+                                if tr_n is not None and slot_end + timedelta(minutes=tr_n) > ns:
+                                    ok_w = False
+                if ok_w:
+                    slot_pruned.append(wid)
+            slot_free_ids = slot_pruned
+
+            if len(slot_free_ids) < headcount:
+                continue
+            if anchor_ids and not anchor_ids.issubset(set(slot_free_ids)):
+                continue
+
+            combo_list = list(combinations(sorted(slot_free_ids), headcount))
+            if anchor_ids:
+                combo_list = [c for c in combo_list if anchor_ids.issubset(set(c))]
+
+            if not combo_list:
                 continue
 
             for combo in combo_list:
