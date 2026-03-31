@@ -203,6 +203,36 @@ def material_return_extra_minutes(
     return float(load_minutes) + to_office + to_site
 
 
+def _parallel_fetch_events_by_calendar_id(
+    prefetch_pairs: List[Tuple[Credentials, str]],
+    time_min_fetch: datetime,
+    time_max_fetch: datetime,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """calendar_id ごとに週の予定を取得（同一 ID は上書き）."""
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    if not prefetch_pairs:
+        return out
+    if len(prefetch_pairs) <= 1:
+        for c, cid in prefetch_pairs:
+            try:
+                out[cid] = list_events_in_range(c, cid, time_min_fetch, time_max_fetch)
+            except Exception:
+                out[cid] = []
+        return out
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(prefetch_pairs))) as ex:
+        fut_to_cid: Dict[Any, str] = {}
+        for c, cid in prefetch_pairs:
+            fut = ex.submit(list_events_in_range, c, cid, time_min_fetch, time_max_fetch)
+            fut_to_cid[fut] = cid
+        for fut in concurrent.futures.as_completed(fut_to_cid):
+            cid = fut_to_cid[fut]
+            try:
+                out[cid] = fut.result()
+            except Exception:
+                out[cid] = []
+    return out
+
+
 def material_return_extra_minutes_cached(
     events: List[Dict[str, Any]],
     day_start: datetime,
@@ -226,6 +256,120 @@ def material_return_extra_minutes_cached(
     return float(load_minutes) + to_office + to_site
 
 
+def fetch_week_calendar_events_bundle(
+    *,
+    project: Optional[Dict[str, Any]],
+    workers: List[Dict[str, Any]],
+    vehicles: List[Dict[str, Any]],
+    settings: Dict[str, Any],
+    ui_capacity: int,
+    session_tokens: Optional[Dict[str, Any]] = None,
+    vehicle_fleet_session: Optional[Dict[str, Any]] = None,
+    excluded_worker_ids: Optional[Set[str]] = None,
+    search_week_start: Optional[date] = None,
+) -> Tuple[Optional[Dict[str, List[Dict[str, Any]]]], List[str]]:
+    """候補検索の前段として、週の Google カレンダー予定だけを取得する（API はこの1回分）.
+
+    検証に通らない場合は (None, warnings)。成功時は (calendar_id -> events, warnings)。
+    """
+    warnings: List[str] = []
+    headcount = _required_headcount(project, ui_capacity)
+    if headcount <= 0:
+        return None, ["必要人数が 0 です。案件を選ぶか人数を指定してください。"]
+
+    v_assign = assign_vehicles_for_crew(headcount, vehicles)
+    if v_assign is None:
+        warnings.append(
+            "車両の割当ができません。利用中かつ利用可能な車両のうち、"
+            "少なくとも 2人乗りまたは 3人乗りが 1 台以上必要です（無効化のみ・定員4のみでは割当できない場合があります）。"
+            "車両マスタで有効な車を戻すか、車両を追加してください。"
+        )
+        return None, warnings
+
+    active_workers = [w for w in workers if w.get("is_active", True)]
+    creds_map: Dict[str, Credentials] = {}
+    for w in active_workers:
+        c = _worker_credentials(w, session_tokens)
+        if c:
+            creds_map[str(w["worker_id"])] = c
+
+    fleet = _vehicle_fleet_credentials(settings, vehicle_fleet_session)
+    active_vehicles = [v for v in vehicles if v.get("is_active", True)]
+    vehicles_with_cal = [v for v in active_vehicles if str(v.get("calendar_id") or "").strip()]
+    vehicles_missing_creds: List[str] = []
+    if vehicles_with_cal:
+        for v in vehicles_with_cal:
+            if _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session) is None:
+                vehicles_missing_creds.append(str(v.get("vehicle_id", "?")))
+        vehicle_access_ok = len(vehicles_missing_creds) == 0
+    else:
+        vehicle_access_ok = fleet is not None
+
+    use_real = len(creds_map) >= headcount and vehicle_access_ok
+    if not use_real:
+        if len(creds_map) < headcount:
+            warnings.append(
+                "職人の Google カレンダー連携（または保存トークン）が不足しているため、候補を出せません。"
+                "共通設定で必要人数分の OAuth 連携を完了してください。"
+            )
+        if not vehicle_access_ok:
+            detail = (
+                f"（カレンダー認証が不足している車両: {', '.join(vehicles_missing_creds)}）"
+                if vehicles_missing_creds
+                else ""
+            )
+            warnings.append(
+                "車両の Google カレンダーが参照できません。"
+                "有効な全車両で OAuth 連携が済むか、または 1 つの Google アカウントで全カレンダーを読む場合は共通設定の「車両共通フォールバック」を設定してください。"
+                "（1台だけ連携済でも、他車にカレンダー ID だけ入っているとこのままでは警告になります。）"
+                + detail
+            )
+        return None, warnings
+
+    excl = excluded_worker_ids or set()
+    active_ids = {str(w["worker_id"]) for w in active_workers}
+    ready_ids = [wid for wid in creds_map if wid in active_ids and wid not in excl]
+    if len(ready_ids) < headcount:
+        warnings.append(
+            "条件に合う連携済み職人が不足しています（除外・含む条件・必要人数を確認してください）。"
+        )
+        return None, warnings
+
+    wid_to_worker = {str(w["worker_id"]): w for w in active_workers}
+    today = datetime.now(TZ).date()
+    week_start = (
+        _sunday_week_start(search_week_start) if search_week_start is not None else _sunday_week_start(today)
+    )
+    time_min_fetch = datetime.combine(week_start, time.min, tzinfo=TZ) - timedelta(days=1)
+    time_max_fetch = datetime.combine(week_start + timedelta(days=8), time.min, tzinfo=TZ)
+
+    prefetch_pairs: List[Tuple[Credentials, str]] = []
+    seen_cal: Set[str] = set()
+    for wid in ready_ids:
+        w = wid_to_worker[wid]
+        cid = str(w.get("calendar_id") or "").strip()
+        if not cid:
+            continue
+        c = creds_map[wid]
+        if cid not in seen_cal:
+            seen_cal.add(cid)
+            prefetch_pairs.append((c, cid))
+    for v in vehicles:
+        if not v.get("is_active", True):
+            continue
+        cid = str(v.get("calendar_id") or "").strip()
+        if not cid:
+            continue
+        vc = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
+        if vc:
+            if cid not in seen_cal:
+                seen_cal.add(cid)
+                prefetch_pairs.append((vc, cid))
+
+    bundle = _parallel_fetch_events_by_calendar_id(prefetch_pairs, time_min_fetch, time_max_fetch)
+    return bundle, warnings
+
+
 def search_candidates(
     *,
     project: Optional[Dict[str, Any]],
@@ -240,11 +384,13 @@ def search_candidates(
     must_include_worker_ids: Optional[List[str]] = None,
     search_week_start: Optional[date] = None,
     limit_search_days: Optional[List[date]] = None,
+    shared_events_by_calendar_id: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """候補一覧と警告メッセージ群を返す.
 
     search_week_start: 検索対象週の「含まれる任意の日」。None のときは今週（当日を含む日曜始まり）。
     limit_search_days: 指定時はその日だけを走査（UI の分割検索・タイムアウト対策用）。
+    shared_events_by_calendar_id: 週の予定を呼び出し元で取得済みのとき渡す（Google カレンダー API を再実行しない）。
     """
     warnings: List[str] = []
     loc_ov = location_overrides or {}
@@ -358,26 +504,23 @@ def search_candidates(
     # 各カレンダーは週（＋端の余白）で1回だけ取得し、スロットごとの API 再取得を避ける
     time_min_fetch = datetime.combine(week_start, time.min, tzinfo=TZ) - timedelta(days=1)
     time_max_fetch = datetime.combine(week_start + timedelta(days=8), time.min, tzinfo=TZ)
-    event_cache: Dict[Tuple[int, str], List[Dict[str, Any]]] = {}
+    # calendar_id 文字列をキーにする（分割検索でセッション共有するため id(creds) は使わない）
+    events_by_cal_id: Dict[str, List[Dict[str, Any]]] = {}
 
     def _week_events(creds: Credentials, cal_id: str) -> List[Dict[str, Any]]:
-        key = (id(creds), cal_id)
-        if key not in event_cache:
-            event_cache[key] = list_events_in_range(creds, cal_id, time_min_fetch, time_max_fetch)
-        return event_cache[key]
+        return list(events_by_cal_id.get(cal_id) or [])
 
     # 週の予定を職人・車両カレンダーごとに1回だけ取得（直列だと API 往復が積み上がるため並列化）
     prefetch_pairs: List[Tuple[Credentials, str]] = []
-    seen_prefetch: Set[Tuple[int, str]] = set()
+    seen_cal: Set[str] = set()
     for wid in ready_ids:
         w = wid_to_worker[wid]
         cid = str(w.get("calendar_id") or "").strip()
         if not cid:
             continue
         c = creds_map[wid]
-        pk = (id(c), cid)
-        if pk not in seen_prefetch:
-            seen_prefetch.add(pk)
+        if cid not in seen_cal:
+            seen_cal.add(cid)
             prefetch_pairs.append((c, cid))
     for v in vehicles:
         if not v.get("is_active", True):
@@ -387,26 +530,16 @@ def search_candidates(
             continue
         vc = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
         if vc:
-            pk = (id(vc), cid)
-            if pk not in seen_prefetch:
-                seen_prefetch.add(pk)
+            if cid not in seen_cal:
+                seen_cal.add(cid)
                 prefetch_pairs.append((vc, cid))
 
-    if len(prefetch_pairs) <= 1:
-        for c, cid in prefetch_pairs:
-            _week_events(c, cid)
+    if shared_events_by_calendar_id is not None:
+        events_by_cal_id = {k: list(v) for k, v in shared_events_by_calendar_id.items()}
     else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(prefetch_pairs))) as ex:
-            futures = {
-                ex.submit(list_events_in_range, c, cid, time_min_fetch, time_max_fetch): (id(c), cid)
-                for c, cid in prefetch_pairs
-            }
-            for fut in concurrent.futures.as_completed(futures):
-                cache_key = futures[fut]
-                try:
-                    event_cache[cache_key] = fut.result()
-                except Exception:
-                    event_cache[cache_key] = []
+        events_by_cal_id = _parallel_fetch_events_by_calendar_id(
+            prefetch_pairs, time_min_fetch, time_max_fetch
+        )
 
     # 「含む」職人（スロットごとに組み合わせを絞るときに利用）
     anchor_ids: Set[str] = {str(x) for x in (must_include_worker_ids or []) if x}
