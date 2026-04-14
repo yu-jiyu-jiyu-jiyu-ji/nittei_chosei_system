@@ -389,6 +389,13 @@ def render_page() -> None:
         menu_items=STREAMLIT_MENU_ITEMS,
     )
     init_session_state()
+    # 候補検索ページへ再入場したときは、前回候補を残さず毎回リフレッシュする。
+    if st.session_state.get("_active_page_id") != "candidate_search":
+        st.session_state.pop("candidate_results", None)
+        st.session_state.pop("candidate_search_job", None)
+        st.session_state.pop("candidate_dialog_id", None)
+        st.session_state.pop("week_nav_trigger_search", None)
+    st.session_state["_active_page_id"] = "candidate_search"
     inject_wide_layout()
     inject_sidebar_nav()
 

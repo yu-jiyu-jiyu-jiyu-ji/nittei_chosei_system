@@ -809,6 +809,7 @@ def render_page() -> None:
         menu_items=STREAMLIT_MENU_ITEMS,
     )
     init_session_state()
+    st.session_state["_active_page_id"] = "common_settings"
     inject_wide_layout()
     inject_sidebar_nav()
 
