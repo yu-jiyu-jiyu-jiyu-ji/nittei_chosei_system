@@ -11,6 +11,7 @@ import pandas as pd
 
 from config.constants import APP_TITLE, DB_UNAVAILABLE_MESSAGE
 from services.candidate_search_service import (
+    apply_previous_location_overrides_to_calendars,
     collect_missing_previous_locations,
     collect_week_busy_events,
     fetch_week_calendar_events_bundle,
@@ -739,8 +740,30 @@ button {
                             placeholder="例: 東京都杉並区…",
                         )
                         if st.button("一括で反映", key=f"apply_batch_{eid}"):
+                            addr_val = (addr_in or "").strip()
                             for r in rows:
-                                loc_ov[str(r["override_key"])] = (addr_in or "").strip()
+                                loc_ov[str(r["override_key"])] = addr_val
+                            errs = apply_previous_location_overrides_to_calendars(
+                                workers=workers,
+                                session_tokens=st.session_state.get("google_calendar_tokens"),
+                                updates=[
+                                    (
+                                        str(r.get("worker_id", "")),
+                                        str(r.get("event_id", "")),
+                                        addr_val,
+                                    )
+                                    for r in rows
+                                    if addr_val
+                                ],
+                            )
+                            if errs:
+                                st.session_state["candidate_search_warnings_flash"] = list(
+                                    dict.fromkeys(
+                                        (st.session_state.get("candidate_search_warnings_flash") or [])
+                                        + errs
+                                    )
+                                )
+                            st.session_state["week_nav_trigger_search"] = True
                             st.rerun()
                     else:
                         r = rows[0]
@@ -754,7 +777,29 @@ button {
                             placeholder="例: 東京都杉並区…",
                         )
                         if st.button("反映", key=f"apply_single_{r['override_key']}"):
-                            loc_ov[str(r["override_key"])] = (addr_one or "").strip()
+                            addr_val = (addr_one or "").strip()
+                            loc_ov[str(r["override_key"])] = addr_val
+                            errs = apply_previous_location_overrides_to_calendars(
+                                workers=workers,
+                                session_tokens=st.session_state.get("google_calendar_tokens"),
+                                updates=[
+                                    (
+                                        str(r.get("worker_id", "")),
+                                        str(r.get("event_id", "")),
+                                        addr_val,
+                                    )
+                                ]
+                                if addr_val
+                                else [],
+                            )
+                            if errs:
+                                st.session_state["candidate_search_warnings_flash"] = list(
+                                    dict.fromkeys(
+                                        (st.session_state.get("candidate_search_warnings_flash") or [])
+                                        + errs
+                                    )
+                                )
+                            st.session_state["week_nav_trigger_search"] = True
                             st.rerun()
 
     if clear_clicked:

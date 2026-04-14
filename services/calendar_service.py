@@ -363,3 +363,31 @@ def delete_calendar_event(
         return False, _format_calendar_http_error(e)
     except Exception as e:
         return False, _format_credentials_error(e)
+
+
+def update_calendar_event_location(
+    creds: Credentials,
+    calendar_id: str,
+    event_id: str,
+    location: str,
+) -> Tuple[bool, str]:
+    """既存予定の location を更新する。"""
+    if not calendar_id.strip() or not str(event_id).strip():
+        return False, "カレンダーIDまたはイベントIDが空です。"
+    body = {"location": (location or "").strip()}
+    try:
+        svc = _service(creds)
+        (
+            svc.events()
+            .patch(
+                calendarId=calendar_id.strip(),
+                eventId=str(event_id).strip(),
+                body=body,
+            )
+            .execute()
+        )
+        return True, ""
+    except HttpError as e:
+        return False, _format_calendar_http_error(e)
+    except Exception as e:
+        return False, _format_credentials_error(e)

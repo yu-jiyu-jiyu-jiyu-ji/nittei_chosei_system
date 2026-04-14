@@ -21,6 +21,7 @@ from services.calendar_service import (
     interval_free_cached,
     list_events_in_range,
     list_events_in_range_safe,
+    update_calendar_event_location,
 )
 from services.google_oauth_service import (
     credentials_from_refresh_token,
@@ -1259,3 +1260,31 @@ def collect_missing_previous_locations(
             )
 
     return missing
+
+
+def apply_previous_location_overrides_to_calendars(
+    *,
+    workers: List[Dict[str, Any]],
+    session_tokens: Optional[Dict[str, Any]],
+    updates: List[Tuple[str, str, str]],
+) -> List[str]:
+    """(worker_id, event_id, location) を Google カレンダーへ反映し、失敗理由を返す。"""
+    errs: List[str] = []
+    worker_by_id = {str(w.get("worker_id")): w for w in workers}
+    for wid, eid, loc in updates:
+        w = worker_by_id.get(str(wid))
+        if not w:
+            errs.append(f"職人 {wid}: マスタが見つかりません。")
+            continue
+        cal_id = str(w.get("calendar_id") or "").strip()
+        if not cal_id:
+            errs.append(f"職人 {w.get('name', wid)}: カレンダーIDが未設定です。")
+            continue
+        creds = _worker_credentials(w, session_tokens)
+        if not creds:
+            errs.append(f"職人 {w.get('name', wid)}: OAuth 未連携です。")
+            continue
+        ok, msg = update_calendar_event_location(creds, cal_id, str(eid), str(loc))
+        if not ok:
+            errs.append(f"職人 {w.get('name', wid)}: 住所反映に失敗 — {msg}")
+    return errs
