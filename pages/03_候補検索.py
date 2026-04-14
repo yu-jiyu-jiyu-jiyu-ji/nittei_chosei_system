@@ -618,10 +618,12 @@ button {
         )
 
     with col_worker:
-        w1, w2 = st.columns([3.8, 2.2])
+        w1, w2, w3 = st.columns([3.0, 1.2, 2.2])
         with w1:
             st.write("職人")
         with w2:
+            st.write("条件")
+        with w3:
             st.write("ランク絞り込み")
         with w1:
             selected_worker_ids = st.multiselect(
@@ -634,6 +636,13 @@ button {
                 label_visibility="collapsed",
             )
         with w2:
+            include_mode = st.selectbox(
+                " ",
+                options=["含む", "含まない"],
+                key="worker_include_mode",
+                label_visibility="collapsed",
+            )
+        with w3:
             st.multiselect(
                 " ",
                 options=rank_options,
@@ -674,6 +683,7 @@ button {
         return rows
 
     workers_for_search = _workers_filtered_by_rank(workers)
+    include_mode = str(st.session_state.get("worker_include_mode") or "含む")
 
     # 分割検索: ①カレンダーAPIは週1回 ②以降は同一データで1日ずつ計算（タイムアウトしにくく、以前の7倍取得もしない）
     cjob = st.session_state.get("candidate_search_job")
@@ -850,6 +860,7 @@ button {
         for k in (
             "candidate_search_project_select",
             "worker_multi_select",
+            "worker_include_mode",
             "worker_rank_filters",
             "candidate_search_capacity",
             "candidate_location_overrides",
@@ -964,6 +975,19 @@ button {
         # 検索ボタン／週ナビ → カレンダー1回取得＋7日分割計算（candidate_search_job ブロック）
         run_search = search_clicked or week_nav_trigger
         if run_search:
+            selected_ids_set = {
+                str(x).strip()
+                for x in (st.session_state.get("worker_multi_select") or [])
+                if str(x).strip()
+            }
+            excluded_for_real: set = set()
+            must_include_worker_ids: List[str] = []
+            if include_mode == "含まない" and selected_ids_set:
+                excluded_for_real = selected_ids_set
+            elif include_mode == "含む" and selected_ids_set:
+                # headcount=1 の既存仕様（優先フォールバック）を維持するため must_include に渡す
+                must_include_worker_ids = sorted(selected_ids_set)
+
             st.session_state["candidate_search_job"] = {
                 "step": -1,
                 "accum": [],
@@ -971,8 +995,8 @@ button {
                 "week_start": st.session_state["candidate_calendar_week_start"],
                 "project_name": selected_project_name or "",
                 "required_capacity": required_capacity,
-                "excluded": [],
-                "must_include": [],
+                "excluded": list(excluded_for_real),
+                "must_include": list(must_include_worker_ids),
             }
             st.rerun()
         else:
