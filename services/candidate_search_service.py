@@ -652,7 +652,9 @@ def search_candidates(
                 warnings.append(f"車両 {vid} の予定取得に失敗しました: {err}")
 
     # 含む指定は現状の候補除外には使わない（誰かが入れるなら表示する）。
-    _ = must_include_worker_ids
+    preferred_ids = [str(x) for x in (must_include_worker_ids or []) if x]
+    priority_order = preferred_ids + [wid for wid in sorted(ready_ids) if wid not in set(preferred_ids)]
+    priority_rank = {wid: idx for idx, wid in enumerate(priority_order)}
 
     for d in search_days:
         day_start = datetime.combine(d, time.min, tzinfo=TZ)
@@ -827,8 +829,14 @@ def search_candidates(
             if len(pool_ids) < headcount:
                 continue
 
+            # 必要人数1のときは、主担当優先（must_include）→不可なら他担当へフォールバック。
+            # 1枠1候補に絞ることで「誰かが入れる枠を落とさず」見た目も安定させる。
+            if headcount == 1:
+                pool_ids = sorted(pool_ids, key=lambda wid: priority_rank.get(str(wid), 10**9))
+
             combo_iter = combinations(pool_ids, headcount)
             combos_checked = 0
+            accepted_in_slot = False
             for combo in combo_iter:
                 if combos_checked >= max_combinations_per_slot:
                     if not warned_combo_truncated:
@@ -1030,16 +1038,23 @@ def search_candidates(
                         "worker_ids": worker_ids,
                         "vehicle_ids": assigned_vids,
                         "source": "calendar",
+                        "eligible_worker_ids": list(pool_ids) if headcount == 1 else [],
                         "travel_to_site_minutes_by_worker": travel_by_worker,
                         "travel_to_site_minutes_max": travel_max,
                         "material_completed_events_count": material_completed_count,
                         "material_extra_minutes": material_extra_val,
                     }
                 )
+                accepted_in_slot = True
                 if len(candidates) >= max_candidate_count:
+                    break
+                if headcount == 1:
+                    # 1枠1候補（優先順で最初に成立した担当）で次枠へ進む
                     break
             if len(candidates) >= max_candidate_count:
                 break
+            if accepted_in_slot and headcount == 1:
+                continue
         if len(candidates) >= max_candidate_count:
             break
 
