@@ -159,77 +159,89 @@ def _insert_work_and_travel_blocks(
                                     f"{label}: 移動（前現場→現場）の登録に失敗 — {eid_t}"
                                 )
 
-    # 車両カレンダーに「前」予定が無いと上記がスキップされる → 候補検索の移動時間で補完
+    # 「前」予定が無い/取れない場合は、候補検索の移動時間を使って目安ブロックを補完
     if (
-        kind == "vehicle"
-        and travel_before_eid is None
+        travel_before_eid is None
         and addr
         and maps_api_key_configured()
         and candidate
     ):
-        mx = candidate.get("travel_to_site_minutes_max")
-        if mx is not None:
-            try:
-                m = float(mx)
-            except (TypeError, ValueError):
-                m = 0.0
-            if m > 0:
-                tr_end = start_at
-                tr_start = tr_end - timedelta(minutes=m)
-                day_floor = datetime.combine(start_at.date(), time.min)
-                if tr_start < day_floor:
-                    tr_start = day_floor
-                if tr_end > tr_start:
-                    office = str((settings or {}).get("office_address") or "").strip()
-                    extra = (
-                        f"\n（候補検索の最大移動 約{m:.0f} 分。車両カレンダーに前件が無い場合の目安）"
+        fallback_minutes: Optional[float] = None
+        if kind == "worker":
+            tw = candidate.get("travel_to_site_minutes_by_worker") or {}
+            if isinstance(tw, dict):
+                raw = tw.get(str(ref_id))
+                if raw is not None:
+                    try:
+                        fallback_minutes = float(raw)
+                    except (TypeError, ValueError):
+                        fallback_minutes = None
+        else:
+            mx = candidate.get("travel_to_site_minutes_max")
+            if mx is not None:
+                try:
+                    fallback_minutes = float(mx)
+                except (TypeError, ValueError):
+                    fallback_minutes = None
+
+        if fallback_minutes is not None and fallback_minutes > 0:
+            tr_end = start_at
+            tr_start = tr_end - timedelta(minutes=fallback_minutes)
+            day_floor = datetime.combine(start_at.date(), time.min)
+            if tr_start < day_floor:
+                tr_start = day_floor
+            if tr_end > tr_start:
+                office = str((settings or {}).get("office_address") or "").strip()
+                extra = (
+                    f"\n（候補検索の移動時間 約{fallback_minutes:.0f} 分。"
+                    "前予定が取れない場合の目安）"
+                )
+                if office:
+                    desc = (
+                        "[移動] 前→現場（目安）\n"
+                        f"出発〜到着: 拠点付近〜現場\n拠点: {office}\n現場: {addr}"
+                        + extra
                     )
-                    if office:
-                        desc = (
-                            "[移動] 前→現場（目安）\n"
-                            f"出発〜到着: 拠点付近〜現場\n拠点: {office}\n現場: {addr}"
-                            + extra
-                        )
-                    else:
-                        desc = (
-                            "[移動] 前→現場（目安）\n"
-                            f"到着: {addr}"
-                            + extra
-                            + "\n※共通設定の拠点住所が未設定のため、地図リンクは省略しています。"
-                        )
-                    ok_t, eid_t = insert_calendar_event(
-                        creds,
-                        cal_id,
-                        "[移動] 前→現場（目安）",
-                        tr_start,
-                        tr_end,
-                        location=addr,
-                        description=desc,
+                else:
+                    desc = (
+                        "[移動] 前→現場（目安）\n"
+                        f"到着: {addr}"
+                        + extra
+                        + "\n※共通設定の拠点住所が未設定のため、地図リンクは省略しています。"
                     )
-                    if ok_t:
-                        eid_fb = str(eid_t).strip()
-                        if eid_fb:
-                            travel_before_eid = eid_fb
-                            _append_ref(
-                                new_refs,
-                                kind=kind,
-                                ref_id=ref_id,
-                                calendar_id=cal_id,
-                                event_id=eid_fb,
-                            )
-                            messages.append(
-                                f"{label}: 移動（前→現場）をカレンダーに登録しました（候補検索の移動時間）。"
-                            )
-                        else:
-                            ok_all = False
-                            messages.append(
-                                f"{label}: 移動（前→現場・目安）の登録に失敗（イベントIDが空）"
-                            )
+                ok_t, eid_t = insert_calendar_event(
+                    creds,
+                    cal_id,
+                    "[移動] 前→現場（目安）",
+                    tr_start,
+                    tr_end,
+                    location=addr,
+                    description=desc,
+                )
+                if ok_t:
+                    eid_fb = str(eid_t).strip()
+                    if eid_fb:
+                        travel_before_eid = eid_fb
+                        _append_ref(
+                            new_refs,
+                            kind=kind,
+                            ref_id=ref_id,
+                            calendar_id=cal_id,
+                            event_id=eid_fb,
+                        )
+                        messages.append(
+                            f"{label}: 移動（前→現場）をカレンダーに登録しました（候補検索の移動時間）。"
+                        )
                     else:
                         ok_all = False
                         messages.append(
-                            f"{label}: 移動（前→現場・目安）の登録に失敗 — {eid_t}"
+                            f"{label}: 移動（前→現場・目安）の登録に失敗（イベントIDが空）"
                         )
+                else:
+                    ok_all = False
+                    messages.append(
+                        f"{label}: 移動（前→現場・目安）の登録に失敗 — {eid_t}"
+                    )
 
     ok_w, detail_w = insert_calendar_event(
         creds,

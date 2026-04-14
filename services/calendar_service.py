@@ -74,6 +74,17 @@ def list_events_in_range(
     time_max: datetime,
 ) -> List[Dict[str, Any]]:
     """指定期間の予定一覧（終日は除外しない。簡易）."""
+    events, _ = list_events_in_range_safe(creds, calendar_id, time_min, time_max)
+    return events
+
+
+def list_events_in_range_safe(
+    creds: Credentials,
+    calendar_id: str,
+    time_min: datetime,
+    time_max: datetime,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """指定期間の予定一覧を返す。失敗時は ([], 理由)。"""
     try:
         svc = _service(creds)
         tmin = time_min.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -99,12 +110,12 @@ def list_events_in_range(
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
-    except HttpError:
-        return []
-    except Exception:
-        # 認証切れ（invalid_grant）等は「予定なし」として扱い、画面全体のクラッシュを防ぐ。
-        return []
-    return events
+    except HttpError as e:
+        return [], _format_calendar_http_error(e)
+    except Exception as e:
+        # 認証切れ（invalid_grant）等は上位へ理由を返し、画面全体のクラッシュを防ぐ。
+        return [], _format_credentials_error(e)
+    return events, None
 
 
 def event_time_bounds(ev: Dict[str, Any]) -> Optional[Tuple[datetime, datetime]]:

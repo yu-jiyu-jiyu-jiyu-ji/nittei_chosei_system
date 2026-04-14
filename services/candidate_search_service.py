@@ -20,6 +20,7 @@ from services.calendar_service import (
     get_previous_event_before_cached,
     interval_free_cached,
     list_events_in_range,
+    list_events_in_range_safe,
 )
 from services.google_oauth_service import (
     credentials_from_refresh_token,
@@ -271,6 +272,41 @@ def _parallel_fetch_events_by_calendar_id(
     return out
 
 
+def _parallel_fetch_events_by_calendar_id_with_errors(
+    prefetch_pairs: List[Tuple[Credentials, str]],
+    time_min_fetch: datetime,
+    time_max_fetch: datetime,
+) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, str]]:
+    """calendar_id ごとの予定取得と失敗理由を返す。"""
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    errors: Dict[str, str] = {}
+    if not prefetch_pairs:
+        return out, errors
+    if len(prefetch_pairs) <= 1:
+        for c, cid in prefetch_pairs:
+            events, err = list_events_in_range_safe(c, cid, time_min_fetch, time_max_fetch)
+            out[cid] = events
+            if err:
+                errors[cid] = err
+        return out, errors
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(prefetch_pairs))) as ex:
+        fut_to_cid: Dict[Any, str] = {}
+        for c, cid in prefetch_pairs:
+            fut = ex.submit(list_events_in_range_safe, c, cid, time_min_fetch, time_max_fetch)
+            fut_to_cid[fut] = cid
+        for fut in concurrent.futures.as_completed(fut_to_cid):
+            cid = fut_to_cid[fut]
+            try:
+                events, err = fut.result()
+                out[cid] = events
+                if err:
+                    errors[cid] = err
+            except Exception as e:
+                out[cid] = []
+                errors[cid] = str(e)
+    return out, errors
+
+
 def material_return_extra_minutes_cached(
     events: List[Dict[str, Any]],
     day_start: datetime,
@@ -404,7 +440,18 @@ def fetch_week_calendar_events_bundle(
                 seen_cal.add(cid)
                 prefetch_pairs.append((vc, cid))
 
-    bundle = _parallel_fetch_events_by_calendar_id(prefetch_pairs, time_min_fetch, time_max_fetch)
+    bundle, fetch_errors = _parallel_fetch_events_by_calendar_id_with_errors(
+        prefetch_pairs, time_min_fetch, time_max_fetch
+    )
+    if fetch_errors:
+        for v in active_vehicles:
+            vid = str(v.get("vehicle_id") or "?")
+            cid = str(v.get("calendar_id") or "").strip()
+            if not cid:
+                continue
+            err = fetch_errors.get(cid)
+            if err:
+                warnings.append(f"車両 {vid} の予定取得に失敗しました: {err}")
     return bundle, warnings
 
 
@@ -583,12 +630,22 @@ def search_candidates(
                 seen_cal.add(cid)
                 prefetch_pairs.append((vc, cid))
 
+    vehicle_fetch_errors: Dict[str, str] = {}
     if shared_events_by_calendar_id is not None:
         events_by_cal_id = {k: list(v) for k, v in shared_events_by_calendar_id.items()}
     else:
-        events_by_cal_id = _parallel_fetch_events_by_calendar_id(
+        events_by_cal_id, vehicle_fetch_errors = _parallel_fetch_events_by_calendar_id_with_errors(
             prefetch_pairs, time_min_fetch, time_max_fetch
         )
+    if vehicle_fetch_errors:
+        for v in active_vehicles:
+            vid = str(v.get("vehicle_id") or "?")
+            cid = str(v.get("calendar_id") or "").strip()
+            if not cid:
+                continue
+            err = vehicle_fetch_errors.get(cid)
+            if err:
+                warnings.append(f"車両 {vid} の予定取得に失敗しました: {err}")
 
     # 「含む」職人（スロットごとに組み合わせを絞るときに利用）
     anchor_ids: Set[str] = {str(x) for x in (must_include_worker_ids or []) if x}
@@ -979,6 +1036,11 @@ def search_candidates(
             break
 
     if not candidates:
+        if vehicle_fetch_errors:
+            warnings.append(
+                "候補ゼロの主因として、車両カレンダー参照不可（404 / invalid_grant 等）が疑われます。"
+                "車両ごとの取得失敗メッセージを確認し、対象車両の OAuth 再連携またはカレンダー共有設定を見直してください。"
+            )
         warnings.append(
             "条件を満たす実カレンダー候補がありませんでした。"
             "暫定住所の未入力や、連携・API キーを確認してください。"
@@ -999,7 +1061,7 @@ def collect_week_busy_events(
     session_tokens: Optional[Dict[str, Any]],
     settings: Optional[Dict[str, Any]],
     vehicle_fleet_session: Optional[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], List[str]]:
     """表示用：週（week_start 〜 土曜）の職人・車両カレンダーから予定を取得する.
 
     ブラウザで見ている Google アカウントと異なる場合、内容が一致しないことがある。
@@ -1008,6 +1070,7 @@ def collect_week_busy_events(
     time_min = datetime.combine(week_start, time.min, tzinfo=TZ)
     time_max = datetime.combine(week_end + timedelta(days=1), time.min, tzinfo=TZ)
     out: List[Dict[str, Any]] = []
+    warnings: List[str] = []
 
     for w in workers:
         if not w.get("is_active", True):
@@ -1019,7 +1082,10 @@ def collect_week_busy_events(
         if not creds:
             continue
         label = f"職人:{w.get('name', w.get('worker_id'))}"
-        for ev in list_events_in_range(creds, cal_id, time_min, time_max):
+        events, err = list_events_in_range_safe(creds, cal_id, time_min, time_max)
+        if err:
+            warnings.append(f"職人 {w.get('name', w.get('worker_id'))} の予定取得に失敗しました: {err}")
+        for ev in events:
             b = event_time_bounds(ev)
             if not b:
                 continue
@@ -1045,7 +1111,10 @@ def collect_week_busy_events(
         if not creds:
             continue
         label = f"車両:{v.get('name', v.get('vehicle_id'))}"
-        for ev in list_events_in_range(creds, cal_id, time_min, time_max):
+        events, err = list_events_in_range_safe(creds, cal_id, time_min, time_max)
+        if err:
+            warnings.append(f"車両 {v.get('name', v.get('vehicle_id'))} の予定取得に失敗しました: {err}")
+        for ev in events:
             b = event_time_bounds(ev)
             if not b:
                 continue
@@ -1062,7 +1131,7 @@ def collect_week_busy_events(
             )
 
     out.sort(key=lambda x: x["start_at"])
-    return out
+    return out, warnings
 
 
 def format_week_events_jst_table_rows(events: List[Dict[str, Any]]) -> List[Dict[str, str]]:

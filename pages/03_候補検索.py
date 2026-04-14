@@ -944,7 +944,7 @@ button {
                 vf_sess2 = (
                     gcal_tok2.get("vehicle_fleet") if isinstance(gcal_tok2, dict) else None
                 )
-                st.session_state[cache_key] = collect_week_busy_events(
+                week_events, week_warns = collect_week_busy_events(
                     week_start=ws,
                     workers=workers,
                     vehicles=vehicles,
@@ -952,6 +952,14 @@ button {
                     settings=settings_for_cal,
                     vehicle_fleet_session=vf_sess2,
                 )
+                st.session_state[cache_key] = week_events
+                if week_warns:
+                    st.session_state["candidate_search_warnings_flash"] = list(
+                        dict.fromkeys(
+                            (st.session_state.get("candidate_search_warnings_flash") or [])
+                            + week_warns
+                        )
+                    )
             except Exception:
                 st.session_state[cache_key] = []
 
