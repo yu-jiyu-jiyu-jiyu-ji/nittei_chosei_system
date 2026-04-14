@@ -115,6 +115,10 @@ def _render_common_settings_tab() -> None:
             f"**開始〜終了**：{settings.get('work_hours_start', '-')} 〜 {settings.get('work_hours_end', '-')}"
         )
         st.caption("この時間帯に収まる枠だけを候補として検索します。")
+        st.write(
+            f"**移動再計算モード（候補確定時）**：{'有効' if settings.get('recalc_travel_on_commit', False) else '無効'}"
+        )
+        st.caption("有効時は、候補確定日の移動予定（[移動]）を再計算して張り直します。")
 
         st.subheader("渋滞バッファ（朝）")
         st.write(f"**朝バッファ（分）**：{settings.get('traffic_buffer_morning_minutes', '-')}")
@@ -199,6 +203,12 @@ def _render_common_settings_tab() -> None:
                     key="form_work_hours_end",
                     help="HH:MM（例: 19:00）。候補の終了時刻がこの時間を超えないようにします。",
                 )
+            recalc_travel_on_commit = st.checkbox(
+                "候補確定時に当日の移動経路を再計算する",
+                value=bool(settings.get("recalc_travel_on_commit", False)),
+                key="form_recalc_travel_on_commit",
+                help="割当対象の職人・車両カレンダーで、当日の [移動] 予定を再計算して再登録します。",
+            )
 
             st.subheader("渋滞バッファ（朝）")
             col_m1, col_m2 = st.columns(2)
@@ -265,6 +275,7 @@ def _render_common_settings_tab() -> None:
                         "max_candidate_count": max_candidate_count,
                         "work_hours_start": work_hours_start,
                         "work_hours_end": work_hours_end,
+                        "recalc_travel_on_commit": recalc_travel_on_commit,
                         "traffic_buffer_morning_minutes": traffic_buffer_morning_minutes,
                         "traffic_buffer_morning_start": traffic_buffer_morning_start,
                         "traffic_buffer_morning_end": traffic_buffer_morning_end,

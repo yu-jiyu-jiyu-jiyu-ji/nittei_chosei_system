@@ -50,6 +50,106 @@ def _dt_to_naive_local(dt: datetime) -> datetime:
     return dt.astimezone(TZ).replace(tzinfo=None)
 
 
+def _is_travel_event(ev: Optional[Dict[str, Any]]) -> bool:
+    if not ev:
+        return False
+    summary = str(ev.get("summary") or "").strip()
+    return summary.startswith("[移動]")
+
+
+def _previous_non_travel_event(
+    events: List[Dict[str, Any]],
+    *,
+    before: datetime,
+    day_start: datetime,
+) -> Optional[Dict[str, Any]]:
+    """直前予定が移動イベントの場合は、さらに前の非移動予定まで遡る。"""
+    candidates: List[Tuple[datetime, Dict[str, Any]]] = []
+    for ev in events:
+        b = event_time_bounds(ev)
+        if not b:
+            continue
+        _, ee = b
+        if ee <= before and ee >= day_start:
+            candidates.append((ee, ev))
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    for _, ev in candidates:
+        if not _is_travel_event(ev):
+            return ev
+    return None
+
+
+def _rebuild_travel_blocks_for_day(
+    *,
+    creds: Any,
+    cal_id: str,
+    label: str,
+    target_day: datetime,
+    messages: List[str],
+) -> None:
+    """1日の移動イベントを再計算して張り直す（[移動] で始まる予定のみ対象）。"""
+    day_start = datetime.combine(target_day.date(), time.min, tzinfo=TZ)
+    day_end = day_start + timedelta(days=1)
+    events = list_events_in_range(creds, cal_id, day_start, day_end)
+    if not events:
+        return
+
+    # 既存の自動移動ブロックを一旦削除
+    travel_events: List[Dict[str, Any]] = []
+    work_events: List[Tuple[datetime, datetime, Dict[str, Any]]] = []
+    for ev in events:
+        b = event_time_bounds(ev)
+        if not b:
+            continue
+        es, ee = b
+        if _is_travel_event(ev):
+            travel_events.append(ev)
+            continue
+        work_events.append((es, ee, ev))
+
+    for tev in travel_events:
+        eid = str(tev.get("id") or "").strip()
+        if not eid:
+            continue
+        ok_del, err_del = delete_calendar_event(creds, cal_id, eid)
+        if not ok_del:
+            messages.append(f"{label}: 既存移動の削除に失敗 — {err_del}")
+
+    work_events.sort(key=lambda x: x[0])
+    if len(work_events) < 2:
+        return
+
+    for i in range(len(work_events) - 1):
+        _, prev_end, prev_ev = work_events[i]
+        next_start, _, next_ev = work_events[i + 1]
+        from_addr = event_location(prev_ev)
+        to_addr = event_location(next_ev)
+        if not from_addr.strip() or not to_addr.strip():
+            continue
+        tr = travel_duration_minutes(from_addr.strip(), to_addr.strip())
+        if tr is None or tr <= 0:
+            continue
+        s = _dt_to_naive_local(prev_end)
+        e = s + timedelta(minutes=float(tr))
+        next_start_local = _dt_to_naive_local(next_start)
+        if e > next_start_local:
+            e = next_start_local
+        if e <= s:
+            continue
+        desc = _travel_block_description("[移動] 再計算", from_addr, to_addr)
+        ok_ins, err_ins = insert_calendar_event(
+            creds,
+            cal_id,
+            "[移動] 再計算",
+            s,
+            e,
+            location=to_addr.strip(),
+            description=desc,
+        )
+        if not ok_ins:
+            messages.append(f"{label}: 移動再計算の登録に失敗 — {err_ins}")
+
+
 def _append_ref(
     new_refs: List[Dict[str, Any]],
     *,
@@ -107,9 +207,13 @@ def _insert_work_and_travel_blocks(
     ok_all = True
 
     if addr and maps_api_key_configured():
-        prev = get_previous_event_before_cached(
-            events, slot_start_for_cache, day_start=day_start_dt
-        )
+        prev = get_previous_event_before_cached(events, slot_start_for_cache, day_start=day_start_dt)
+        if _is_travel_event(prev):
+            prev = _previous_non_travel_event(
+                events,
+                before=slot_start_for_cache,
+                day_start=day_start_dt,
+            )
         if prev:
             loc = event_location(prev)
             if loc.strip():
@@ -648,6 +752,46 @@ def commit_candidate_to_calendars(
             vehicle_fleet_session=vehicle_fleet_session,
         )
         messages.extend(del_msgs)
+
+        # オプション: 影響範囲（当日）の移動ブロックを再計算して張り直す
+        recalc_travel = bool((settings or {}).get("recalc_travel_on_commit"))
+        if recalc_travel:
+            for wid in candidate.get("worker_ids") or []:
+                w = worker_by_id.get(str(wid))
+                if not w:
+                    continue
+                cal_id = str(w.get("calendar_id") or "").strip()
+                if not cal_id:
+                    continue
+                creds = _worker_credentials(w, session_tokens)
+                if not creds:
+                    continue
+                _rebuild_travel_blocks_for_day(
+                    creds=creds,
+                    cal_id=cal_id,
+                    label=f"職人 {w.get('name', wid)}",
+                    target_day=start_at,
+                    messages=messages,
+                )
+            for vid in candidate.get("vehicle_ids") or []:
+                v = vehicle_by_id.get(str(vid))
+                if not v:
+                    continue
+                cal_id = str(v.get("calendar_id") or "").strip()
+                if not cal_id:
+                    continue
+                creds = _vehicle_calendar_credentials(
+                    v, session_tokens, settings, vehicle_fleet_session
+                )
+                if not creds:
+                    continue
+                _rebuild_travel_blocks_for_day(
+                    creds=creds,
+                    cal_id=cal_id,
+                    label=f"車両 {v.get('name', vid)}",
+                    target_day=start_at,
+                    messages=messages,
+                )
     elif project.get("google_calendar_event_refs"):
         messages.append(
             "※ 登録がすべて成功しなかったため、Google 上の「以前の予定」は自動削除していません。"

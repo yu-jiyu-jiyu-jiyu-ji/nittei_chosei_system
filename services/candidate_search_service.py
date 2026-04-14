@@ -1209,12 +1209,23 @@ def collect_missing_previous_locations(
             continue
         if eid not in seen_event:
             seen_event.add(eid)
+            bprev = event_time_bounds(prev)
             missing.append(
                 {
                     "worker_id": wid,
                     "worker_name": w.get("name", wid),
                     "event_id": eid,
                     "event_summary": prev.get("summary") or "",
+                    "event_start_at": (
+                        bprev[0].astimezone(TZ).replace(tzinfo=None)
+                        if bprev
+                        else None
+                    ),
+                    "event_end_at": (
+                        bprev[1].astimezone(TZ).replace(tzinfo=None)
+                        if bprev
+                        else None
+                    ),
                     "override_key": key,
                 }
             )
