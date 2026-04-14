@@ -405,8 +405,8 @@ def render_page() -> None:
     notice = st.session_state.pop("schedule_commit_notice", None)
     if notice:
         st.success(notice)
-    for _w in st.session_state.pop("candidate_search_warnings_flash", []) or []:
-        st.warning(_w)
+    # API生レスポンスの表示は行わない（内部処理用にのみ保持）
+    st.session_state.pop("candidate_search_warnings_flash", None)
     # 旧実装の ?candidate_id= リンクは multipage で白画面になることがあるため廃止。残っていればクエリだけ除去して案内する。
     if "candidate_id" in st.query_params:
         try:
@@ -574,6 +574,7 @@ button {
     # 案件を変えたときは、人数を案件の「必要人数」で揃える（0 のまま検索できないのを防ぐ）
     _prev_proj_key = st.session_state.get("_candidate_sync_project_key")
     _cur_proj_key = selected_project_name or ""
+    project_changed = _cur_proj_key != _prev_proj_key
     if _cur_proj_key != _prev_proj_key:
         st.session_state["_candidate_sync_project_key"] = _cur_proj_key
         if selected_project:
@@ -584,6 +585,9 @@ button {
                 pass
         else:
             st.session_state["candidate_search_capacity"] = 0
+    if project_changed and selected_project:
+        with st.spinner("案件情報を読み込み中…"):
+            pass
 
     worker_options: List[Dict[str, str]] = []
     for w in workers:
@@ -655,12 +659,23 @@ button {
     with col_buttons:
         st.write("")
         st.write("")
+        if project_changed and selected_project:
+            st.info("案件情報を読み込み中…")
         # PCでも改行しにくいよう、列幅を少し広めに
         b1, b2 = st.columns([1.2, 1.2])
         with b1:
-            clear_clicked = st.button("クリア", use_container_width=True)
+            clear_clicked = st.button(
+                "クリア",
+                use_container_width=True,
+                disabled=bool(project_changed and selected_project),
+            )
         with b2:
-            search_clicked = st.button("検索", type="primary", use_container_width=True)
+            search_clicked = st.button(
+                "検索",
+                type="primary",
+                use_container_width=True,
+                disabled=bool(project_changed and selected_project),
+            )
 
     # nowrap-row の閉じタグ
     st.markdown("</div>", unsafe_allow_html=True)
@@ -1143,6 +1158,7 @@ button {
 
             @st.dialog("候補の詳細")
             def _show_candidate_detail() -> None:
+                result_key = f"dialog_decide_result_{dcid}"
                 st.write(f"**候補ID**: {target.get('candidate_id')}")
                 st.write(f"**日付**: {_format_date_jp(start_at_d.date())}")
                 st.write(
@@ -1172,21 +1188,32 @@ button {
                     st.caption(f"資材ルールによる追加拘束の目安: 約{float(mex):.0f}分")
                 processing_key = f"dialog_decide_processing_{dcid}"
                 processing = bool(st.session_state.get(processing_key, False))
+                decide_result = st.session_state.get(result_key)
                 if processing:
                     st.info("処理中です。しばらくお待ちください…")
+                elif decide_result == "success":
+                    st.success("カレンダー登録が完了しました。内容を確認して「閉じる」を押してください。")
+                elif decide_result == "partial":
+                    st.warning("一部の登録に失敗しました。内容を確認して「閉じる」を押してください。")
+                elif decide_result == "failed":
+                    st.error("登録に失敗しました。内容を確認して「閉じる」を押してください。")
                 col_close, col_decide = st.columns(2)
                 with col_close:
                     if st.button("閉じる", key=f"dialog_close_{dcid}", disabled=processing):
+                        # 閉じる押下で画面をリロード
+                        st.session_state["week_nav_trigger_search"] = True
+                        st.session_state.pop("candidate_results", None)
                         st.session_state.pop("candidate_dialog_id", None)
                         st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
                         st.session_state.pop(processing_key, None)
+                        st.session_state.pop(result_key, None)
                         st.rerun()
                 with col_decide:
                     if st.button(
                         "決定",
                         type="primary",
                         key=f"dialog_decide_{dcid}",
-                        disabled=processing,
+                        disabled=processing or decide_result in ("success", "partial"),
                     ):
                         st.session_state[processing_key] = True
                         st.rerun()
@@ -1225,18 +1252,11 @@ button {
                         st.error("カレンダー登録中にエラーが発生しました。")
                         st.exception(exc)
                         st.session_state.pop(processing_key, None)
+                        st.session_state[result_key] = "failed"
                         return
-                    if msgs:
-                        st.session_state["candidate_search_warnings_flash"] = list(
-                            dict.fromkeys(
-                                (st.session_state.get("candidate_search_warnings_flash") or [])
-                                + msgs
-                            )
-                        )
                     if not save_project_schedule:
                         st.session_state.pop(processing_key, None)
-                        st.session_state.pop("candidate_dialog_id", None)
-                        st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
+                        st.session_state[result_key] = "failed"
                         st.rerun()
                     tz = ZoneInfo("Asia/Tokyo")
                     sa = start_at_d
@@ -1265,19 +1285,15 @@ button {
                     except FirestoreSaveError as e:
                         st.error(f"案件の保存に失敗しました: {e}")
                         st.session_state.pop(processing_key, None)
+                        st.session_state[result_key] = "failed"
                         return
                     except FirestoreConnectionError:
                         st.error(DB_UNAVAILABLE_MESSAGE)
                         st.session_state.pop(processing_key, None)
+                        st.session_state[result_key] = "failed"
                         return
-                    st.session_state["schedule_commit_notice"] = (
-                        "カレンダーに予定を登録し、案件に予定日時を保存しました。"
-                        if ok
-                        else "一部のカレンダー登録に失敗しました。成功した内容を反映し、案件に予定日時を保存しました。"
-                    )
+                    st.session_state[result_key] = "success" if ok else "partial"
                     st.session_state.pop(processing_key, None)
-                    st.session_state.pop("candidate_dialog_id", None)
-                    st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
                     st.rerun()
 
             _show_candidate_detail()
