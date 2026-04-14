@@ -35,6 +35,44 @@ from services.vehicle_assignment_service import assign_vehicles_for_crew
 TZ = ZoneInfo("Asia/Tokyo")
 
 
+def _parse_positive_int(value: Any, default: int) -> int:
+    """正の整数を安全にパース。不正時は default。"""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return n if n > 0 else default
+
+
+def _n_choose_k_exceeds(n: int, k: int, threshold: int) -> bool:
+    """nCk が threshold を超えるかを途中打ち切りで判定する。"""
+    if threshold <= 0:
+        return True
+    if k < 0 or n < 0 or k > n:
+        return False
+    k = min(k, n - k)
+    if k == 0:
+        return 1 > threshold
+    result = 1
+    for i in range(1, k + 1):
+        result = (result * (n - k + i)) // i
+        if result > threshold:
+            return True
+    return False
+
+
+def _bounded_worker_pool_size(total_workers: int, headcount: int, max_combinations: int) -> int:
+    """組み合わせ爆発を避けるため、探索対象にする職人母集団サイズを上限化する。"""
+    if total_workers <= headcount:
+        return total_workers
+    if max_combinations <= 0:
+        return total_workers
+    size = total_workers
+    while size > headcount and _n_choose_k_exceeds(size, headcount, max_combinations):
+        size -= 1
+    return max(headcount, size)
+
+
 def _sunday_week_start(d: date) -> date:
     """d を含む週の日曜日（日〜土の週の開始）を返す。Python weekday: 月=0 … 日=6."""
     return d - timedelta(days=(d.weekday() + 1) % 7)
@@ -394,6 +432,9 @@ def search_candidates(
     """
     warnings: List[str] = []
     loc_ov = location_overrides or {}
+    warned_pool_bounded = False
+    warned_combo_truncated = False
+    warned_timeout = False
 
     headcount = _required_headcount(project, ui_capacity)
     if headcount <= 0:
@@ -459,6 +500,14 @@ def search_candidates(
         load_min = int(settings.get("load_minutes") or 20)
     except (TypeError, ValueError):
         load_min = 20
+    max_candidate_count = _parse_positive_int(settings.get("max_candidate_count"), 20)
+    max_combinations_per_slot = _parse_positive_int(
+        settings.get("max_combinations_per_slot"), 300
+    )
+    search_time_limit_seconds = _parse_positive_int(
+        settings.get("search_time_limit_seconds"), 20
+    )
+    search_started_at = datetime.now(TZ)
 
     project_address = str(project.get("address", "") if project else "").strip()
     if not project_address:
@@ -550,6 +599,17 @@ def search_candidates(
 
         minutes = 0
         while minutes < 24 * 60:
+            if len(candidates) >= max_candidate_count:
+                break
+            elapsed = (datetime.now(TZ) - search_started_at).total_seconds()
+            if elapsed > search_time_limit_seconds:
+                if not warned_timeout:
+                    warnings.append(
+                        "検索時間の上限に到達したため、候補を一部のみ返しました。"
+                        "必要なら共通設定の探索条件を調整してください。"
+                    )
+                    warned_timeout = True
+                break
             slot_start = day_start + timedelta(minutes=minutes)
             slot_end = slot_start + timedelta(minutes=duration_min)
             minutes += slot_min
@@ -694,14 +754,33 @@ def search_candidates(
             if anchor_ids and not anchor_ids.issubset(set(slot_free_ids)):
                 continue
 
-            combo_list = list(combinations(sorted(slot_free_ids), headcount))
-            if anchor_ids:
-                combo_list = [c for c in combo_list if anchor_ids.issubset(set(c))]
-
-            if not combo_list:
+            pool_ids = sorted(slot_free_ids)
+            bounded_size = _bounded_worker_pool_size(
+                len(pool_ids), headcount, max_combinations_per_slot
+            )
+            if bounded_size < len(pool_ids):
+                pool_ids = pool_ids[:bounded_size]
+                if not warned_pool_bounded:
+                    warnings.append(
+                        "組み合わせ数が多いため、探索対象の職人候補を絞って高速化しています。"
+                    )
+                    warned_pool_bounded = True
+            if len(pool_ids) < headcount:
                 continue
 
-            for combo in combo_list:
+            combo_iter = combinations(pool_ids, headcount)
+            combos_checked = 0
+            for combo in combo_iter:
+                if combos_checked >= max_combinations_per_slot:
+                    if not warned_combo_truncated:
+                        warnings.append(
+                            "1枠あたりの探索上限に達したため、一部の組み合わせを省略しました。"
+                        )
+                        warned_combo_truncated = True
+                    break
+                combos_checked += 1
+                if anchor_ids and not anchor_ids.issubset(combo):
+                    continue
                 ok = True
                 worker_ids = list(combo)
                 assigned_vids = assigned_vids_slot
@@ -892,6 +971,12 @@ def search_candidates(
                         "material_extra_minutes": material_extra_val,
                     }
                 )
+                if len(candidates) >= max_candidate_count:
+                    break
+            if len(candidates) >= max_candidate_count:
+                break
+        if len(candidates) >= max_candidate_count:
+            break
 
     if not candidates:
         warnings.append(
