@@ -651,8 +651,8 @@ def search_candidates(
             if err:
                 warnings.append(f"車両 {vid} の予定取得に失敗しました: {err}")
 
-    # 「含む」職人（スロットごとに組み合わせを絞るときに利用）
-    anchor_ids: Set[str] = {str(x) for x in (must_include_worker_ids or []) if x}
+    # 含む指定は現状の候補除外には使わない（誰かが入れるなら表示する）。
+    _ = must_include_worker_ids
 
     for d in search_days:
         day_start = datetime.combine(d, time.min, tzinfo=TZ)
@@ -697,8 +697,6 @@ def search_candidates(
                     slot_free_ids.append(wid)
 
             if len(slot_free_ids) < headcount:
-                continue
-            if anchor_ids and not anchor_ids.issubset(set(slot_free_ids)):
                 continue
 
             # B: Distance Matrix をスロット単位でまとめて取得（同一 OD はキャッシュ）
@@ -814,8 +812,6 @@ def search_candidates(
 
             if len(slot_free_ids) < headcount:
                 continue
-            if anchor_ids and not anchor_ids.issubset(set(slot_free_ids)):
-                continue
 
             pool_ids = sorted(slot_free_ids)
             bounded_size = _bounded_worker_pool_size(
@@ -842,8 +838,6 @@ def search_candidates(
                         warned_combo_truncated = True
                     break
                 combos_checked += 1
-                if anchor_ids and not anchor_ids.issubset(combo):
-                    continue
                 ok = True
                 worker_ids = list(combo)
                 # 同一スロットで「前現場→現場」の移動時間を2回計算しない（検証ループの結果を表示用に再利用）

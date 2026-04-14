@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from services.calendar_service import (
+    count_completed_events_before_cached,
     delete_calendar_event,
     event_location,
     event_time_bounds,
@@ -206,6 +207,8 @@ def _insert_work_and_travel_blocks(
     travel_before_eid: Optional[str] = None
     ok_all = True
 
+    office = str((settings or {}).get("office_address") or "").strip()
+
     if addr and maps_api_key_configured():
         prev = get_previous_event_before_cached(events, slot_start_for_cache, day_start=day_start_dt)
         if _is_travel_event(prev):
@@ -271,7 +274,6 @@ def _insert_work_and_travel_blocks(
         and addr
         and maps_api_key_configured()
     ):
-        office = str((settings or {}).get("office_address") or "").strip()
         if office:
             tr = travel_duration_minutes(office, addr)
             if tr is not None and tr > 0:
@@ -356,99 +358,63 @@ def _insert_work_and_travel_blocks(
             day_start=day_start_dt,
             day_end=day_end_dt,
         )
-        if nxt:
+        nb = event_time_bounds(nxt) if nxt else None
+        ns = nb[0] if nb else None
+        ns_n = _dt_to_naive_local(ns) if ns else None
+
+        # 積載量が2件超（= 3件目以降着手）では、無条件で拠点戻りを優先
+        done_count = count_completed_events_before_cached(events, day_start_dt, slot_start_for_cache)
+        force_return_office = done_count >= 2 and bool(office)
+
+        dest = ""
+        summary = ""
+        if force_return_office:
+            dest = office
+            summary = "[移動] 現場→拠点（資材戻り）"
+        elif nxt:
             loc_n = event_location(nxt)
             if loc_n.strip():
-                tr_n = travel_duration_minutes(addr, loc_n.strip())
-                if tr_n is not None and tr_n > 0:
-                    nb = event_time_bounds(nxt)
-                    ns = nb[0] if nb else None
-                    ns_n = _dt_to_naive_local(ns) if ns else None
-                    travel_start = end_at
-                    travel_end = travel_start + timedelta(minutes=float(tr_n))
-                    if ns_n and travel_end > ns_n:
-                        travel_end = ns_n
-                    if travel_end > travel_start:
-                        desc = _travel_block_description(
-                            "[移動] 現場→次現場", addr, loc_n
-                        )
-                        ok_a, eid_a = insert_calendar_event(
-                            creds,
-                            cal_id,
-                            "[移動] 現場→次現場",
-                            travel_start,
-                            travel_end,
-                            location=loc_n.strip(),
-                            description=desc,
-                        )
-                        if ok_a:
-                            eid_after = str(eid_a).strip()
-                            if eid_after:
-                                _append_ref(
-                                    new_refs,
-                                    kind=kind,
-                                    ref_id=ref_id,
-                                    calendar_id=cal_id,
-                                    event_id=eid_after,
-                                )
-                                messages.append(
-                                    f"{label}: 移動（現場→次現場）をカレンダーに登録しました。"
-                                )
-                            else:
-                                ok_all = False
-                                messages.append(
-                                    f"{label}: 移動（現場→次現場）の登録に失敗（イベントIDが空）"
-                                )
+                dest = loc_n.strip()
+                summary = "[移動] 現場→次現場"
+        elif office:
+            dest = office
+            summary = "[移動] 現場→拠点（戻り）"
+
+        if dest:
+            tr_n = travel_duration_minutes(addr, dest)
+            if tr_n is not None and tr_n > 0:
+                travel_start = end_at
+                travel_end = travel_start + timedelta(minutes=float(tr_n))
+                if ns_n and travel_end > ns_n:
+                    travel_end = ns_n
+                if travel_end > travel_start:
+                    desc = _travel_block_description(summary, addr, dest)
+                    ok_a, eid_a = insert_calendar_event(
+                        creds,
+                        cal_id,
+                        summary,
+                        travel_start,
+                        travel_end,
+                        location=dest,
+                        description=desc,
+                    )
+                    if ok_a:
+                        eid_after = str(eid_a).strip()
+                        if eid_after:
+                            _append_ref(
+                                new_refs,
+                                kind=kind,
+                                ref_id=ref_id,
+                                calendar_id=cal_id,
+                                event_id=eid_after,
+                            )
+                            messages.append(f"{label}: 移動（現場後）をカレンダーに登録しました。")
                         else:
                             ok_all = False
-                            messages.append(
-                                f"{label}: 移動（現場→次現場）の登録に失敗 — {eid_a}"
-                            )
-        elif kind == "vehicle":
-            # 車両カレンダーに「次」予定が無い → 現場→拠点（戻り）を登録
-            office = str((settings or {}).get("office_address") or "").strip()
-            if office:
-                tr_back = travel_duration_minutes(addr, office)
-                if tr_back is not None and tr_back > 0:
-                    travel_start = end_at
-                    travel_end = travel_start + timedelta(minutes=float(tr_back))
-                    if travel_end > travel_start:
-                        desc = _travel_block_description(
-                            "[移動] 現場→拠点（戻り）", addr, office
-                        )
-                        ok_a, eid_a = insert_calendar_event(
-                            creds,
-                            cal_id,
-                            "[移動] 現場→拠点（戻り）",
-                            travel_start,
-                            travel_end,
-                            location=office,
-                            description=desc
-                            + "\n（車両カレンダーに次件が無い場合。共通設定の拠点住所を使用）",
-                        )
-                        if ok_a:
-                            eid_after = str(eid_a).strip()
-                            if eid_after:
-                                _append_ref(
-                                    new_refs,
-                                    kind=kind,
-                                    ref_id=ref_id,
-                                    calendar_id=cal_id,
-                                    event_id=eid_after,
-                                )
-                                messages.append(
-                                    f"{label}: 移動（現場→拠点）をカレンダーに登録しました。"
-                                )
-                            else:
-                                ok_all = False
-                                messages.append(
-                                    f"{label}: 移動（現場→拠点）の登録に失敗（イベントIDが空）"
-                                )
-                        else:
-                            ok_all = False
-                            messages.append(
-                                f"{label}: 移動（現場→拠点）の登録に失敗 — {eid_a}"
-                            )
+                            messages.append(f"{label}: 移動（現場後）の登録に失敗（イベントIDが空）")
+                    else:
+                        ok_all = False
+                        messages.append(f"{label}: 移動（現場後）の登録に失敗 — {eid_a}")
 
     return ok_all
 
