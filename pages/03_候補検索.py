@@ -619,7 +619,7 @@ button {
 
     with col_worker:
         st.write("職人")
-        w1, w2, w3 = st.columns([3.4, 1.4, 2.2])
+        w1, w2 = st.columns([3.8, 2.2])
         with w1:
             selected_worker_ids = st.multiselect(
                 "職人（複数選択）",
@@ -630,12 +630,6 @@ button {
                 placeholder="（指定なし）",
             )
         with w2:
-            include_mode = st.selectbox(
-                "条件",
-                options=["含む", "含まない"],
-                key="worker_include_mode",
-            )
-        with w3:
             st.multiselect(
                 "ランク絞り込み",
                 options=rank_options,
@@ -661,10 +655,18 @@ button {
     loc_ov: Dict[str, str] = st.session_state.setdefault("candidate_location_overrides", {})
 
     def _workers_filtered_by_rank(src: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        selected_workers = {
+            str(x).strip()
+            for x in (st.session_state.get("worker_multi_select") or [])
+            if str(x).strip()
+        }
         selected = {str(x).strip() for x in (st.session_state.get("worker_rank_filters") or []) if str(x).strip()}
-        if not selected:
-            return list(src)
-        return [w for w in src if str(w.get("rank") or "").strip() in selected]
+        rows = list(src)
+        if selected_workers:
+            rows = [w for w in rows if str(w.get("worker_id") or "").strip() in selected_workers]
+        if selected:
+            rows = [w for w in rows if str(w.get("rank") or "").strip() in selected]
+        return rows
 
     workers_for_search = _workers_filtered_by_rank(workers)
 
@@ -843,7 +845,6 @@ button {
         for k in (
             "candidate_search_project_select",
             "worker_multi_select",
-            "worker_include_mode",
             "worker_rank_filters",
             "candidate_search_capacity",
             "candidate_location_overrides",
@@ -958,13 +959,6 @@ button {
         # 検索ボタン／週ナビ → カレンダー1回取得＋7日分割計算（candidate_search_job ブロック）
         run_search = search_clicked or week_nav_trigger
         if run_search:
-            excluded_for_real: set = set()
-            if include_mode == "含まない" and selected_worker_ids:
-                excluded_for_real = {str(x) for x in selected_worker_ids}
-                must_include_worker_ids: List[str] = []
-            else:
-                must_include_worker_ids = selected_worker_ids
-
             st.session_state["candidate_search_job"] = {
                 "step": -1,
                 "accum": [],
@@ -972,8 +966,8 @@ button {
                 "week_start": st.session_state["candidate_calendar_week_start"],
                 "project_name": selected_project_name or "",
                 "required_capacity": required_capacity,
-                "excluded": list(excluded_for_real),
-                "must_include": list(must_include_worker_ids),
+                "excluded": [],
+                "must_include": [],
             }
             st.rerun()
         else:

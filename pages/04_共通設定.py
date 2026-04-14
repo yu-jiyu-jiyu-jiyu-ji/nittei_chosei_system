@@ -412,7 +412,12 @@ def _render_worker_tab() -> None:
             st.info("職人が登録されていません。")
         else:
             for w in workers:
-                with st.expander(f"{w.get('worker_id')} - {w.get('name')} {'(無効)' if not w.get('is_active') else ''}"):
+                _rank = str(w.get("rank") or "").strip()
+                _rank_badge = f" [{_rank}]" if _rank else " [ランク未設定]"
+                with st.expander(
+                    f"{w.get('worker_id')} - {w.get('name')}{_rank_badge} "
+                    f"{'(無効)' if not w.get('is_active') else ''}"
+                ):
                     col1, col2, col_btn = st.columns([2, 2, 1])
                     with col1:
                         st.write(f"**職人ID**: {w.get('worker_id')}")
