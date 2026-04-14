@@ -67,6 +67,7 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
 
     edit_key = f"project_detail_edit_{project.get('project_id')}"
     is_edit_mode = st.session_state.get(edit_key, False)
+    processing_key = f"project_detail_processing_{project.get('project_id')}"
 
     @st.dialog("案件詳細")
     def _show_project_detail() -> None:
@@ -74,6 +75,9 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
 
         if not is_edit_mode:
             # 表示モード
+            processing = bool(st.session_state.get(processing_key, False))
+            if processing:
+                st.info("処理中です。しばらくお待ちください…")
             st.write(f"**案件ID**：{project.get('project_id', '-')}")
             st.write(f"**案件名**：{project.get('project_name', '-')}")
             st.write(f"**顧客名**：{project.get('customer_name', '-')}")
@@ -109,7 +113,13 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
                 if st.button(
                     "予定を取り消す（Googleカレンダー削除＋案件の予定日時もクリア）",
                     key=f"project_clear_schedule_{pid}",
+                    disabled=processing,
                 ):
+                    st.session_state[processing_key] = True
+                    st.rerun()
+
+            if st.session_state.get(processing_key, False):
+                with st.spinner("予定を取り消しています…"):
                     try:
                         wk = list_workers()
                         vc = list_vehicles()
@@ -131,6 +141,7 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
                     except Exception as exc:
                         st.error("予定の取り消し中にエラーが発生しました。")
                         st.exception(exc)
+                        st.session_state.pop(processing_key, None)
                     else:
                         for m in msgs_c:
                             st.info(m)
@@ -139,24 +150,28 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
                                 del st.session_state["project_detail_id"]
                             if edit_key in st.session_state:
                                 del st.session_state[edit_key]
+                            st.session_state.pop(processing_key, None)
                             st.rerun()
+                        st.session_state.pop(processing_key, None)
 
             col_edit, col_del, col_close = st.columns(3)
             with col_edit:
-                if st.button("編集", key="project_dialog_edit"):
+                if st.button("編集", key="project_dialog_edit", disabled=processing):
                     st.session_state[edit_key] = True
                     st.rerun()
             with col_del:
-                if st.button("削除", key="project_dialog_delete"):
+                if st.button("削除", key="project_dialog_delete", disabled=processing):
                     st.session_state["pending_delete_project_id"] = str(project.get("project_id") or "")
                     st.session_state.pop("project_detail_id", None)
+                    st.session_state.pop(processing_key, None)
                     st.rerun()
             with col_close:
-                if st.button("閉じる", key="project_dialog_close"):
+                if st.button("閉じる", key="project_dialog_close", disabled=processing):
                     if "project_detail_id" in st.session_state:
                         del st.session_state["project_detail_id"]
                     if edit_key in st.session_state:
                         del st.session_state[edit_key]
+                    st.session_state.pop(processing_key, None)
                     st.rerun()
         else:
             # 編集モード
