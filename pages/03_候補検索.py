@@ -585,11 +585,20 @@ button {
         else:
             st.session_state["candidate_search_capacity"] = 0
 
-    worker_label_to_id = {
-        f"{w['name']} [{str(w.get('rank') or '-')}]" if str(w.get("rank") or "").strip() else w["name"]: w["worker_id"]
-        for w in workers
-    }
-    worker_names = list(worker_label_to_id.keys())
+    worker_options: List[Dict[str, str]] = []
+    for w in workers:
+        wid = str(w.get("worker_id") or "")
+        wname = str(w.get("name") or wid)
+        wrank = str(w.get("rank") or "").strip()
+        rank_label = wrank if wrank else "ランク未設定"
+        worker_options.append(
+            {
+                "value": wid,
+                "label": f"{wname} [{rank_label}]",
+            }
+        )
+    worker_value_to_label = {o["value"]: o["label"] for o in worker_options}
+    worker_values = [o["value"] for o in worker_options]
     rank_options_raw = settings.get("worker_ranks") or []
     rank_options = [str(x).strip() for x in rank_options_raw if str(x).strip()] if isinstance(rank_options_raw, list) else []
 
@@ -610,35 +619,30 @@ button {
 
     with col_worker:
         st.write("職人")
-        w1, w2, w3 = st.columns([2.4, 1.6, 2.8])
+        w1, w2, w3 = st.columns([3.4, 1.4, 2.2])
         with w1:
-            selected_worker_name = st.selectbox(
-                " ",
-                options=[""] + worker_names,
-                format_func=lambda v: v if v else "（指定なし）",
-                label_visibility="collapsed",
-                key="worker_single_select",
+            selected_worker_ids = st.multiselect(
+                "職人（複数選択）",
+                options=worker_values,
+                default=st.session_state.get("worker_multi_select", []),
+                key="worker_multi_select",
+                format_func=lambda v: worker_value_to_label.get(v, v),
+                placeholder="（指定なし）",
             )
         with w2:
             include_mode = st.selectbox(
-                " ",
+                "条件",
                 options=["含む", "含まない"],
-                label_visibility="collapsed",
                 key="worker_include_mode",
             )
         with w3:
             st.multiselect(
-                " ",
+                "ランク絞り込み",
                 options=rank_options,
                 default=st.session_state.get("worker_rank_filters", []),
                 key="worker_rank_filters",
-                label_visibility="collapsed",
                 placeholder="ランク絞り込み（複数選択）",
             )
-
-        selected_worker_ids: List[str] = (
-            [worker_label_to_id[selected_worker_name]] if selected_worker_name else []
-        )
 
     with col_buttons:
         st.write("")
@@ -838,7 +842,7 @@ button {
     if clear_clicked:
         for k in (
             "candidate_search_project_select",
-            "worker_single_select",
+            "worker_multi_select",
             "worker_include_mode",
             "worker_rank_filters",
             "candidate_search_capacity",
