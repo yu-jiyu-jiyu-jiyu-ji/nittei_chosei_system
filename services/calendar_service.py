@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -55,6 +56,17 @@ def _format_calendar_http_error(exc: HttpError) -> str:
     return f"Calendar API エラー: {msg}"
 
 
+def _format_credentials_error(exc: Exception) -> str:
+    """OAuth リフレッシュ失敗など認証系エラーをユーザー向けに整形する。"""
+    low = str(exc).lower()
+    if isinstance(exc, RefreshError) or "invalid_grant" in low:
+        return (
+            "Google カレンダー連携のトークン更新に失敗しました（invalid_grant）。"
+            "該当アカウントの連携をやり直してください。"
+        )
+    return str(exc)
+
+
 def list_events_in_range(
     creds: Credentials,
     calendar_id: str,
@@ -62,12 +74,12 @@ def list_events_in_range(
     time_max: datetime,
 ) -> List[Dict[str, Any]]:
     """指定期間の予定一覧（終日は除外しない。簡易）."""
-    svc = _service(creds)
-    tmin = time_min.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    tmax = time_max.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    events: List[Dict[str, Any]] = []
-    page_token = None
     try:
+        svc = _service(creds)
+        tmin = time_min.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        tmax = time_max.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        events: List[Dict[str, Any]] = []
+        page_token = None
         while True:
             resp = (
                 svc.events()
@@ -88,6 +100,9 @@ def list_events_in_range(
             if not page_token:
                 break
     except HttpError:
+        return []
+    except Exception:
+        # 認証切れ（invalid_grant）等は「予定なし」として扱い、画面全体のクラッシュを防ぐ。
         return []
     return events
 
@@ -287,7 +302,6 @@ def insert_calendar_event(
         end = end.replace(tzinfo=tz)
     else:
         end = end.astimezone(tz)
-    svc = _service(creds)
     body: Dict[str, Any] = {
         "summary": summary,
         "location": location or "",
@@ -302,6 +316,7 @@ def insert_calendar_event(
         },
     }
     try:
+        svc = _service(creds)
         resp = (
             svc.events()
             .insert(calendarId=calendar_id.strip(), body=body)
@@ -312,7 +327,7 @@ def insert_calendar_event(
     except HttpError as e:
         return False, _format_calendar_http_error(e)
     except Exception as e:
-        return False, str(e)
+        return False, _format_credentials_error(e)
 
 
 def delete_calendar_event(
@@ -323,8 +338,8 @@ def delete_calendar_event(
     """Google カレンダーの予定を1件削除する。404 は既に削除済みとみなして成功。"""
     if not calendar_id.strip() or not str(event_id).strip():
         return False, "カレンダーIDまたはイベントIDが空です。"
-    svc = _service(creds)
     try:
+        svc = _service(creds)
         (
             svc.events()
             .delete(calendarId=calendar_id.strip(), eventId=str(event_id).strip())
@@ -336,4 +351,4 @@ def delete_calendar_event(
             return True, ""
         return False, _format_calendar_http_error(e)
     except Exception as e:
-        return False, str(e)
+        return False, _format_credentials_error(e)
