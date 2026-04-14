@@ -542,6 +542,10 @@ button {
             st.error("車両一覧の取得中に想定外エラーが発生しました。")
             st.exception(exc)
             return
+    try:
+        settings = get_settings()
+    except FirestoreConnectionError:
+        settings = {}
 
     # ----------------------------
     # 上部：検索条件（画像UIの再現）
@@ -581,13 +585,18 @@ button {
         else:
             st.session_state["candidate_search_capacity"] = 0
 
-    worker_label_to_id = {w["name"]: w["worker_id"] for w in workers}
+    worker_label_to_id = {
+        f"{w['name']} [{str(w.get('rank') or '-')}]" if str(w.get("rank") or "").strip() else w["name"]: w["worker_id"]
+        for w in workers
+    }
     worker_names = list(worker_label_to_id.keys())
+    rank_options_raw = settings.get("worker_ranks") or []
+    rank_options = [str(x).strip() for x in rank_options_raw if str(x).strip()] if isinstance(rank_options_raw, list) else []
 
     # 画像では「職人  Aさん  を含む」のイメージなので、職人は単一選択（未選択可）＋含む/含まない
     # 条件行をラップして横並び指定用のクラスを付与
     st.markdown('<div class="nowrap-row">', unsafe_allow_html=True)
-    col_cap, col_worker, col_buttons = st.columns([2.2, 4.8, 2.0])
+    col_cap, col_worker, col_buttons = st.columns([2.2, 5.6, 1.2])
     with col_cap:
         st.write("人数")
         # text_input と別キーで上書きされていたため ± が効かなかった。number_input で同一キーに統一する。
@@ -601,7 +610,7 @@ button {
 
     with col_worker:
         st.write("職人")
-        w1, w2 = st.columns([3.0, 2.0])
+        w1, w2, w3 = st.columns([2.4, 1.6, 2.8])
         with w1:
             selected_worker_name = st.selectbox(
                 " ",
@@ -616,6 +625,15 @@ button {
                 options=["含む", "含まない"],
                 label_visibility="collapsed",
                 key="worker_include_mode",
+            )
+        with w3:
+            st.multiselect(
+                " ",
+                options=rank_options,
+                default=st.session_state.get("worker_rank_filters", []),
+                key="worker_rank_filters",
+                label_visibility="collapsed",
+                placeholder="ランク絞り込み（複数選択）",
             )
 
         selected_worker_ids: List[str] = (
@@ -638,6 +656,14 @@ button {
     required_capacity = int(st.session_state.get("candidate_search_capacity", 0))
     loc_ov: Dict[str, str] = st.session_state.setdefault("candidate_location_overrides", {})
 
+    def _workers_filtered_by_rank(src: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        selected = {str(x).strip() for x in (st.session_state.get("worker_rank_filters") or []) if str(x).strip()}
+        if not selected:
+            return list(src)
+        return [w for w in src if str(w.get("rank") or "").strip() in selected]
+
+    workers_for_search = _workers_filtered_by_rank(workers)
+
     # 分割検索: ①カレンダーAPIは週1回 ②以降は同一データで1日ずつ計算（タイムアウトしにくく、以前の7倍取得もしない）
     cjob = st.session_state.get("candidate_search_job")
     if cjob is not None:
@@ -659,7 +685,7 @@ button {
             with st.spinner("カレンダー取得中…"):
                 bundle, wpre = fetch_week_calendar_events_bundle(
                     project=proj_job,
-                    workers=workers,
+                    workers=workers_for_search,
                     vehicles=vehicles,
                     settings=settings_job,
                     ui_capacity=cap_job,
@@ -684,7 +710,7 @@ button {
             with st.spinner(f"検索中…（{step + 1}/7日）"):
                 part, warns = search_candidates(
                     project=proj_job,
-                    workers=workers,
+                    workers=workers_for_search,
                     vehicles=vehicles,
                     settings=settings_job,
                     ui_capacity=cap_job,
@@ -716,7 +742,7 @@ button {
     if selected_project:
         missing_prev = collect_missing_previous_locations(
             project=selected_project,
-            workers=workers,
+            workers=workers_for_search,
             ui_capacity=required_capacity,
             session_tokens=st.session_state.get("google_calendar_tokens"),
             location_overrides=loc_ov,
@@ -814,6 +840,7 @@ button {
             "candidate_search_project_select",
             "worker_single_select",
             "worker_include_mode",
+            "worker_rank_filters",
             "candidate_search_capacity",
             "candidate_location_overrides",
         ):

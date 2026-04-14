@@ -109,6 +109,9 @@ def _render_common_settings_tab() -> None:
             f"**候補最大件数（保存値・将来用）**：{settings.get('max_candidate_count', '-')}"
         )
         st.caption("候補検索は条件を満たす空き枠をすべて列挙します（件数上限はかけていません）。")
+        ranks = settings.get("worker_ranks") or []
+        if isinstance(ranks, list):
+            st.write(f"**職人ランク候補**：{'、'.join(str(x) for x in ranks if str(x).strip()) or '-'}")
 
         st.subheader("就業時間（候補検索）")
         st.write(
@@ -185,6 +188,17 @@ def _render_common_settings_tab() -> None:
                 value=int(settings.get("max_candidate_count", 20)),
                 key="form_max_candidate_count",
                 help="検索結果は現状、上限なくすべて表示します。",
+            )
+            ranks_raw = settings.get("worker_ranks") or []
+            if isinstance(ranks_raw, list):
+                ranks_text_default = "\n".join(str(x) for x in ranks_raw if str(x).strip())
+            else:
+                ranks_text_default = str(ranks_raw or "")
+            worker_ranks_text = st.text_area(
+                "職人ランク候補（1行1つ）",
+                value=ranks_text_default,
+                key="form_worker_ranks",
+                help="候補検索のランク絞り込み・職人マスタ登録に使う候補値です。",
             )
 
             st.subheader("就業時間（候補検索）")
@@ -273,6 +287,11 @@ def _render_common_settings_tab() -> None:
                         "search_range_days": search_range_days,
                         "time_slot_minutes": time_slot_minutes,
                         "max_candidate_count": max_candidate_count,
+                        "worker_ranks": [
+                            r.strip()
+                            for r in str(worker_ranks_text).splitlines()
+                            if r.strip()
+                        ],
                         "work_hours_start": work_hours_start,
                         "work_hours_end": work_hours_end,
                         "recalc_travel_on_commit": recalc_travel_on_commit,
@@ -300,6 +319,7 @@ def _render_worker_tab() -> None:
     """職人マスタタブ（表示→編集/新規追加ボタンで編集モードへ）."""
     try:
         workers = list_workers()
+        settings = get_settings()
     except FirestoreConnectionError:
         st.error(DB_UNAVAILABLE_MESSAGE)
         return
@@ -307,6 +327,8 @@ def _render_worker_tab() -> None:
         st.error("職人一覧の取得中に想定外エラーが発生しました。")
         st.exception(exc)
         return
+    ranks_cfg_raw = settings.get("worker_ranks") or []
+    rank_options = [str(x).strip() for x in ranks_cfg_raw if str(x).strip()] if isinstance(ranks_cfg_raw, list) else []
 
     with st.expander("Google カレンダー連携（職人・OAuth）", expanded=False):
         st.caption(
@@ -395,6 +417,7 @@ def _render_worker_tab() -> None:
                     with col1:
                         st.write(f"**職人ID**: {w.get('worker_id')}")
                         st.write(f"**職人名**: {w.get('name')}")
+                        st.write(f"**ランク**: {w.get('rank') or '-'}")
                         st.write(f"**メール**: {w.get('email') or '-'}")
                         st.write(f"**GoogleカレンダーID**: {w.get('calendar_id')}")
                     with col2:
@@ -426,6 +449,18 @@ def _render_worker_tab() -> None:
 
         with st.form(key="worker_form"):
             name = st.text_input("職人名*", value=existing.get("name", "") if existing else "", key="worker_name")
+            existing_rank = str(existing.get("rank", "") if existing else "").strip()
+            rank_select_options = [""] + rank_options
+            if existing_rank and existing_rank not in rank_select_options:
+                rank_select_options.append(existing_rank)
+            rank_default_idx = rank_select_options.index(existing_rank) if existing_rank in rank_select_options else 0
+            rank = st.selectbox(
+                "ランク",
+                options=rank_select_options,
+                index=rank_default_idx,
+                format_func=lambda v: v if v else "（未設定）",
+                key="worker_rank",
+            )
             email = st.text_input(
                 "メール（OAuth 案内用・任意）",
                 value=existing.get("email", "") if existing else "",
@@ -465,6 +500,7 @@ def _render_worker_tab() -> None:
                 try:
                     data = {
                         "name": name,
+                        "rank": str(rank or "").strip(),
                         "email": (email or "").strip(),
                         "calendar_id": calendar_id,
                         "is_active": is_active,

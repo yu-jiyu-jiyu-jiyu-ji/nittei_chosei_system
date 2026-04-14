@@ -29,6 +29,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "traffic_buffer_evening_end": "19:00",
     "work_hours_start": "07:00",
     "work_hours_end": "19:00",
+    "worker_ranks": ["A", "B", "C"],
     "recalc_travel_on_commit": False,
     "google_vehicle_refresh_token": "",
 }

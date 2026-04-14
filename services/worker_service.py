@@ -64,6 +64,7 @@ def create_worker(data: Dict[str, Any]) -> Dict[str, Any]:
             "email": str(data.get("email", "")).strip(),
             "calendar_id": str(data.get("calendar_id", "")).strip(),
             "is_active": bool(data.get("is_active", True)),
+            "rank": str(data.get("rank", "")).strip(),
             "role": str(data.get("role", "")).strip(),
             "note": str(data.get("note", "")).strip(),
             "display_order": int(data.get("display_order", 0)),

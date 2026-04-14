@@ -772,9 +772,9 @@ def commit_candidate_to_calendars(
                     )
                 )
 
-        # オプション: 影響範囲（当日）の移動ブロックを再計算して張り直す
-        recalc_travel = bool((settings or {}).get("recalc_travel_on_commit"))
-        if recalc_travel:
+        # 職人はオプション、車両は常時で当日の移動ブロックを再計算して張り直す
+        recalc_workers = bool((settings or {}).get("recalc_travel_on_commit"))
+        if recalc_workers:
             for wid in candidate.get("worker_ids") or []:
                 w = worker_by_id.get(str(wid))
                 if not w:
@@ -792,25 +792,25 @@ def commit_candidate_to_calendars(
                     target_day=start_at,
                     messages=messages,
                 )
-            for vid in candidate.get("vehicle_ids") or []:
-                v = vehicle_by_id.get(str(vid))
-                if not v:
-                    continue
-                cal_id = str(v.get("calendar_id") or "").strip()
-                if not cal_id:
-                    continue
-                creds = _vehicle_calendar_credentials(
-                    v, session_tokens, settings, vehicle_fleet_session
-                )
-                if not creds:
-                    continue
-                _rebuild_travel_blocks_for_day(
-                    creds=creds,
-                    cal_id=cal_id,
-                    label=f"車両 {v.get('name', vid)}",
-                    target_day=start_at,
-                    messages=messages,
-                )
+        for vid in candidate.get("vehicle_ids") or []:
+            v = vehicle_by_id.get(str(vid))
+            if not v:
+                continue
+            cal_id = str(v.get("calendar_id") or "").strip()
+            if not cal_id:
+                continue
+            creds = _vehicle_calendar_credentials(
+                v, session_tokens, settings, vehicle_fleet_session
+            )
+            if not creds:
+                continue
+            _rebuild_travel_blocks_for_day(
+                creds=creds,
+                cal_id=cal_id,
+                label=f"車両 {v.get('name', vid)}",
+                target_day=start_at,
+                messages=messages,
+            )
     elif project.get("google_calendar_event_refs"):
         messages.append(
             "※ 登録がすべて成功しなかったため、Google 上の「以前の予定」は自動削除していません。"
