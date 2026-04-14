@@ -297,6 +297,7 @@ def insert_calendar_event(
     location: str = "",
     description: str = "",
     tz_name: str = "Asia/Tokyo",
+    attendees: Optional[List[str]] = None,
 ) -> Tuple[bool, str]:
     """Google カレンダーに予定を1件追加する。戻り値は (成功, メッセージまたは event_id).
 
@@ -326,6 +327,17 @@ def insert_calendar_event(
             "timeZone": tz_name,
         },
     }
+    if attendees:
+        uniq = []
+        seen = set()
+        for a in attendees:
+            ea = str(a or "").strip()
+            if not ea or ea in seen:
+                continue
+            seen.add(ea)
+            uniq.append({"email": ea})
+        if uniq:
+            body["attendees"] = uniq
     try:
         svc = _service(creds)
         resp = (

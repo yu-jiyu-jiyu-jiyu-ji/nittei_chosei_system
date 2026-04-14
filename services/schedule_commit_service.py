@@ -185,6 +185,7 @@ def _insert_work_and_travel_blocks(
     new_refs: List[Dict[str, Any]],
     candidate: Optional[Dict[str, Any]] = None,
     settings: Optional[Dict[str, Any]] = None,
+    attendee_emails: Optional[List[str]] = None,
 ) -> bool:
     """現場の前後に移動ブロックを挟んで登録する（職人・車両の両カレンダーで共通）.
 
@@ -243,6 +244,7 @@ def _insert_work_and_travel_blocks(
                                 tr_end,
                                 location=addr,
                                 description=desc,
+                                attendees=attendee_emails,
                             )
                             if ok_t:
                                 travel_before_eid = str(eid_t).strip()
@@ -299,6 +301,7 @@ def _insert_work_and_travel_blocks(
                     tr_end,
                     location=addr,
                     description=desc,
+                    attendees=attendee_emails,
                 )
                 if ok_t:
                     eid_fb = str(eid_t).strip()
@@ -333,6 +336,7 @@ def _insert_work_and_travel_blocks(
         end_at,
         location=addr,
         description=work_description,
+        attendees=attendee_emails,
     )
     if not ok_w:
         if travel_before_eid:
@@ -397,6 +401,7 @@ def _insert_work_and_travel_blocks(
                         travel_end,
                         location=dest,
                         description=desc,
+                        attendees=attendee_emails,
                     )
                     if ok_a:
                         eid_after = str(eid_a).strip()
@@ -437,6 +442,37 @@ def _description_with_candidate_extras(
         except (TypeError, ValueError):
             pass
     return "\n".join(parts)
+
+
+def _cleanup_stale_travel_near_slot(
+    *,
+    creds: Any,
+    cal_id: str,
+    start_at: datetime,
+    end_at: datetime,
+    keep_event_ids: set[str],
+) -> List[str]:
+    """対象枠近傍の古い移動イベントを削除する。"""
+    msgs: List[str] = []
+    win_start = start_at - timedelta(hours=6)
+    win_end = end_at + timedelta(hours=6)
+    events = list_events_in_range(
+        creds,
+        cal_id,
+        win_start.replace(tzinfo=TZ),
+        win_end.replace(tzinfo=TZ),
+    )
+    for ev in events:
+        summary = str(ev.get("summary") or "")
+        if not summary.startswith("[移動]"):
+            continue
+        eid = str(ev.get("id") or "").strip()
+        if not eid or eid in keep_event_ids:
+            continue
+        ok, err = delete_calendar_event(creds, cal_id, eid)
+        if not ok:
+            msgs.append(f"古い移動の削除失敗: {err}")
+    return msgs
 
 
 def _delete_stored_calendar_events(
@@ -563,6 +599,19 @@ def commit_candidate_to_calendars(
     """
     worker_by_id = {str(w.get("worker_id")): w for w in workers}
     vehicle_by_id = {str(v.get("vehicle_id")): v for v in vehicles}
+    all_attendee_emails: List[str] = []
+    for wid in candidate.get("worker_ids") or []:
+        w = worker_by_id.get(str(wid))
+        if w:
+            em = str(w.get("email") or "").strip()
+            if em:
+                all_attendee_emails.append(em)
+    for vid in candidate.get("vehicle_ids") or []:
+        v = vehicle_by_id.get(str(vid))
+        if v:
+            em = str(v.get("email") or "").strip()
+            if em:
+                all_attendee_emails.append(em)
 
     start_at: datetime = candidate["start_at"]
     end_at: datetime = candidate.get("end_at") or start_at
@@ -624,6 +673,7 @@ def commit_candidate_to_calendars(
             new_refs=new_refs,
             candidate=candidate,
             settings=settings,
+            attendee_emails=all_attendee_emails,
         )
         if ok_entity:
             any_calendar_registered = True
@@ -664,6 +714,7 @@ def commit_candidate_to_calendars(
             new_refs=new_refs,
             candidate=candidate,
             settings=settings,
+            attendee_emails=all_attendee_emails,
         )
         if ok_entity:
             any_calendar_registered = True
@@ -685,6 +736,41 @@ def commit_candidate_to_calendars(
             vehicle_fleet_session=vehicle_fleet_session,
         )
         messages.extend(del_msgs)
+
+        # 直近枠の古い移動ブロックを掃除（過去残骸の重複表示を防ぐ）
+        keep_ids = {str(r.get("event_id") or "") for r in new_refs if str(r.get("event_id") or "")}
+        for wid in candidate.get("worker_ids") or []:
+            w = worker_by_id.get(str(wid))
+            if not w:
+                continue
+            cal_id = str(w.get("calendar_id") or "").strip()
+            creds = _worker_credentials(w, session_tokens)
+            if cal_id and creds:
+                messages.extend(
+                    _cleanup_stale_travel_near_slot(
+                        creds=creds,
+                        cal_id=cal_id,
+                        start_at=start_at,
+                        end_at=end_at,
+                        keep_event_ids=keep_ids,
+                    )
+                )
+        for vid in candidate.get("vehicle_ids") or []:
+            v = vehicle_by_id.get(str(vid))
+            if not v:
+                continue
+            cal_id = str(v.get("calendar_id") or "").strip()
+            creds = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
+            if cal_id and creds:
+                messages.extend(
+                    _cleanup_stale_travel_near_slot(
+                        creds=creds,
+                        cal_id=cal_id,
+                        start_at=start_at,
+                        end_at=end_at,
+                        keep_event_ids=keep_ids,
+                    )
+                )
 
         # オプション: 影響範囲（当日）の移動ブロックを再計算して張り直す
         recalc_travel = bool((settings or {}).get("recalc_travel_on_commit"))

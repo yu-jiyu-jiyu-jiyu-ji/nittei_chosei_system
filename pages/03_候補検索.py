@@ -1116,30 +1116,46 @@ button {
                 mex = target.get("material_extra_minutes")
                 if mex is not None and float(mex) > 0:
                     st.caption(f"資材ルールによる追加拘束の目安: 約{float(mex):.0f}分")
+                processing_key = f"dialog_decide_processing_{dcid}"
+                processing = bool(st.session_state.get(processing_key, False))
+                if processing:
+                    st.info("処理中です。しばらくお待ちください…")
                 col_close, col_decide = st.columns(2)
                 with col_close:
-                    if st.button("閉じる", key=f"dialog_close_{dcid}"):
+                    if st.button("閉じる", key=f"dialog_close_{dcid}", disabled=processing):
                         st.session_state.pop("candidate_dialog_id", None)
                         st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
+                        st.session_state.pop(processing_key, None)
                         st.rerun()
                 with col_decide:
-                    if st.button("決定", type="primary", key=f"dialog_decide_{dcid}"):
-                        if not selected_project:
-                            st.error(
-                                "案件が選択されていません。上部で案件を選んでから確定してください。"
-                            )
-                            return
-                        gcal_tok = st.session_state.get("google_calendar_tokens") or {}
-                        vf_sess = (
-                            gcal_tok.get("vehicle_fleet")
-                            if isinstance(gcal_tok, dict)
-                            else None
+                    if st.button(
+                        "決定",
+                        type="primary",
+                        key=f"dialog_decide_{dcid}",
+                        disabled=processing,
+                    ):
+                        st.session_state[processing_key] = True
+                        st.rerun()
+
+                if processing:
+                    if not selected_project:
+                        st.error(
+                            "案件が選択されていません。上部で案件を選んでから確定してください。"
                         )
-                        try:
-                            settings_for_commit = get_settings()
-                        except FirestoreConnectionError:
-                            settings_for_commit = {}
-                        try:
+                        st.session_state.pop(processing_key, None)
+                        return
+                    gcal_tok = st.session_state.get("google_calendar_tokens") or {}
+                    vf_sess = (
+                        gcal_tok.get("vehicle_fleet")
+                        if isinstance(gcal_tok, dict)
+                        else None
+                    )
+                    try:
+                        settings_for_commit = get_settings()
+                    except FirestoreConnectionError:
+                        settings_for_commit = {}
+                    try:
+                        with st.spinner("カレンダーへ登録中…"):
                             ok, msgs, save_project_schedule, new_event_refs = (
                                 commit_candidate_to_calendars(
                                     project=selected_project,
@@ -1151,53 +1167,64 @@ button {
                                     vehicle_fleet_session=vf_sess,
                                 )
                             )
-                        except Exception as exc:
-                            st.error("カレンダー登録中にエラーが発生しました。")
-                            st.exception(exc)
-                            return
-                        with st.expander("登録結果", expanded=True):
-                            for m in msgs:
-                                st.write(m)
-                        if not save_project_schedule:
-                            return
-                        tz = ZoneInfo("Asia/Tokyo")
-                        sa = start_at_d
-                        ea = end_at_d
-                        if sa.tzinfo is None:
-                            sa = sa.replace(tzinfo=tz)
-                        else:
-                            sa = sa.astimezone(tz)
-                        if ea.tzinfo is None:
-                            ea = ea.replace(tzinfo=tz)
-                        else:
-                            ea = ea.astimezone(tz)
-                        try:
-                            patch_fields: Dict[str, Any] = {
-                                "scheduled_start_at": sa.isoformat(),
-                                "scheduled_end_at": ea.isoformat(),
-                            }
-                            # 全カレンダー登録成功時のみイベントIDを保存（部分成功で上書きすると不整合）
-                            if ok:
-                                patch_fields["google_calendar_event_refs"] = new_event_refs
-                            patch_project_fields(
-                                str(selected_project["project_id"]),
-                                patch_fields,
-                                current_user_name=st.session_state.get("current_user_name"),
+                    except Exception as exc:
+                        st.error("カレンダー登録中にエラーが発生しました。")
+                        st.exception(exc)
+                        st.session_state.pop(processing_key, None)
+                        return
+                    if msgs:
+                        st.session_state["candidate_search_warnings_flash"] = list(
+                            dict.fromkeys(
+                                (st.session_state.get("candidate_search_warnings_flash") or [])
+                                + msgs
                             )
-                        except FirestoreSaveError as e:
-                            st.error(f"案件の保存に失敗しました: {e}")
-                            return
-                        except FirestoreConnectionError:
-                            st.error(DB_UNAVAILABLE_MESSAGE)
-                            return
-                        st.session_state["schedule_commit_notice"] = (
-                            "カレンダーに予定を登録し、案件に予定日時を保存しました。"
-                            if ok
-                            else "一部のカレンダー登録に失敗しました。成功した内容を反映し、案件に予定日時を保存しました。"
                         )
+                    if not save_project_schedule:
+                        st.session_state.pop(processing_key, None)
                         st.session_state.pop("candidate_dialog_id", None)
                         st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
                         st.rerun()
+                    tz = ZoneInfo("Asia/Tokyo")
+                    sa = start_at_d
+                    ea = end_at_d
+                    if sa.tzinfo is None:
+                        sa = sa.replace(tzinfo=tz)
+                    else:
+                        sa = sa.astimezone(tz)
+                    if ea.tzinfo is None:
+                        ea = ea.replace(tzinfo=tz)
+                    else:
+                        ea = ea.astimezone(tz)
+                    try:
+                        patch_fields: Dict[str, Any] = {
+                            "scheduled_start_at": sa.isoformat(),
+                            "scheduled_end_at": ea.isoformat(),
+                        }
+                        # 全カレンダー登録成功時のみイベントIDを保存（部分成功で上書きすると不整合）
+                        if ok:
+                            patch_fields["google_calendar_event_refs"] = new_event_refs
+                        patch_project_fields(
+                            str(selected_project["project_id"]),
+                            patch_fields,
+                            current_user_name=st.session_state.get("current_user_name"),
+                        )
+                    except FirestoreSaveError as e:
+                        st.error(f"案件の保存に失敗しました: {e}")
+                        st.session_state.pop(processing_key, None)
+                        return
+                    except FirestoreConnectionError:
+                        st.error(DB_UNAVAILABLE_MESSAGE)
+                        st.session_state.pop(processing_key, None)
+                        return
+                    st.session_state["schedule_commit_notice"] = (
+                        "カレンダーに予定を登録し、案件に予定日時を保存しました。"
+                        if ok
+                        else "一部のカレンダー登録に失敗しました。成功した内容を反映し、案件に予定日時を保存しました。"
+                    )
+                    st.session_state.pop(processing_key, None)
+                    st.session_state.pop("candidate_dialog_id", None)
+                    st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
+                    st.rerun()
 
             _show_candidate_detail()
 
