@@ -722,11 +722,13 @@ button {
                     by_eid[str(m["event_id"])].append(m)
                 for eid, rows in by_eid.items():
                     summ = (rows[0].get("event_summary") or "")[:40] or eid
-                    es = rows[0].get("event_start_at")
-                    ee = rows[0].get("event_end_at")
-                    when = ""
-                    if isinstance(es, datetime) and isinstance(ee, datetime):
-                        when = f"（{es.strftime('%m/%d %H:%M')}〜{ee.strftime('%H:%M')}）"
+                    when_text = str(rows[0].get("event_when_text") or "").strip()
+                    if not when_text:
+                        es = rows[0].get("event_start_at")
+                        ee = rows[0].get("event_end_at")
+                        if isinstance(es, datetime) and isinstance(ee, datetime):
+                            when_text = f"{es.strftime('%m/%d %H:%M')}〜{ee.strftime('%H:%M')}"
+                    when = f"（{when_text}）" if when_text else ""
                     if len(rows) > 1:
                         names = "、".join(str(r.get("worker_name", "")) for r in rows)
                         st.write(f"**{names}** さんの前予定「{summ}」{when} に住所がありません。")

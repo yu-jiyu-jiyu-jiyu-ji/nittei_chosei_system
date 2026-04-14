@@ -1191,6 +1191,20 @@ def collect_missing_previous_locations(
     seen_event: Set[str] = set()
     loc_ov = location_overrides or {}
 
+    def _event_when_text(ev: Dict[str, Any]) -> str:
+        b = event_time_bounds(ev)
+        if b:
+            s = b[0].astimezone(TZ)
+            e = b[1].astimezone(TZ)
+            return f"{s.strftime('%m/%d %H:%M')}〜{e.strftime('%H:%M')}"
+        sraw = ((ev.get("start") or {}).get("dateTime") or (ev.get("start") or {}).get("date") or "").strip()
+        eraw = ((ev.get("end") or {}).get("dateTime") or (ev.get("end") or {}).get("date") or "").strip()
+        if sraw and eraw:
+            return f"{sraw}〜{eraw}"
+        if sraw:
+            return sraw
+        return "日時不明"
+
     for w in ready:
         wid = str(w["worker_id"])
         cal_id = str(w.get("calendar_id") or "").strip()
@@ -1226,6 +1240,7 @@ def collect_missing_previous_locations(
                         if bprev
                         else None
                     ),
+                    "event_when_text": _event_when_text(prev),
                     "override_key": key,
                 }
             )
