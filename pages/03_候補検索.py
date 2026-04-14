@@ -618,24 +618,29 @@ button {
         )
 
     with col_worker:
-        st.write("職人")
         w1, w2 = st.columns([3.8, 2.2])
         with w1:
+            st.write("職人")
+        with w2:
+            st.write("ランク絞り込み")
+        with w1:
             selected_worker_ids = st.multiselect(
-                "職人（複数選択）",
+                " ",
                 options=worker_values,
                 default=st.session_state.get("worker_multi_select", []),
                 key="worker_multi_select",
                 format_func=lambda v: worker_value_to_label.get(v, v),
                 placeholder="（指定なし）",
+                label_visibility="collapsed",
             )
         with w2:
             st.multiselect(
-                "ランク絞り込み",
+                " ",
                 options=rank_options,
                 default=st.session_state.get("worker_rank_filters", []),
                 key="worker_rank_filters",
                 placeholder="ランク絞り込み（複数選択）",
+                label_visibility="collapsed",
             )
 
     with col_buttons:

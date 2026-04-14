@@ -413,7 +413,7 @@ def _render_worker_tab() -> None:
         else:
             for w in workers:
                 _rank = str(w.get("rank") or "").strip()
-                _rank_badge = f" [{_rank}]" if _rank else " [ランク未設定]"
+                _rank_badge = f"（ランク:{_rank}）" if _rank else "（ランク未設定）"
                 with st.expander(
                     f"{w.get('worker_id')} - {w.get('name')}{_rank_badge} "
                     f"{'(無効)' if not w.get('is_active') else ''}"
