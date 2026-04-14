@@ -31,7 +31,10 @@ from services.maps_service import (
     travel_duration_minutes,
     travel_duration_minutes_prefetch,
 )
-from services.vehicle_assignment_service import assign_vehicles_for_crew
+from services.vehicle_assignment_service import (
+    assign_vehicle_options_for_crew,
+    assign_vehicles_for_crew,
+)
 
 TZ = ZoneInfo("Asia/Tokyo")
 
@@ -351,8 +354,8 @@ def fetch_week_calendar_events_bundle(
     if headcount <= 0:
         return None, ["必要人数が 0 です。案件を選ぶか人数を指定してください。"]
 
-    v_assign = assign_vehicles_for_crew(headcount, vehicles)
-    if v_assign is None:
+    vehicle_options = assign_vehicle_options_for_crew(headcount, vehicles)
+    if not vehicle_options:
         warnings.append(
             "車両の割当ができません。利用中かつ利用可能な車両のうち、"
             "少なくとも 2人乗りまたは 3人乗りが 1 台以上必要です（無効化のみ・定員4のみでは割当できない場合があります）。"
@@ -487,8 +490,8 @@ def search_candidates(
     if headcount <= 0:
         return [], ["必要人数が 0 です。案件を選ぶか人数を指定してください。"]
 
-    v_assign = assign_vehicles_for_crew(headcount, vehicles)
-    if v_assign is None:
+    vehicle_options = assign_vehicle_options_for_crew(headcount, vehicles)
+    if not vehicle_options:
         warnings.append(
             "車両の割当ができません。利用中かつ利用可能な車両のうち、"
             "少なくとも 2人乗りまたは 3人乗りが 1 台以上必要です（無効化のみ・定員4のみでは割当できない場合があります）。"
@@ -697,10 +700,6 @@ def search_candidates(
             if anchor_ids and not anchor_ids.issubset(set(slot_free_ids)):
                 continue
 
-            assigned_vids_slot = assign_vehicles_for_crew(headcount, vehicles)
-            if not assigned_vids_slot:
-                continue
-
             # B: Distance Matrix をスロット単位でまとめて取得（同一 OD はキャッシュ）
             if project_address and maps_ok:
                 dm_pairs: List[Tuple[str, str]] = []
@@ -734,25 +733,31 @@ def search_candidates(
                             dm_pairs.append((pa, loc_n.strip()))
                 if office:
                     oa = office.strip()
-                    for vid in assigned_vids_slot:
-                        v = vehicle_by_id.get(str(vid))
-                        if not v:
-                            continue
-                        vcreds = _vehicle_calendar_credentials(
-                            v, session_tokens, settings, vehicle_fleet_session
-                        )
-                        vcal = str(v.get("calendar_id") or "").strip()
-                        if not vcreds or not vcal:
-                            continue
-                        ev_v = _week_events(vcreds, vcal)
-                        prev_v = get_previous_event_before_cached(ev_v, slot_start, day_start=day_start)
-                        origin = event_location(prev_v) if prev_v else ""
-                        if not origin.strip():
-                            origin = office
-                        if origin.strip() and oa:
-                            dm_pairs.append((origin.strip(), oa))
-                        if oa and pa:
-                            dm_pairs.append((oa, pa))
+                    seen_vid: Set[str] = set()
+                    for opt in vehicle_options:
+                        for vid in opt:
+                            svid = str(vid)
+                            if svid in seen_vid:
+                                continue
+                            seen_vid.add(svid)
+                            v = vehicle_by_id.get(svid)
+                            if not v:
+                                continue
+                            vcreds = _vehicle_calendar_credentials(
+                                v, session_tokens, settings, vehicle_fleet_session
+                            )
+                            vcal = str(v.get("calendar_id") or "").strip()
+                            if not vcreds or not vcal:
+                                continue
+                            ev_v = _week_events(vcreds, vcal)
+                            prev_v = get_previous_event_before_cached(ev_v, slot_start, day_start=day_start)
+                            origin = event_location(prev_v) if prev_v else ""
+                            if not origin.strip():
+                                origin = office
+                            if origin.strip() and oa:
+                                dm_pairs.append((origin.strip(), oa))
+                            if oa and pa:
+                                dm_pairs.append((oa, pa))
                 travel_duration_minutes_prefetch(dm_pairs)
 
             # C: 移動・住所だけで不可能な職人を組み合わせ前に除外（内側ループと同じ判定）
@@ -840,7 +845,6 @@ def search_candidates(
                     continue
                 ok = True
                 worker_ids = list(combo)
-                assigned_vids = assigned_vids_slot
                 # 同一スロットで「前現場→現場」の移動時間を2回計算しない（検証ループの結果を表示用に再利用）
                 prev_to_site_minutes: Dict[str, Optional[float]] = {}
 
@@ -907,53 +911,62 @@ def search_candidates(
                 if not ok:
                     continue
 
-                material_extra_first: Optional[float] = None
-                first_vid = str(assigned_vids[0]) if assigned_vids else None
-
-                for vid in assigned_vids:
-                    v = vehicle_by_id.get(vid)
-                    if not v:
-                        ok = False
-                        break
-                    vcal = str(v.get("calendar_id") or "").strip()
-                    if not vcal:
-                        ok = False
-                        break
-                    vcreds = _vehicle_calendar_credentials(
-                        v, session_tokens, settings, vehicle_fleet_session
-                    )
-                    if not vcreds:
-                        ok = False
-                        break
-                    ev_v = _week_events(vcreds, vcal)
-                    if not interval_free_cached(ev_v, slot_start, slot_end):
-                        ok = False
-                        break
-                    if project_address and maps_ok and office:
-                        extra = material_return_extra_minutes_cached(
-                            ev_v,
-                            day_start,
-                            slot_start,
-                            office,
-                            project_address,
-                            load_min,
+                selected_vids: Optional[List[str]] = None
+                selected_material_extra_first: Optional[float] = None
+                for assigned_vids in vehicle_options:
+                    ok_vehicle = True
+                    material_extra_first: Optional[float] = None
+                    first_vid = str(assigned_vids[0]) if assigned_vids else None
+                    for vid in assigned_vids:
+                        v = vehicle_by_id.get(str(vid))
+                        if not v:
+                            ok_vehicle = False
+                            break
+                        vcal = str(v.get("calendar_id") or "").strip()
+                        if not vcal:
+                            ok_vehicle = False
+                            break
+                        vcreds = _vehicle_calendar_credentials(
+                            v, session_tokens, settings, vehicle_fleet_session
                         )
-                        if first_vid is not None and str(vid) == first_vid:
-                            material_extra_first = float(extra)
-                        if extra > 0:
-                            prev_v = get_previous_event_before_cached(
-                                ev_v, slot_start, day_start=day_start
+                        if not vcreds:
+                            ok_vehicle = False
+                            break
+                        ev_v = _week_events(vcreds, vcal)
+                        if not interval_free_cached(ev_v, slot_start, slot_end):
+                            ok_vehicle = False
+                            break
+                        if project_address and maps_ok and office:
+                            extra = material_return_extra_minutes_cached(
+                                ev_v,
+                                day_start,
+                                slot_start,
+                                office,
+                                project_address,
+                                load_min,
                             )
-                            if prev_v:
-                                vb = event_time_bounds(prev_v)
-                                if vb:
-                                    _, vee = vb
-                                    if vee + timedelta(minutes=extra) > slot_start:
-                                        ok = False
-                                        break
-                if not ok:
+                            if first_vid is not None and str(vid) == first_vid:
+                                material_extra_first = float(extra)
+                            if extra > 0:
+                                prev_v = get_previous_event_before_cached(
+                                    ev_v, slot_start, day_start=day_start
+                                )
+                                if prev_v:
+                                    vb = event_time_bounds(prev_v)
+                                    if vb:
+                                        _, vee = vb
+                                        if vee + timedelta(minutes=extra) > slot_start:
+                                            ok_vehicle = False
+                                            break
+                    if ok_vehicle:
+                        selected_vids = [str(v) for v in assigned_vids]
+                        selected_material_extra_first = material_extra_first
+                        break
+
+                if selected_vids is None:
                     continue
 
+                assigned_vids = selected_vids
                 travel_by_worker: Dict[str, float] = {}
                 travel_max: Optional[float] = None
                 for wid in worker_ids:
@@ -998,8 +1011,8 @@ def search_candidates(
                             material_completed_count = count_completed_events_before_cached(
                                 ev_v0, day_start, slot_start
                             )
-                            if material_extra_first is not None:
-                                material_extra_val = material_extra_first
+                            if selected_material_extra_first is not None:
+                                material_extra_val = selected_material_extra_first
                             elif project_address and maps_ok and office:
                                 material_extra_val = float(
                                     material_return_extra_minutes_cached(
