@@ -13,6 +13,7 @@ SESSION_DEFAULTS: Dict[str, Any] = {
     "search_filters": {},
     "current_user_role": "admin",
     "current_user_name": "開発ユーザー",
+    "current_user_email": "dev@example.local",
     "google_calendar_tokens": {},  # worker_id / vehicle_id / vehicle_fleet -> {"refresh_token": str}（セッション）
     "candidate_location_overrides": {},  # "worker_id:event_id" -> 暫定住所
 }

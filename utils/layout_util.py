@@ -18,6 +18,16 @@ def inject_sidebar_nav() -> None:
     st.sidebar.page_link("pages/01_案件一覧.py", label="案件一覧", icon="📋")
     st.sidebar.page_link("pages/03_候補検索.py", label="候補検索", icon="🔍")
     st.sidebar.page_link("pages/04_共通設定.py", label="共通設定", icon="⚙️")
+    st.sidebar.page_link("pages/06_問い合わせ履歴.py", label="問い合わせ履歴", icon="💬")
+    if st.session_state.get("current_user_role") == "admin":
+        st.sidebar.page_link("pages/07_問い合わせ管理.py", label="問い合わせ管理", icon="📨")
+
+
+def inject_floating_inquiry_button() -> None:
+    """全画面右下の「?」ボタン。押下で問い合わせダイアログ（st.dialog）を開く."""
+    from utils.inquiry_dialog_util import render_inquiry_floating_button
+
+    render_inquiry_floating_button()
 
 
 def inject_wide_layout() -> None:
@@ -35,3 +45,4 @@ def inject_wide_layout() -> None:
         """,
         unsafe_allow_html=True,
     )
+    inject_floating_inquiry_button()

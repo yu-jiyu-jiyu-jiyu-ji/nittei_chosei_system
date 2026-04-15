@@ -18,5 +18,8 @@ ENV/
 # アプリファイルログ（本番サーバー上の追記用）
 logs/
 
+# 問い合わせ添付（ローカル保存）
+data/inquiry_files/
+
 # Streamlit（秘密のみ除外。config.toml はリポジトリに含める）
 .streamlit/secrets.toml
