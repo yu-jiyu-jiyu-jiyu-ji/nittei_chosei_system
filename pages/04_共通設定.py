@@ -13,15 +13,10 @@ from services.vehicle_service import (
     update_vehicle,
 )
 from services.google_oauth_service import (
-    CALENDAR_EVENTS,
-    OAUTH_STATE_VEHICLE_FLEET,
     build_authorization_url,
-    get_redirect_uri,
     oauth_client_configured,
 )
 from services.email_service import (
-    build_vehicle_fleet_oauth_email_body,
-    build_vehicle_fleet_oauth_email_html,
     build_vehicle_item_oauth_email_body,
     build_vehicle_item_oauth_email_html,
     build_worker_oauth_email_body,
@@ -331,41 +326,19 @@ def _render_worker_tab() -> None:
     rank_options = [str(x).strip() for x in ranks_cfg_raw if str(x).strip()] if isinstance(ranks_cfg_raw, list) else []
 
     with st.expander("Google カレンダー連携（職人・OAuth）", expanded=False):
-        st.caption(
-            "Google Auth プラットフォーム → **データアクセス** に、次のスコープを追加してください（未追加だと連携失敗します）。"
-            " **候補の決定でカレンダーに予定を書くには `calendar.events`（書込み）が必須**です。"
-            " `calendar.readonly` のみで連携したトークンでは、空き検索は動いても登録時に API エラーになります。"
+        st.markdown(
+            "各職人の Google カレンダーを連携すると、空き時間の確認や予定の登録が行えます。"
+            "本人の「〇〇で連携」から進み、表示された画面で許可してください。"
         )
-        st.code(CALENDAR_EVENTS, language="text")
-        st.caption(
-            "OAuth **クライアント ID** は **Google Auth プラットフォーム → クライアント** で作成します。"
-            "（マップの「鍵と認証情報」画面に OAuth が出ない場合があります。）"
-        )
-        st.caption(
-            "Google Cloud Console の OAuth クライアントに、次のリダイレクト URI を登録してください。"
-        )
-        st.code(get_redirect_uri(), language="text")
-        st.caption(
-            "認証画面で **400: redirect_uri_mismatch** になる場合は、上の URI を Google Cloud Console の"
-            " **OAuth 2.0 クライアント → 承認済みのリダイレクト URI** に**一字一句同じ**で追加してください。"
-            " 本番（Render 等）では環境変数 `GOOGLE_OAUTH_REDIRECT_URI` も同じ URL にし、Console に **localhost 用と本番用の両方**を登録しておくと切り替えが楽です。"
-        )
-        st.caption(
-            "認証画面で **OAuth client was not found / invalid_client** となる場合は、"
-            "Console の「OAuth 2.0 クライアント ID」と `.env` の `GOOGLE_OAUTH_CLIENT_ID` が**完全一致**しているか確認してください（**0 と O** の誤りがよくあります）。"
-        )
+        st.caption("うまくいかない場合は、担当の情報システムまたは管理者へお問い合わせください。")
         if oauth_client_configured():
-            st.caption(
-                "職人ごとに Google でログインし、カレンダーの参照と予定の作成（空き検索＋候補確定）を許可します。"
-            )
+            st.caption("メールアドレスを登録した職人には、「メールで送る」から同じ手順の案内を送れます。")
             if smtp_configured():
                 st.caption(
                     "「メールで送る」は、職人マスタに **メールアドレス** を登録した職人に OAuth 用リンクを送ります。"
                 )
             else:
-                st.info(
-                    "メールでリンクを送るには `.env` に **SMTP_HOST** / **SMTP_USER** / **SMTP_PASSWORD** などを設定してください（`.env.example` の SMTP 節を参照）。"
-                )
+                st.info("メールでリンクを送るには、メール送信のサーバー設定が必要です。管理者にお問い合わせください。")
             for w in workers:
                 if not w.get("is_active"):
                     continue
@@ -382,7 +355,7 @@ def _render_worker_tab() -> None:
                     )
                 with row2:
                     linked = bool(w.get("google_refresh_token"))
-                    st.caption("Firestore 連携済" if linked else "未連携")
+                    st.caption("カレンダー連携済" if linked else "未連携")
                 with row3:
                     if st.button(
                         "メールで送る",
@@ -401,7 +374,7 @@ def _render_worker_tab() -> None:
                     elif smtp_configured() and not wmail:
                         st.caption("メール未登録")
         else:
-            st.info(".env に `GOOGLE_OAUTH_CLIENT_ID` と `GOOGLE_OAUTH_CLIENT_SECRET` を設定してください。")
+            st.info("カレンダー連携は、サーバー側の設定が完了するまで利用できません。管理者にお問い合わせください。")
 
     edit_worker_id = st.session_state.get("worker_edit_id", None)  # None=表示, "__new__"=新規, "W001"=編集
 
@@ -519,7 +492,7 @@ def _render_worker_tab() -> None:
                         if send_oauth_on_create and em:
                             if not oauth_client_configured():
                                 st.warning(
-                                    "職人は追加しました。OAuth 用の `.env`（GOOGLE_OAUTH_CLIENT_ID / SECRET）が未設定のため、案内メールは送れませんでした。"
+                                    "職人は追加しました。カレンダー連携のサーバー設定が未完了のため、案内メールは送れませんでした。"
                                 )
                             elif not smtp_configured():
                                 st.warning(
@@ -582,28 +555,18 @@ def _render_vehicle_tab() -> None:
         return
 
     with st.expander("Google カレンダー連携（車両・OAuth）", expanded=False):
-        st.caption(
-            "**車両ごと**に Google で許可します（職人と同じ運用）。新しい車両が増えたら、その車両の行で連携またはメール送信してください。"
+        st.markdown(
+            "**各車両**の Google カレンダーを、車両ごとに連携します（職人と同じ考え方です）。"
+            "新しい車両を追加したら、その車両の行から連携してください。"
         )
-        st.caption(
-            "Google Auth プラットフォームのデータアクセスに、職人と同じ **calendar.events**（読取＋予定の書込み）スコープが必要です。"
-        )
-        st.code(CALENDAR_EVENTS, language="text")
-        st.caption("リダイレクト URI（Console に登録）")
-        st.code(get_redirect_uri(), language="text")
-        st.caption(
-            "認証画面で **OAuth client was not found / invalid_client** となる場合は、"
-            "Console の「OAuth 2.0 クライアント ID」と `.env` の `GOOGLE_OAUTH_CLIENT_ID` が**完全一致**しているか確認してください。"
-        )
+        st.caption("うまくいかない場合は、担当の情報システムまたは管理者へお問い合わせください。")
         if oauth_client_configured():
             if smtp_configured():
                 st.caption(
                     "「メールで送る」は、車両マスタに **メールアドレス** を登録した車両に OAuth 用リンクを送ります。"
                 )
             else:
-                st.info(
-                    "メールでリンクを送るには `.env` に **SMTP_HOST** / **SMTP_USER** / **SMTP_PASSWORD** などを設定してください（`.env.example` の SMTP 節を参照）。"
-                )
+                st.info("メールでリンクを送るには、メール送信のサーバー設定が必要です。管理者にお問い合わせください。")
             for v in vehicles:
                 if not v.get("is_active"):
                     continue
@@ -620,7 +583,7 @@ def _render_vehicle_tab() -> None:
                     )
                 with row2:
                     linked = bool(v.get("google_refresh_token"))
-                    st.caption("Firestore 連携済" if linked else "未連携")
+                    st.caption("カレンダー連携済" if linked else "未連携")
                 with row3:
                     if st.button(
                         "メールで送る",
@@ -639,52 +602,7 @@ def _render_vehicle_tab() -> None:
                     elif smtp_configured() and not vmail:
                         st.caption("メール未登録")
         else:
-            st.info(".env に `GOOGLE_OAUTH_CLIENT_ID` と `GOOGLE_OAUTH_CLIENT_SECRET` を設定してください。")
-
-    with st.expander("車両共通フォールバック（任意・旧方式）", expanded=False):
-        st.caption(
-            "すべての車両カレンダーを **1 つの Google アカウント**にまとめたい場合のみ、"
-            "ここで一度許可すると、各車両に個別トークンが無いときでもそのアカウントで読み取れます。"
-        )
-        try:
-            vset = get_settings()
-        except FirestoreConnectionError:
-            vset = {}
-        v_linked = bool((vset or {}).get("google_vehicle_refresh_token"))
-        if oauth_client_configured():
-            v_url = build_authorization_url(state=OAUTH_STATE_VEHICLE_FLEET)
-            if v_url:
-                st.link_button("共通アカウントで Google 連携（フォールバック）", v_url)
-            st.caption("Firestore に保存済み" if v_linked else "未設定（各車両 OAuth だけでも可）")
-            st.text_input(
-                "連携URLの送信先メール（共通アカウント担当者）",
-                key="vehicle_fleet_oauth_recipient_email",
-                placeholder="例: fleet-manager@example.com",
-            )
-            vf_mail_disabled = not (smtp_configured() and v_url)
-            if st.button(
-                "共通・連携URLをメール送信",
-                key="vehicle_fleet_send_oauth_mail",
-                disabled=vf_mail_disabled,
-            ):
-                recip = (st.session_state.get("vehicle_fleet_oauth_recipient_email") or "").strip()
-                if not recip:
-                    st.error("送信先メールアドレスを入力してください。")
-                elif not v_url:
-                    st.error("認証 URL を生成できません。")
-                else:
-                    subj = "[日程調整] 車両共通 Google カレンダー連携のお願い"
-                    body = build_vehicle_fleet_oauth_email_body(v_url)
-                    html_body = build_vehicle_fleet_oauth_email_html(v_url)
-                    ok, err_msg = send_plain_email(recip, subj, body, html_body=html_body)
-                    if ok:
-                        st.success(f"{recip} に送信しました。")
-                    else:
-                        st.error(f"送信に失敗しました: {err_msg}")
-            elif not smtp_configured():
-                st.caption("メール送信には SMTP 設定（.env）が必要です。")
-        else:
-            st.info(".env に `GOOGLE_OAUTH_CLIENT_ID` / `SECRET` を設定してください。")
+            st.info("カレンダー連携は、サーバー側の設定が完了するまで利用できません。管理者にお問い合わせください。")
 
     edit_vehicle_id = st.session_state.get("vehicle_edit_id", None)
 
@@ -792,7 +710,7 @@ def _render_vehicle_tab() -> None:
                         if send_oauth_on_create_vehicle and em_v:
                             if not oauth_client_configured():
                                 st.warning(
-                                    "車両は追加しました。OAuth 用の `.env`（GOOGLE_OAUTH_CLIENT_ID / SECRET）が未設定のため、案内メールは送れませんでした。"
+                                    "車両は追加しました。カレンダー連携のサーバー設定が未完了のため、案内メールは送れませんでした。"
                                 )
                             elif not smtp_configured():
                                 st.warning(

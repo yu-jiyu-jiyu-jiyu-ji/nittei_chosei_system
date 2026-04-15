@@ -30,7 +30,7 @@ def render_page() -> None:
     st.title("Googleカレンダー連携")
 
     if not oauth_client_configured():
-        st.error("GOOGLE_OAUTH_CLIENT_ID / SECRET が .env に設定されていません。")
+        st.error("カレンダー連携のサーバー設定が未完了です。管理者にお問い合わせください。")
         return
 
     qp = st.query_params
@@ -50,7 +50,7 @@ def render_page() -> None:
                 }
                 try:
                     save_settings({"google_vehicle_refresh_token": creds.refresh_token})
-                    st.success("車両用 Google カレンダー（共通・フォールバック）の連携が完了しました。")
+                    st.success("車両カレンダー（共通アカウント）の連携が完了しました。")
                 except Exception:
                     st.warning(
                         "セッションに保存しましたが、Firestore への保存に失敗しました。"
@@ -91,18 +91,10 @@ def render_page() -> None:
                 st.code(exch_err, language="text")
             if exch_err and "scope" in exch_err.lower():
                 st.caption(
-                    "**スコープ（Scope）関連のエラー**のときは、Google アカウントの "
-                    "[「アプリへのアクセス」](https://myaccount.google.com/permissions) で "
-                    "このアプリの接続を解除してから、共通設定から連携をやり直してください。"
-                    "（アプリは `calendar.events` のみを要求する設定です。）"
+                    "Google の [アプリへのアクセス](https://myaccount.google.com/permissions) で "
+                    "このアプリの接続をいったん解除し、共通設定から連携をやり直してください。"
                 )
-            st.caption(
-                "よくある原因: **リダイレクト URI の不一致**（ブラウザの URL と `.env` の "
-                "`GOOGLE_OAUTH_REDIRECT_URI` が完全一致しているか）、"
-                "**認証コードの期限切れ**（戻るボタンで同じ URL を開き直していないか）、"
-                "**クライアントシークレットの誤り**、Cloud Console の OAuth クライアントに "
-                "上記リダイレクト URI が登録されているか。"
-            )
+            st.caption("繰り返し失敗する場合は、担当の情報システムまたは管理者へお問い合わせください。")
     else:
         st.info("このページは Google からのリダイレクト専用です。共通設定から連携を開始してください。")
         st.page_link("pages/04_共通設定.py", label="共通設定へ", icon="⚙️")
