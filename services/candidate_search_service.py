@@ -479,6 +479,7 @@ def search_candidates(
     warned_pool_bounded = False
     warned_combo_truncated = False
     warned_timeout = False
+    warned_vehicle_relaxed = False
 
     headcount = _required_headcount(project, ui_capacity)
     if headcount <= 0:
@@ -764,9 +765,7 @@ def search_candidates(
                     okey = _location_override_key(wid, str(pid))
                     if not loc and okey in loc_ov:
                         loc = loc_ov[okey]
-                    if not loc:
-                        ok_w = False
-                    elif project_address and maps_ok:
+                    if loc and project_address and maps_ok:
                         b = event_time_bounds(prev)
                         pe = b[1] if b else None
                         if pe:
@@ -783,9 +782,7 @@ def search_candidates(
                         okey_n = _location_override_key(wid, str(nid))
                         if not loc_n and okey_n in loc_ov:
                             loc_n = loc_ov[okey_n]
-                        if not loc_n:
-                            ok_w = False
-                        else:
+                        if loc_n:
                             nb = event_time_bounds(nxt)
                             ns = nb[0] if nb else None
                             if ns:
@@ -856,10 +853,7 @@ def search_candidates(
                         okey = _location_override_key(wid, str(pid))
                         if not loc and okey in loc_ov:
                             loc = loc_ov[okey]
-                        if not loc:
-                            ok = False
-                            break
-                        if project_address and maps_ok:
+                        if loc and project_address and maps_ok:
                             b = event_time_bounds(prev)
                             pe = b[1] if b else None
                             if pe:
@@ -882,20 +876,18 @@ def search_candidates(
                             okey_n = _location_override_key(wid, str(nid))
                             if not loc_n and okey_n in loc_ov:
                                 loc_n = loc_ov[okey_n]
-                            if not loc_n:
-                                ok = False
-                                break
-                            nb = event_time_bounds(nxt)
-                            ns = nb[0] if nb else None
-                            if ns:
-                                tr_n = travel_duration_minutes(
-                                    project_address.strip(), loc_n.strip()
-                                )
-                                if tr_n is not None and (
-                                    slot_end + timedelta(minutes=tr_n) > ns
-                                ):
-                                    ok = False
-                                    break
+                            if loc_n:
+                                nb = event_time_bounds(nxt)
+                                ns = nb[0] if nb else None
+                                if ns:
+                                    tr_n = travel_duration_minutes(
+                                        project_address.strip(), loc_n.strip()
+                                    )
+                                    if tr_n is not None and (
+                                        slot_end + timedelta(minutes=tr_n) > ns
+                                    ):
+                                        ok = False
+                                        break
 
                 if not ok:
                     continue
@@ -952,6 +944,20 @@ def search_candidates(
                         selected_material_extra_first = material_extra_first
                         break
 
+                if selected_vids is None:
+                    if vehicle_options:
+                        # 連携状態や移動付帯条件が厳しすぎて車両候補が全落ちする場合、
+                        # まずは空き枠ベースで候補を返して業務停止を避ける。
+                        selected_vids = [str(v) for v in vehicle_options[0]]
+                        selected_material_extra_first = None
+                        if not warned_vehicle_relaxed:
+                            warnings.append(
+                                "車両の移動付帯条件を一部緩和して候補を表示しています。"
+                                "候補確定前に車両の前後予定と移動可否を確認してください。"
+                            )
+                            warned_vehicle_relaxed = True
+                    else:
+                        continue
                 if selected_vids is None:
                     continue
 
