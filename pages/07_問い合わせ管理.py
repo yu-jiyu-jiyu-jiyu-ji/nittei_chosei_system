@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +24,7 @@ from utils.session_util import init_session_state
 CATEGORY_LABEL = {"usage": "使い方", "system": "システム"}
 STATUS_LABEL = {"open": "未対応", "in_progress": "対応中", "closed": "完了"}
 STATUS_OPTIONS = ["open", "in_progress", "closed"]
+ADMIN_PASS_ENV = "INQUIRY_ADMIN_PASSWORD"
 
 
 def _format_ts(raw: Optional[str]) -> str:
@@ -49,6 +51,23 @@ def _open_dev_draft_dialog(body: str, *, dialog_key: str) -> None:
     )
 
 
+@st.dialog("問い合わせ管理の閲覧認証")
+def _open_admin_auth_dialog() -> None:
+    st.caption("この画面を開くにはパスワードの入力が必要です。")
+    entered = st.text_input("パスワード", type="password", key="inq_admin_pw_input")
+    if st.button("認証する", type="primary", key="inq_admin_pw_submit"):
+        expected = str(os.environ.get(ADMIN_PASS_ENV) or "").strip()
+        if not expected:
+            st.error(f"サーバ設定に {ADMIN_PASS_ENV} がありません。管理者に確認してください。")
+            return
+        if entered == expected:
+            st.session_state["inquiry_admin_unlocked"] = True
+            st.session_state.pop("inq_admin_pw_input", None)
+            st.success("認証に成功しました。")
+            st.rerun()
+        st.error("パスワードが違います。")
+
+
 def render_page() -> None:
     st.set_page_config(
         page_title=f"{APP_TITLE} - 問い合わせ管理",
@@ -62,6 +81,10 @@ def render_page() -> None:
 
     if st.session_state.get("current_user_role") != "admin":
         st.error("このページは管理者のみ利用できます。")
+        st.stop()
+    if not st.session_state.get("inquiry_admin_unlocked", False):
+        _open_admin_auth_dialog()
+        st.info("認証後に問い合わせ管理の内容を表示します。")
         st.stop()
 
     st.title("問い合わせ管理")

@@ -57,6 +57,7 @@ def render_page() -> None:
 
     user_email = str(st.session_state.get("current_user_email") or "").strip()
     user_name = str(st.session_state.get("current_user_name") or "").strip()
+    reply_user_name = "ユーザー" if user_name == "開発ユーザー" else user_name
 
     st.title("問い合わせ履歴")
     st.caption("ご自身の問い合わせの投稿・状況・管理者からの返信を確認できます。")
@@ -215,7 +216,7 @@ def render_page() -> None:
                     iid,
                     ureply,
                     user_email=user_email,
-                    user_name=user_name or None,
+                    user_name=reply_user_name or None,
                 )
                 st.success("返信を記録しました。")
                 st.rerun()
