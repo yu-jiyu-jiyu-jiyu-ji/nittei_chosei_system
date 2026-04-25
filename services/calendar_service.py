@@ -358,7 +358,7 @@ def delete_calendar_event(
     calendar_id: str,
     event_id: str,
 ) -> Tuple[bool, str]:
-    """Google カレンダーの予定を1件削除する。404 は既に削除済みとみなして成功。"""
+    """Google カレンダーの予定を1件削除する。404/410 は既に削除済みとみなして成功。"""
     if not calendar_id.strip() or not str(event_id).strip():
         return False, "カレンダーIDまたはイベントIDが空です。"
     try:
@@ -370,7 +370,7 @@ def delete_calendar_event(
         )
         return True, ""
     except HttpError as e:
-        if getattr(getattr(e, "resp", None), "status", None) == 404:
+        if getattr(getattr(e, "resp", None), "status", None) in (404, 410):
             return True, ""
         return False, _format_calendar_http_error(e)
     except Exception as e:
