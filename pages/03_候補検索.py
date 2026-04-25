@@ -984,6 +984,26 @@ button {
         run_search = search_clicked or week_nav_trigger
         if run_search:
             st.session_state.pop("candidate_search_warnings_flash", None)
+            ws_target = st.session_state["candidate_calendar_week_start"]
+            now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
+            end_hhmm = str(settings.get("work_hours_end") or "19:00").strip()
+            try:
+                _eh, _em = end_hhmm.split(":", 1)
+                week_end_cutoff = datetime.combine(
+                    ws_target + timedelta(days=6),
+                    time(hour=int(_eh), minute=int(_em)),
+                    tzinfo=ZoneInfo("Asia/Tokyo"),
+                )
+            except Exception:
+                week_end_cutoff = datetime.combine(
+                    ws_target + timedelta(days=6),
+                    time(hour=19, minute=0),
+                    tzinfo=ZoneInfo("Asia/Tokyo"),
+                )
+            if week_end_cutoff <= now_jst:
+                ws_target = ws_target + timedelta(days=7)
+                st.session_state["candidate_calendar_week_start"] = ws_target
+                st.info("表示週が過去枠のみのため、翌週に切り替えて検索します。")
             selected_ids_set = {
                 str(x).strip()
                 for x in (st.session_state.get("worker_multi_select") or [])
@@ -1001,7 +1021,7 @@ button {
                 "step": -1,
                 "accum": [],
                 "warnings_acc": [],
-                "week_start": st.session_state["candidate_calendar_week_start"],
+                "week_start": ws_target,
                 "project_name": selected_project_name or "",
                 "required_capacity": required_capacity,
                 "excluded": list(excluded_for_real),
