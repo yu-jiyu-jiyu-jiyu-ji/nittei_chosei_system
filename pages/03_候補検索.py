@@ -574,7 +574,6 @@ button {
     # 案件を変えたときは、人数を案件の「必要人数」で揃える（0 のまま検索できないのを防ぐ）
     _prev_proj_key = st.session_state.get("_candidate_sync_project_key")
     _cur_proj_key = selected_project_name or ""
-    project_changed = _cur_proj_key != _prev_proj_key
     if _cur_proj_key != _prev_proj_key:
         st.session_state["_candidate_sync_project_key"] = _cur_proj_key
         if selected_project:
@@ -585,9 +584,6 @@ button {
                 pass
         else:
             st.session_state["candidate_search_capacity"] = 0
-    if project_changed and selected_project:
-        with st.spinner("案件情報を読み込み中…"):
-            pass
 
     worker_options: List[Dict[str, str]] = []
     for w in workers:
@@ -659,22 +655,18 @@ button {
     with col_buttons:
         st.write("")
         st.write("")
-        if project_changed and selected_project:
-            st.info("案件情報を読み込み中…")
         # PCでも改行しにくいよう、列幅を少し広めに
         b1, b2 = st.columns([1.2, 1.2])
         with b1:
             clear_clicked = st.button(
                 "クリア",
                 use_container_width=True,
-                disabled=bool(project_changed and selected_project),
             )
         with b2:
             search_clicked = st.button(
                 "検索",
                 type="primary",
                 use_container_width=True,
-                disabled=bool(project_changed and selected_project),
             )
 
     # nowrap-row の閉じタグ
