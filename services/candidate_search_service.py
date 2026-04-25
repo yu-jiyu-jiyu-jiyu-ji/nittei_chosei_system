@@ -355,15 +355,6 @@ def fetch_week_calendar_events_bundle(
     if headcount <= 0:
         return None, ["必要人数が 0 です。案件を選ぶか人数を指定してください。"]
 
-    vehicle_options = assign_vehicle_options_for_crew(headcount, vehicles)
-    if not vehicle_options:
-        warnings.append(
-            "車両の割当ができません。利用中かつ利用可能な車両のうち、"
-            "少なくとも 2人乗りまたは 3人乗りが 1 台以上必要です（無効化のみ・定員4のみでは割当できない場合があります）。"
-            "車両マスタで有効な車を戻すか、車両を追加してください。"
-        )
-        return None, warnings
-
     active_workers = [w for w in workers if w.get("is_active", True)]
     creds_map: Dict[str, Credentials] = {}
     for w in active_workers:
@@ -371,36 +362,40 @@ def fetch_week_calendar_events_bundle(
         if c:
             creds_map[str(w["worker_id"])] = c
 
-    fleet = _vehicle_fleet_credentials(settings, vehicle_fleet_session)
     active_vehicles = [v for v in vehicles if v.get("is_active", True)]
-    vehicles_with_cal = [v for v in active_vehicles if str(v.get("calendar_id") or "").strip()]
+    eligible_vehicles: List[Dict[str, Any]] = []
     vehicles_missing_creds: List[str] = []
-    if vehicles_with_cal:
-        for v in vehicles_with_cal:
-            if _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session) is None:
-                vehicles_missing_creds.append(str(v.get("vehicle_id", "?")))
-        vehicle_access_ok = len(vehicles_missing_creds) == 0
-    else:
-        vehicle_access_ok = fleet is not None
+    for v in active_vehicles:
+        cid = str(v.get("calendar_id") or "").strip()
+        if not cid:
+            continue
+        vc = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
+        if vc is None:
+            vehicles_missing_creds.append(str(v.get("vehicle_id", "?")))
+            continue
+        eligible_vehicles.append(v)
 
-    use_real = len(creds_map) >= headcount and vehicle_access_ok
+    vehicle_options = assign_vehicle_options_for_crew(headcount, eligible_vehicles)
+    if not vehicle_options:
+        detail = (
+            f"（カレンダー認証が不足している車両: {', '.join(vehicles_missing_creds)}）"
+            if vehicles_missing_creds
+            else ""
+        )
+        warnings.append(
+            "車両の割当ができません。利用中かつ利用可能な車両のうち、"
+            "少なくとも 2人乗りまたは 3人乗りが 1 台以上必要です。"
+            "あわせて、検索に使う車両は Google カレンダー連携済みである必要があります。"
+            + detail
+        )
+        return None, warnings
+
+    use_real = len(creds_map) >= headcount
     if not use_real:
         if len(creds_map) < headcount:
             warnings.append(
                 "職人の Google カレンダー連携（または保存トークン）が不足しているため、候補を出せません。"
                 "共通設定で必要人数分の OAuth 連携を完了してください。"
-            )
-        if not vehicle_access_ok:
-            detail = (
-                f"（カレンダー認証が不足している車両: {', '.join(vehicles_missing_creds)}）"
-                if vehicles_missing_creds
-                else ""
-            )
-            warnings.append(
-                "車両の Google カレンダーが参照できません。"
-                "有効な全車両で Google カレンダー連携（各車両の OAuth）を済ませてください。"
-                "（1台だけ連携済でも、他車にカレンダー ID だけ入っているとこのままでは警告になります。）"
-                + detail
             )
         return None, warnings
 
@@ -432,9 +427,7 @@ def fetch_week_calendar_events_bundle(
         if cid not in seen_cal:
             seen_cal.add(cid)
             prefetch_pairs.append((c, cid))
-    for v in vehicles:
-        if not v.get("is_active", True):
-            continue
+    for v in eligible_vehicles:
         cid = str(v.get("calendar_id") or "").strip()
         if not cid:
             continue
@@ -448,7 +441,7 @@ def fetch_week_calendar_events_bundle(
         prefetch_pairs, time_min_fetch, time_max_fetch
     )
     if fetch_errors:
-        for v in active_vehicles:
+        for v in eligible_vehicles:
             vid = str(v.get("vehicle_id") or "?")
             cid = str(v.get("calendar_id") or "").strip()
             if not cid:
@@ -491,15 +484,6 @@ def search_candidates(
     if headcount <= 0:
         return [], ["必要人数が 0 です。案件を選ぶか人数を指定してください。"]
 
-    vehicle_options = assign_vehicle_options_for_crew(headcount, vehicles)
-    if not vehicle_options:
-        warnings.append(
-            "車両の割当ができません。利用中かつ利用可能な車両のうち、"
-            "少なくとも 2人乗りまたは 3人乗りが 1 台以上必要です（無効化のみ・定員4のみでは割当できない場合があります）。"
-            "車両マスタで有効な車を戻すか、車両を追加してください。"
-        )
-        return [], warnings
-
     active_workers = [w for w in workers if w.get("is_active", True)]
     creds_map: Dict[str, Credentials] = {}
     for w in active_workers:
@@ -507,37 +491,41 @@ def search_candidates(
         if c:
             creds_map[str(w["worker_id"])] = c
 
-    fleet = _vehicle_fleet_credentials(settings, vehicle_fleet_session)
     active_vehicles = [v for v in vehicles if v.get("is_active", True)]
-    vehicles_with_cal = [v for v in active_vehicles if str(v.get("calendar_id") or "").strip()]
+    eligible_vehicles: List[Dict[str, Any]] = []
     vehicles_missing_creds: List[str] = []
-    if vehicles_with_cal:
-        for v in vehicles_with_cal:
-            if _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session) is None:
-                vehicles_missing_creds.append(str(v.get("vehicle_id", "?")))
-        vehicle_access_ok = len(vehicles_missing_creds) == 0
-    else:
-        vehicle_access_ok = fleet is not None
+    for v in active_vehicles:
+        cid = str(v.get("calendar_id") or "").strip()
+        if not cid:
+            continue
+        vc = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
+        if vc is None:
+            vehicles_missing_creds.append(str(v.get("vehicle_id", "?")))
+            continue
+        eligible_vehicles.append(v)
 
-    use_real = len(creds_map) >= headcount and vehicle_access_ok
+    vehicle_options = assign_vehicle_options_for_crew(headcount, eligible_vehicles)
+    if not vehicle_options:
+        detail = (
+            f"（カレンダー認証が不足している車両: {', '.join(vehicles_missing_creds)}）"
+            if vehicles_missing_creds
+            else ""
+        )
+        warnings.append(
+            "車両の割当ができません。利用中かつ利用可能な車両のうち、"
+            "少なくとも 2人乗りまたは 3人乗りが 1 台以上必要です。"
+            "あわせて、検索に使う車両は Google カレンダー連携済みである必要があります。"
+            + detail
+        )
+        return [], warnings
+
+    use_real = len(creds_map) >= headcount
 
     if not use_real:
         if len(creds_map) < headcount:
             warnings.append(
                 "職人の Google カレンダー連携（または保存トークン）が不足しているため、候補を出せません。"
                 "共通設定で必要人数分の OAuth 連携を完了してください。"
-            )
-        if not vehicle_access_ok:
-            detail = (
-                f"（カレンダー認証が不足している車両: {', '.join(vehicles_missing_creds)}）"
-                if vehicles_missing_creds
-                else ""
-            )
-            warnings.append(
-                "車両の Google カレンダーが参照できません。"
-                "有効な全車両で Google カレンダー連携（各車両の OAuth）を済ませてください。"
-                "（1台だけ連携済でも、他車にカレンダー ID だけ入っているとこのままでは警告になります。）"
-                + detail
             )
         return [], warnings
 
@@ -622,9 +610,7 @@ def search_candidates(
         if cid not in seen_cal:
             seen_cal.add(cid)
             prefetch_pairs.append((c, cid))
-    for v in vehicles:
-        if not v.get("is_active", True):
-            continue
+    for v in eligible_vehicles:
         cid = str(v.get("calendar_id") or "").strip()
         if not cid:
             continue
@@ -642,7 +628,7 @@ def search_candidates(
             prefetch_pairs, time_min_fetch, time_max_fetch
         )
     if vehicle_fetch_errors:
-        for v in active_vehicles:
+        for v in eligible_vehicles:
             vid = str(v.get("vehicle_id") or "?")
             cid = str(v.get("calendar_id") or "").strip()
             if not cid:

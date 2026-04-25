@@ -405,8 +405,9 @@ def render_page() -> None:
     notice = st.session_state.pop("schedule_commit_notice", None)
     if notice:
         st.success(notice)
-    # API生レスポンスの表示は行わない（内部処理用にのみ保持）
-    st.session_state.pop("candidate_search_warnings_flash", None)
+    flash_warnings = list(dict.fromkeys(st.session_state.get("candidate_search_warnings_flash") or []))
+    for msg in flash_warnings:
+        st.warning(msg)
     # 旧実装の ?candidate_id= リンクは multipage で白画面になることがあるため廃止。残っていればクエリだけ除去して案内する。
     if "candidate_id" in st.query_params:
         try:
@@ -982,6 +983,7 @@ button {
         # 検索ボタン／週ナビ → カレンダー1回取得＋7日分割計算（candidate_search_job ブロック）
         run_search = search_clicked or week_nav_trigger
         if run_search:
+            st.session_state.pop("candidate_search_warnings_flash", None)
             selected_ids_set = {
                 str(x).strip()
                 for x in (st.session_state.get("worker_multi_select") or [])
