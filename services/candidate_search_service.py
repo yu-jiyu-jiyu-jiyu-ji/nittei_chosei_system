@@ -643,9 +643,23 @@ def search_candidates(
     priority_order = preferred_ids + [wid for wid in sorted(ready_ids) if wid not in set(preferred_ids)]
     priority_rank = {wid: idx for idx, wid in enumerate(priority_order)}
 
+    wid_fixed_days_off: Dict[str, List[int]] = {}
+    for wid in ready_ids:
+        w = wid_to_worker.get(wid)
+        if w:
+            wid_fixed_days_off[wid] = w.get("fixed_days_off") or []
+
     for d in search_days:
         day_start = datetime.combine(d, time.min, tzinfo=TZ)
         day_end = day_start + timedelta(days=1)
+        day_weekday = d.weekday()
+
+        day_ready_ids = [
+            wid for wid in ready_ids
+            if day_weekday not in wid_fixed_days_off.get(wid, [])
+        ]
+        if len(day_ready_ids) < headcount:
+            continue
 
         minutes = 0
         while minutes < 24 * 60:
@@ -675,7 +689,7 @@ def search_candidates(
 
             # カレンダー上その枠が空いている職人だけに絞ってから組み合わせる（C(n,k) の n を大幅削減）
             slot_free_ids: List[str] = []
-            for wid in sorted(ready_ids):
+            for wid in sorted(day_ready_ids):
                 w = wid_to_worker[wid]
                 cal_id = str(w.get("calendar_id") or "").strip()
                 if not cal_id:

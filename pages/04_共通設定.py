@@ -391,6 +391,7 @@ def _render_worker_tab() -> None:
                     f"{w.get('worker_id')} - {w.get('name')}{_rank_badge} "
                     f"{'(無効)' if not w.get('is_active') else ''}"
                 ):
+                    _DOW_LABELS = ["月", "火", "水", "木", "金", "土", "日"]
                     col1, col2, col_btn = st.columns([2, 2, 1])
                     with col1:
                         st.write(f"**職人ID**: {w.get('worker_id')}")
@@ -401,6 +402,9 @@ def _render_worker_tab() -> None:
                     with col2:
                         st.write(f"**利用中**: {'有効' if w.get('is_active') else '無効'}")
                         st.write(f"**表示順**: {w.get('display_order')}")
+                        _days_off = w.get("fixed_days_off") or []
+                        _days_off_text = "、".join(_DOW_LABELS[d] for d in _days_off if 0 <= d <= 6) or "なし"
+                        st.write(f"**固定休日**: {_days_off_text}")
                         st.write(f"**備考**: {w.get('note') or '-'}")
                     with col_btn:
                         if st.button("編集", key=f"edit_worker_{w.get('worker_id')}"):
@@ -446,6 +450,16 @@ def _render_worker_tab() -> None:
                 placeholder="例: taro@example.com",
             )
             calendar_id = st.text_input("GoogleカレンダーID*", value=existing.get("calendar_id", "") if existing else "", key="worker_calendar_id")
+            _DOW_OPTIONS = {0: "月", 1: "火", 2: "水", 3: "木", 4: "金", 5: "土", 6: "日"}
+            _existing_days_off = (existing.get("fixed_days_off") or []) if existing else []
+            fixed_days_off = st.multiselect(
+                "曜日固定休日",
+                options=list(_DOW_OPTIONS.keys()),
+                default=[d for d in _existing_days_off if d in _DOW_OPTIONS],
+                format_func=lambda d: _DOW_OPTIONS[d],
+                key="worker_fixed_days_off",
+                help="選択した曜日は候補検索で自動的に除外されます。",
+            )
             is_active = st.checkbox("利用中", value=existing.get("is_active", True) if existing else True, key="worker_is_active")
             display_order = st.number_input("表示順", min_value=0, value=existing.get("display_order", 0) if existing else 0, key="worker_display_order")
             note = st.text_area("備考", value=existing.get("note", "") if existing else "", key="worker_note")
@@ -483,6 +497,7 @@ def _render_worker_tab() -> None:
                         "calendar_id": calendar_id,
                         "is_active": is_active,
                         "display_order": display_order,
+                        "fixed_days_off": sorted(int(d) for d in fixed_days_off),
                         "note": note,
                     }
                     if edit_worker_id == "__new__":

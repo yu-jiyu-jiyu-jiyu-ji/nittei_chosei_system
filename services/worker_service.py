@@ -58,6 +58,10 @@ def create_worker(data: Dict[str, Any]) -> Dict[str, Any]:
     client = require_firestore_client()
     try:
         worker_id = _generate_worker_id_firestore(client)
+        raw_days_off = data.get("fixed_days_off") or []
+        fixed_days_off = sorted(
+            {int(d) for d in raw_days_off if isinstance(d, int) and 0 <= d <= 6}
+        )
         worker = {
             "worker_id": worker_id,
             "name": str(data.get("name", "")).strip(),
@@ -68,6 +72,7 @@ def create_worker(data: Dict[str, Any]) -> Dict[str, Any]:
             "role": str(data.get("role", "")).strip(),
             "note": str(data.get("note", "")).strip(),
             "display_order": int(data.get("display_order", 0)),
+            "fixed_days_off": fixed_days_off,
         }
         client.collection("workers").document(worker_id).set(worker)
         return worker
