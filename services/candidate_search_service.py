@@ -649,7 +649,28 @@ def search_candidates(
         if w:
             wid_fixed_days_off[wid] = w.get("fixed_days_off") or []
 
+    company_hol_dow: Set[int] = set(settings.get("company_holidays_dow") or [])
+    company_hol_national: bool = bool(settings.get("company_holidays_national", True))
+    company_hol_custom: Set[str] = set(settings.get("company_holidays_custom") or [])
+
+    def _is_company_holiday(d: date) -> bool:
+        if d.weekday() in company_hol_dow:
+            return True
+        if company_hol_national:
+            try:
+                import jpholiday
+                if jpholiday.is_holiday(d):
+                    return True
+            except ImportError:
+                pass
+        if d.isoformat() in company_hol_custom:
+            return True
+        return False
+
     for d in search_days:
+        if _is_company_holiday(d):
+            continue
+
         day_start = datetime.combine(d, time.min, tzinfo=TZ)
         day_end = day_start + timedelta(days=1)
         day_weekday = d.weekday()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 # Streamlit 右上メニュー（Get help / Report a bug / About）を非表示にする
 STREAMLIT_MENU_ITEMS = {
@@ -30,8 +31,74 @@ def inject_floating_inquiry_button() -> None:
     render_inquiry_floating_button()
 
 
+def _inject_select_toggle_fix() -> None:
+    """プルダウンをクリックで開閉トグルできるようにする JS パッチ."""
+    components.html(
+        """
+        <script>
+        (function() {
+            var doc = window.parent.document;
+            if (doc._selectToggleFixApplied) return;
+            doc._selectToggleFixApplied = true;
+
+            doc.addEventListener('mousedown', function(e) {
+                var select = e.target.closest('[data-baseweb="select"]');
+                if (!select) return;
+                if (e.target.closest('[role="listbox"]')
+                    || e.target.closest('[role="option"]')
+                    || e.target.closest('[data-baseweb="popover"]')
+                    || e.target.closest('[data-baseweb="tag"]')) return;
+
+                var input = select.querySelector('input');
+                if (input && doc.activeElement === input) {
+                    e.preventDefault();
+                    input.blur();
+                }
+            });
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
+def _inject_sidebar_auto_collapse() -> None:
+    """サイドバーのナビリンク押下後にサイドバーを自動で畳む JS パッチ."""
+    components.html(
+        """
+        <script>
+        (function() {
+            var doc = window.parent.document;
+            if (doc._sidebarAutoCollapseApplied) return;
+            doc._sidebarAutoCollapseApplied = true;
+
+            doc.addEventListener('click', function(e) {
+                var sidebar = e.target.closest('[data-testid="stSidebar"]');
+                if (!sidebar) return;
+                var link = e.target.closest('a');
+                if (!link || link.target === '_blank') return;
+
+                requestAnimationFrame(function() {
+                    var btn =
+                        sidebar.querySelector('[data-testid="stBaseButton-headerNoPadding"]') ||
+                        doc.querySelector('[data-testid="stSidebarCollapseButton"] button') ||
+                        doc.querySelector('[data-testid="stSidebarCollapseButton"]') ||
+                        sidebar.querySelector('header button');
+                    if (btn) { btn.click(); return; }
+
+                    var main = doc.querySelector('[data-testid="stAppViewContainer"]');
+                    if (main) main.click();
+                });
+            });
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def inject_wide_layout() -> None:
-    """全ページで幅を統一するCSSを注入.
+    """全ページで幅を統一するCSS・各種JSパッチを注入.
 
     app・各ページで呼び出し、レイアウト幅の差を解消する。
     """
@@ -41,8 +108,11 @@ def inject_wide_layout() -> None:
         [data-testid="stAppViewContainer"] > section { max-width: 100%; }
         .main .block-container { max-width: 100%; padding: 1rem 2rem; }
         #MainMenu {visibility: hidden;}
+        iframe[height="0"] { display: none; }
         </style>
         """,
         unsafe_allow_html=True,
     )
+    _inject_select_toggle_fix()
+    _inject_sidebar_auto_collapse()
     inject_floating_inquiry_button()

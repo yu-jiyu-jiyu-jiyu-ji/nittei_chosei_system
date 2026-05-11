@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date as _date_cls
+
 import streamlit as st
 
 from services.firestore_service import FirestoreConnectionError, FirestoreSaveError
@@ -126,6 +128,17 @@ def _render_common_settings_tab() -> None:
         st.subheader("渋滞バッファ（夕）")
         st.write(f"**夕バッファ（分）**：{settings.get('traffic_buffer_evening_minutes', '-')}")
         st.write(f"**夕開始〜終了時刻**：{settings.get('traffic_buffer_evening_start', '-')} 〜 {settings.get('traffic_buffer_evening_end', '-')}")
+
+        _DOW_NAMES = ["月", "火", "水", "木", "金", "土", "日"]
+        st.subheader("会社休日（候補検索の除外日）")
+        _hol_dow = settings.get("company_holidays_dow") or []
+        _hol_dow_text = "、".join(_DOW_NAMES[d] for d in _hol_dow if isinstance(d, int) and 0 <= d <= 6) or "なし"
+        st.write(f"**定休曜日**：{_hol_dow_text}")
+        st.write(f"**祝日を休日にする**：{'はい' if settings.get('company_holidays_national', True) else 'いいえ'}")
+        _hol_custom = settings.get("company_holidays_custom") or []
+        _hol_custom_text = "、".join(sorted(_hol_custom)) if _hol_custom else "なし"
+        st.write(f"**個別休日**：{_hol_custom_text}")
+        st.caption("候補検索では上記に該当する日を自動で除外します。")
 
         col_edit, col_reset = st.columns(2)
         with col_edit:
@@ -263,6 +276,33 @@ def _render_common_settings_tab() -> None:
                 key="form_traffic_buffer_evening_end",
             )
 
+            _DOW_EDIT_OPTIONS = {0: "月", 1: "火", 2: "水", 3: "木", 4: "金", 5: "土", 6: "日"}
+            st.subheader("会社休日（候補検索の除外日）")
+            _existing_hol_dow = settings.get("company_holidays_dow") or []
+            company_holidays_dow = st.multiselect(
+                "定休曜日",
+                options=list(_DOW_EDIT_OPTIONS.keys()),
+                default=[d for d in _existing_hol_dow if d in _DOW_EDIT_OPTIONS],
+                format_func=lambda d: _DOW_EDIT_OPTIONS[d],
+                key="form_company_holidays_dow",
+                help="選択した曜日は候補検索で除外されます。",
+            )
+            company_holidays_national = st.checkbox(
+                "日本の祝日を休日にする",
+                value=bool(settings.get("company_holidays_national", True)),
+                key="form_company_holidays_national",
+                help="jpholiday ライブラリで判定される祝日・振替休日を候補検索から除外します。",
+            )
+            _existing_custom = settings.get("company_holidays_custom") or []
+            _custom_default = "\n".join(sorted(_existing_custom)) if _existing_custom else ""
+            company_holidays_custom_text = st.text_area(
+                "個別休日（1行1日、YYYY-MM-DD 形式）",
+                value=_custom_default,
+                key="form_company_holidays_custom",
+                help="年末年始・夏季休業など、個別に休日を指定できます。",
+                placeholder="2026-01-01\n2026-01-02\n2026-01-03",
+            )
+
             col_save, col_cancel = st.columns(2)
             with col_save:
                 submit_save = st.form_submit_button("更新")
@@ -275,6 +315,17 @@ def _render_common_settings_tab() -> None:
 
         if submit_save:
             try:
+                _parsed_custom_holidays = []
+                for _line in str(company_holidays_custom_text).splitlines():
+                    _line = _line.strip()
+                    if not _line:
+                        continue
+                    try:
+                        _date_cls.fromisoformat(_line)
+                        _parsed_custom_holidays.append(_line)
+                    except ValueError:
+                        pass
+
                 save_settings(
                     {
                         "office_address": office_address,
@@ -296,6 +347,9 @@ def _render_common_settings_tab() -> None:
                         "traffic_buffer_evening_minutes": traffic_buffer_evening_minutes,
                         "traffic_buffer_evening_start": traffic_buffer_evening_start,
                         "traffic_buffer_evening_end": traffic_buffer_evening_end,
+                        "company_holidays_dow": sorted(int(d) for d in company_holidays_dow),
+                        "company_holidays_national": company_holidays_national,
+                        "company_holidays_custom": sorted(_parsed_custom_holidays),
                     }
                 )
                 st.success("設定を保存しました。")
