@@ -63,12 +63,40 @@ def _inject_select_toggle_fix() -> None:
 
 
 def _inject_sidebar_auto_collapse() -> None:
-    """サイドバーのナビリンク押下後にサイドバーを自動で畳む JS パッチ."""
+    """サイドバーのナビリンク押下後にサイドバーを自動で畳む JS パッチ.
+
+    page_link によるページ遷移では Streamlit が画面を再描画するため、
+    遷移前に即座に折りたたんでも復元されてしまう。localStorage に
+    フラグを保存し、遷移先ページのロード時にリトライ付きで折りたたむ。
+    """
     components.html(
         """
         <script>
         (function() {
             var doc = window.parent.document;
+            var storage = window.parent.localStorage;
+            var KEY = '_st_sidebar_collapse';
+
+            function collapseSidebar() {
+                var sidebar = doc.querySelector('[data-testid="stSidebar"]');
+                var btn =
+                    doc.querySelector('[data-testid="stSidebarCollapseButton"] button') ||
+                    doc.querySelector('[data-testid="stSidebarCollapseButton"]') ||
+                    (sidebar && sidebar.querySelector('[data-testid="stBaseButton-headerNoPadding"]')) ||
+                    (sidebar && sidebar.querySelector('header button'));
+                if (btn) { btn.click(); return true; }
+                return false;
+            }
+
+            if (storage.getItem(KEY)) {
+                storage.removeItem(KEY);
+                var attempts = 0;
+                (function tryCollapse() {
+                    if (collapseSidebar() || ++attempts > 15) return;
+                    setTimeout(tryCollapse, 80);
+                })();
+            }
+
             if (doc._sidebarAutoCollapseApplied) return;
             doc._sidebarAutoCollapseApplied = true;
 
@@ -78,17 +106,8 @@ def _inject_sidebar_auto_collapse() -> None:
                 var link = e.target.closest('a');
                 if (!link || link.target === '_blank') return;
 
-                requestAnimationFrame(function() {
-                    var btn =
-                        sidebar.querySelector('[data-testid="stBaseButton-headerNoPadding"]') ||
-                        doc.querySelector('[data-testid="stSidebarCollapseButton"] button') ||
-                        doc.querySelector('[data-testid="stSidebarCollapseButton"]') ||
-                        sidebar.querySelector('header button');
-                    if (btn) { btn.click(); return; }
-
-                    var main = doc.querySelector('[data-testid="stAppViewContainer"]');
-                    if (main) main.click();
-                });
+                storage.setItem(KEY, '1');
+                requestAnimationFrame(function() { collapseSidebar(); });
             });
         })();
         </script>
