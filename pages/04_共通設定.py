@@ -4,6 +4,11 @@ from datetime import date as _date_cls
 
 import streamlit as st
 
+try:
+    import jpholiday as _jpholiday
+except ImportError:  # pragma: no cover
+    _jpholiday = None  # type: ignore[assignment]
+
 from services.firestore_service import FirestoreConnectionError, FirestoreSaveError
 from services.setting_service import get_settings, reset_to_defaults, save_settings
 from services.vehicle_service import (
@@ -134,7 +139,25 @@ def _render_common_settings_tab() -> None:
         _hol_dow = settings.get("company_holidays_dow") or []
         _hol_dow_text = "、".join(_DOW_NAMES[d] for d in _hol_dow if isinstance(d, int) and 0 <= d <= 6) or "なし"
         st.write(f"**定休曜日**：{_hol_dow_text}")
-        st.write(f"**祝日を休日にする**：{'はい' if settings.get('company_holidays_national', True) else 'いいえ'}")
+
+        _nat_dates = settings.get("company_holidays_national_dates") or []
+        if _nat_dates:
+            _nat_lines = []
+            for _ds in sorted(_nat_dates):
+                _name = ""
+                if _jpholiday:
+                    try:
+                        _name = _jpholiday.is_holiday_name(_date_cls.fromisoformat(_ds)) or ""
+                    except (ValueError, TypeError):
+                        pass
+                _nat_lines.append(f"{_ds}（{_name}）" if _name else _ds)
+            st.write(f"**祝日休日**：{len(_nat_dates)}件")
+            st.caption("　".join(_nat_lines))
+        elif settings.get("company_holidays_national", True):
+            st.write("**祝日休日**：全祝日を自動除外（旧設定）")
+        else:
+            st.write("**祝日休日**：なし")
+
         _hol_custom = settings.get("company_holidays_custom") or []
         _hol_custom_text = "、".join(sorted(_hol_custom)) if _hol_custom else "なし"
         st.write(f"**個別休日**：{_hol_custom_text}")
@@ -287,19 +310,42 @@ def _render_common_settings_tab() -> None:
                 key="form_company_holidays_dow",
                 help="選択した曜日は候補検索で除外されます。",
             )
-            company_holidays_national = st.checkbox(
-                "日本の祝日を休日にする",
-                value=bool(settings.get("company_holidays_national", True)),
-                key="form_company_holidays_national",
-                help="jpholiday ライブラリで判定される祝日・振替休日を候補検索から除外します。",
-            )
+
+            _nat_pool: dict[str, str] = st.session_state.get("_nat_holidays_pool") or {}
+            _existing_nat = settings.get("company_holidays_national_dates") or []
+            if _jpholiday:
+                for _ds in _existing_nat:
+                    if _ds not in _nat_pool:
+                        try:
+                            _nm = _jpholiday.is_holiday_name(_date_cls.fromisoformat(_ds))
+                            _nat_pool[_ds] = _nm or "祝日"
+                        except (ValueError, TypeError):
+                            _nat_pool[_ds] = "祝日"
+
+            _nat_sorted = sorted(_nat_pool.items())
+            _nat_option_keys = [d for d, _ in _nat_sorted]
+            _nat_labels = {d: f"{d}（{n}）" for d, n in _nat_sorted}
+
+            if _nat_option_keys:
+                company_holidays_national_dates = st.multiselect(
+                    "祝日休日（選択中の日を候補検索から除外します）",
+                    options=_nat_option_keys,
+                    default=[d for d in _nat_option_keys if d in set(_existing_nat)],
+                    format_func=lambda d: _nat_labels.get(d, d),
+                    key="form_company_holidays_national_dates",
+                    help="「祝日を読み込む」で追加した祝日から、休日にする日を選択してください。不要な日は外せば稼働日になります。",
+                )
+            else:
+                company_holidays_national_dates = []
+                st.info("下の「祝日を読み込む」ボタンで祝日を読み込んでください。")
+
             _existing_custom = settings.get("company_holidays_custom") or []
             _custom_default = "\n".join(sorted(_existing_custom)) if _existing_custom else ""
             company_holidays_custom_text = st.text_area(
                 "個別休日（1行1日、YYYY-MM-DD 形式）",
                 value=_custom_default,
                 key="form_company_holidays_custom",
-                help="年末年始・夏季休業など、個別に休日を指定できます。",
+                help="年末年始・夏季休業など、祝日以外の休日を個別に指定できます。",
                 placeholder="2026-01-01\n2026-01-02\n2026-01-03",
             )
 
@@ -309,7 +355,37 @@ def _render_common_settings_tab() -> None:
             with col_cancel:
                 submit_cancel = st.form_submit_button("キャンセル")
 
+        _today_year = _date_cls.today().year
+        with st.expander("祝日を読み込む", expanded=not bool(_nat_option_keys)):
+            if _jpholiday:
+                _col_yf, _col_yt, _col_lb = st.columns([1, 1, 1])
+                with _col_yf:
+                    _load_year_from = st.number_input(
+                        "開始年", min_value=2020, max_value=2099,
+                        value=_today_year, step=1, key="_hol_load_year_from",
+                    )
+                with _col_yt:
+                    _load_year_to = st.number_input(
+                        "終了年", min_value=2020, max_value=2099,
+                        value=_today_year + 1, step=1, key="_hol_load_year_to",
+                    )
+                with _col_lb:
+                    st.write("")
+                    st.write("")
+                    if st.button("祝日を休日に設定する", key="load_national_holidays_btn"):
+                        _pool = dict(_nat_pool)
+                        for _y in range(int(_load_year_from), int(_load_year_to) + 1):
+                            for _hd, _hn in _jpholiday.year_holidays(_y):
+                                _pool[_hd.isoformat()] = _hn
+                        st.session_state["_nat_holidays_pool"] = _pool
+                        st.session_state["form_company_holidays_national_dates"] = sorted(_pool.keys())
+                        st.rerun()
+                st.caption("読み込んだ祝日はすべて休日として選択されます。不要な祝日は上のリストから外してください。")
+            else:
+                st.warning("jpholiday ライブラリが未インストールのため、祝日の読み込みができません。")
+
         if submit_cancel:
+            st.session_state.pop("_nat_holidays_pool", None)
             st.session_state["common_settings_edit_mode"] = False
             st.rerun()
 
@@ -326,6 +402,7 @@ def _render_common_settings_tab() -> None:
                     except ValueError:
                         pass
 
+                _has_nat_dates = bool(company_holidays_national_dates)
                 save_settings(
                     {
                         "office_address": office_address,
@@ -348,10 +425,12 @@ def _render_common_settings_tab() -> None:
                         "traffic_buffer_evening_start": traffic_buffer_evening_start,
                         "traffic_buffer_evening_end": traffic_buffer_evening_end,
                         "company_holidays_dow": sorted(int(d) for d in company_holidays_dow),
-                        "company_holidays_national": company_holidays_national,
+                        "company_holidays_national": not _has_nat_dates,
+                        "company_holidays_national_dates": sorted(company_holidays_national_dates),
                         "company_holidays_custom": sorted(_parsed_custom_holidays),
                     }
                 )
+                st.session_state.pop("_nat_holidays_pool", None)
                 st.success("設定を保存しました。")
                 st.session_state["common_settings_edit_mode"] = False
                 st.rerun()

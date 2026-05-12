@@ -34,6 +34,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "google_vehicle_refresh_token": "",
     "company_holidays_dow": [6],
     "company_holidays_national": True,
+    "company_holidays_national_dates": [],
     "company_holidays_custom": [],
 }
 

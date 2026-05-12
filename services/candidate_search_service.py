@@ -650,13 +650,17 @@ def search_candidates(
             wid_fixed_days_off[wid] = w.get("fixed_days_off") or []
 
     company_hol_dow: Set[int] = set(settings.get("company_holidays_dow") or [])
-    company_hol_national: bool = bool(settings.get("company_holidays_national", True))
+    company_hol_nat_dates: Set[str] = set(settings.get("company_holidays_national_dates") or [])
+    company_hol_national_legacy: bool = bool(settings.get("company_holidays_national", True))
     company_hol_custom: Set[str] = set(settings.get("company_holidays_custom") or [])
 
     def _is_company_holiday(d: date) -> bool:
         if d.weekday() in company_hol_dow:
             return True
-        if company_hol_national:
+        if company_hol_nat_dates:
+            if d.isoformat() in company_hol_nat_dates:
+                return True
+        elif company_hol_national_legacy:
             try:
                 import jpholiday
                 if jpholiday.is_holiday(d):
