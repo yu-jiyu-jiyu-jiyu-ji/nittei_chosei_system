@@ -175,10 +175,12 @@ def _inject_global_busy_overlay() -> None:
         <script>
         (function() {
             var doc = window.parent.document;
+            var SPIN_HIDE_MS = 480;
+            var PENDING_MAX_MS = 2200;
+            var MO_DEBOUNCE_MS = 40;
 
-            function ensureLayer() {
-                if (doc.getElementById("_st_global_busy_layer")) return;
-
+            function ensureStyle() {
+                if (doc.getElementById("_st_global_busy_layer_style")) return;
                 var css = "#_st_global_busy_layer{position:fixed;inset:0;z-index:999900;display:flex;"
                     + "align-items:center;justify-content:center;pointer-events:none;opacity:0;"
                     + "transition:opacity 0.12s ease-out;}"
@@ -195,12 +197,15 @@ def _inject_global_busy_overlay() -> None:
                     + "@keyframes _st_busy_spin{to{transform:rotate(360deg);}}"
                     + "#_st_global_busy_layer ._st_busy_title{font-size:1.15rem;font-weight:600;margin:0 0 0.35rem;}"
                     + "#_st_global_busy_layer ._st_busy_sub{font-size:0.85rem;margin:0;opacity:0.75;line-height:1.4;}";
-
                 var st = doc.createElement("style");
                 st.id = "_st_global_busy_layer_style";
                 st.textContent = css;
                 doc.head.appendChild(st);
+            }
 
+            function ensureLayer() {
+                ensureStyle();
+                if (doc.getElementById("_st_global_busy_layer")) return;
                 var layer = doc.createElement("div");
                 layer.id = "_st_global_busy_layer";
                 layer.setAttribute("aria-live", "polite");
@@ -212,52 +217,97 @@ def _inject_global_busy_overlay() -> None:
                 doc.body.appendChild(layer);
             }
 
-            ensureLayer();
+            function layerEl() {
+                return doc.getElementById("_st_global_busy_layer");
+            }
 
-            if (doc._stGlobalBusyOverlayHandlersV1) return;
-            doc._stGlobalBusyOverlayHandlersV1 = true;
+            function setBusy(on) {
+                var L = layerEl();
+                if (!L) return;
+                if (on) L.classList.add("_st_busy_on");
+                else L.classList.remove("_st_busy_on");
+            }
 
-            var layer = doc.getElementById("_st_global_busy_layer");
+            var S = doc._stGlobalBusyOverlay || (doc._stGlobalBusyOverlay = {});
+
+            function clearHideSpin() {
+                if (S.hideSpinTimer) {
+                    clearTimeout(S.hideSpinTimer);
+                    S.hideSpinTimer = null;
+                }
+            }
+
+            function clearPending() {
+                if (S.pendingTimer) {
+                    clearTimeout(S.pendingTimer);
+                    S.pendingTimer = null;
+                }
+            }
+
+            function clearMoDeb() {
+                if (S.moDebounce) {
+                    clearTimeout(S.moDebounce);
+                    S.moDebounce = null;
+                }
+            }
 
             function hasSpinner() {
                 return !!(doc.querySelector("[data-testid=\\"stSpinner\\"]"));
             }
 
-            function setOn(on) {
-                if (on) layer.classList.add("_st_busy_on");
-                else layer.classList.remove("_st_busy_on");
-            }
-
-            var state = "idle";
-            var pendingTimer = null;
-            var debounceTimer = null;
-
-            function clearPending() {
-                if (pendingTimer) {
-                    clearTimeout(pendingTimer);
-                    pendingTimer = null;
-                }
+            function reconnectObserver() {
+                if (!S.mo || !S.handlersInstalled) return;
+                try {
+                    if (S.observedBody && doc.body && S.observedBody === doc.body) return;
+                    S.mo.disconnect();
+                } catch (e1) {}
+                try {
+                    S.mo.observe(doc.body, { childList: true, subtree: true });
+                    S.observedBody = doc.body;
+                } catch (e2) {}
             }
 
             function syncFromDom() {
+                ensureLayer();
+                reconnectObserver();
+                var L = layerEl();
+                if (!L) return;
+
                 if (hasSpinner()) {
+                    clearHideSpin();
                     clearPending();
-                    state = "spin";
-                    setOn(true);
+                    S.state = "spin";
+                    setBusy(true);
                     return;
                 }
-                if (state === "spin") {
-                    state = "idle";
-                    setOn(false);
+
+                if (S.state === "spin") {
+                    if (S.hideSpinTimer) return;
+                    S.hideSpinTimer = setTimeout(function() {
+                        S.hideSpinTimer = null;
+                        if (!hasSpinner() && S.state === "spin") {
+                            S.state = "idle";
+                            setBusy(false);
+                        }
+                    }, SPIN_HIDE_MS);
+                    return;
                 }
             }
 
             function scheduleSync() {
-                clearTimeout(debounceTimer);
-                debounceTimer = setTimeout(syncFromDom, 50);
+                clearMoDeb();
+                S.moDebounce = setTimeout(function() {
+                    S.moDebounce = null;
+                    syncFromDom();
+                }, MO_DEBOUNCE_MS);
             }
 
-            new MutationObserver(scheduleSync).observe(doc.body, { childList: true, subtree: true });
+            ensureLayer();
+            clearHideSpin();
+            clearPending();
+            clearMoDeb();
+            setBusy(false);
+            S.state = "idle";
 
             function isRerunTriggerTarget(t) {
                 if (!t || !t.closest) return false;
@@ -277,22 +327,34 @@ def _inject_global_busy_overlay() -> None:
                 return false;
             }
 
-            doc.addEventListener("pointerdown", function(e) {
-                if (!isRerunTriggerTarget(e.target)) return;
-                if (hasSpinner()) return;
-                state = "pending";
-                setOn(true);
-                clearPending();
-                pendingTimer = setTimeout(function() {
-                    pendingTimer = null;
-                    if (state === "pending" && !hasSpinner()) {
-                        state = "idle";
-                        setOn(false);
-                    }
-                }, 2000);
-            }, true);
+            if (!S.handlersInstalled) {
+                S.handlersInstalled = true;
+                S.mo = new MutationObserver(scheduleSync);
+                try {
+                    S.mo.observe(doc.body, { childList: true, subtree: true });
+                    S.observedBody = doc.body;
+                } catch (e3) {}
 
-            setInterval(syncFromDom, 250);
+                doc.addEventListener("pointerdown", function(e) {
+                    if (!isRerunTriggerTarget(e.target)) return;
+                    if (hasSpinner()) return;
+                    if (S.state === "spin") return;
+                    S.state = "pending";
+                    setBusy(true);
+                    clearPending();
+                    S.pendingTimer = setTimeout(function() {
+                        S.pendingTimer = null;
+                        if (S.state === "pending" && !hasSpinner()) {
+                            S.state = "idle";
+                            setBusy(false);
+                        }
+                    }, PENDING_MAX_MS);
+                }, true);
+
+                setInterval(function() { syncFromDom(); }, 350);
+            }
+
+            syncFromDom();
         })();
         </script>
         """,
