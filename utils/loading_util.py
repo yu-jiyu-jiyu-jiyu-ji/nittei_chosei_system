@@ -1,4 +1,8 @@
-"""読み込み中UI。経過時間と横幅で処理中であることを明確にする."""
+"""読み込み中UI。
+
+visible_spinner: 処理ブロック用（経過時間・stretch 幅）。
+全画面の読み込みレイヤーは layout_util の inject_wide_layout 内で注入される。
+"""
 
 from __future__ import annotations
 
