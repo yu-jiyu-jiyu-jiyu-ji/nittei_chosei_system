@@ -35,6 +35,12 @@ from utils.loading_util import visible_spinner
 from utils.session_util import init_session_state
 
 
+def _on_candidate_search_button_click() -> None:
+    """「検索」用 on_click。Streamlit はコールバックをスクリプト本体より先に実行するため、
+    ページ先頭のマスタ取得でも「検索・カレンダー表示中…」に切り替えられる。"""
+    st.session_state["_candidate_search_btn_pressed"] = True
+
+
 _YOUBI = ("月", "火", "水", "木", "金", "土", "日")
 
 
@@ -396,6 +402,7 @@ def render_page() -> None:
         st.session_state.pop("candidate_results", None)
         st.session_state.pop("candidate_search_job", None)
         st.session_state.pop("candidate_search_calendar_pending", None)
+        st.session_state.pop("_candidate_search_masters", None)
         st.session_state.pop("candidate_dialog_id", None)
         st.session_state.pop("week_nav_trigger_search", None)
     st.session_state["_active_page_id"] = "candidate_search"
@@ -513,39 +520,76 @@ button {
         unsafe_allow_html=True,
     )
 
-    # 案件・職人・車両は Firestore（またはダミーフォールバック）から取得
-    with visible_spinner("データを読み込み中…"):
-        try:
-            _all_projects = list_projects_from_service({})
-            # 対応済み（リフォーム完了）は日程候補の対象外
-            projects = [p for p in _all_projects if str(p.get("status") or "") != "completed"]
-        except FirestoreConnectionError:
-            st.error(DB_UNAVAILABLE_MESSAGE)
-            return
-        except Exception as exc:
-            st.error("案件一覧の取得中に想定外エラーが発生しました。")
-            st.exception(exc)
-            return
+    # 分割検索中は毎 rerun でマスタを取り直さない（体感遅延の主因）。検索ボタン直後は on_click で先にフラグが立つ。
+    cjob_early = st.session_state.get("candidate_search_job")
+    cal_early = bool(st.session_state.get("candidate_search_calendar_pending"))
+    search_press = st.session_state.pop("_candidate_search_btn_pressed", None)
+    masters_cache = st.session_state.get("_candidate_search_masters")
+    reuse_masters = (
+        isinstance(masters_cache, dict)
+        and isinstance(masters_cache.get("projects"), list)
+        and isinstance(masters_cache.get("workers"), list)
+        and isinstance(masters_cache.get("vehicles"), list)
+        and (
+            cjob_early is not None
+            or cal_early
+            or search_press
+            or week_nav_trigger
+        )
+    )
+    show_search_phase = bool(
+        cjob_early is not None
+        or cal_early
+        or search_press
+        or week_nav_trigger
+    )
+    top_spinner_msg = (
+        "検索・カレンダー表示中…" if show_search_phase else "データを読み込み中…"
+    )
 
-        try:
-            workers = list_workers()
-        except FirestoreConnectionError:
-            st.error(DB_UNAVAILABLE_MESSAGE)
-            return
-        except Exception as exc:
-            st.error("職人一覧の取得中に想定外エラーが発生しました。")
-            st.exception(exc)
-            return
+    if reuse_masters:
+        projects = masters_cache["projects"]
+        workers = masters_cache["workers"]
+        vehicles = masters_cache["vehicles"]
+    else:
+        # 案件・職人・車両は Firestore（またはダミーフォールバック）から取得
+        with visible_spinner(top_spinner_msg):
+            try:
+                _all_projects = list_projects_from_service({})
+                # 対応済み（リフォーム完了）は日程候補の対象外
+                projects = [p for p in _all_projects if str(p.get("status") or "") != "completed"]
+            except FirestoreConnectionError:
+                st.error(DB_UNAVAILABLE_MESSAGE)
+                return
+            except Exception as exc:
+                st.error("案件一覧の取得中に想定外エラーが発生しました。")
+                st.exception(exc)
+                return
 
-        try:
-            vehicles = list_vehicles()
-        except FirestoreConnectionError:
-            st.error(DB_UNAVAILABLE_MESSAGE)
-            return
-        except Exception as exc:
-            st.error("車両一覧の取得中に想定外エラーが発生しました。")
-            st.exception(exc)
-            return
+            try:
+                workers = list_workers()
+            except FirestoreConnectionError:
+                st.error(DB_UNAVAILABLE_MESSAGE)
+                return
+            except Exception as exc:
+                st.error("職人一覧の取得中に想定外エラーが発生しました。")
+                st.exception(exc)
+                return
+
+            try:
+                vehicles = list_vehicles()
+            except FirestoreConnectionError:
+                st.error(DB_UNAVAILABLE_MESSAGE)
+                return
+            except Exception as exc:
+                st.error("車両一覧の取得中に想定外エラーが発生しました。")
+                st.exception(exc)
+                return
+        st.session_state["_candidate_search_masters"] = {
+            "projects": projects,
+            "workers": workers,
+            "vehicles": vehicles,
+        }
     try:
         settings = get_settings()
     except FirestoreConnectionError:
@@ -671,6 +715,7 @@ button {
                 "検索",
                 type="primary",
                 use_container_width=True,
+                on_click=_on_candidate_search_button_click,
             )
 
     # nowrap-row の閉じタグ
@@ -918,6 +963,7 @@ button {
             del st.session_state["candidate_results"]
         st.session_state.pop("candidate_search_job", None)
         st.session_state.pop("candidate_search_calendar_pending", None)
+        st.session_state.pop("_candidate_search_masters", None)
         st.session_state["candidate_calendar_week_start"] = sunday_week_containing(date.today())
         st.rerun()
 
