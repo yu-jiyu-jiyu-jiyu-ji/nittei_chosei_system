@@ -110,12 +110,8 @@ def _inject_sidebar_collapse_js() -> None:
                     doc.querySelector('[data-testid="stSidebarCollapseButton"]') ||
                     doc.querySelector('[data-testid="stSidebar"] [data-testid="stBaseButton-headerNoPadding"]') ||
                     doc.querySelector('[data-testid="stSidebar"] header button');
+                /* aria-expanded の直接書き換えは React 状態と不整合になり、開く「>>」が消えることがある */
                 if (btn) { btn.click(); return true; }
-                var sb = doc.querySelector('[data-testid="stSidebar"]');
-                if (sb && sb.getAttribute('aria-expanded') === 'true') {
-                    sb.setAttribute('aria-expanded', 'false');
-                    return true;
-                }
                 return false;
             }
             var n = 0;
@@ -132,20 +128,11 @@ def _inject_sidebar_collapse_js() -> None:
     )
 
 
-_SIDEBAR_FORCE_COLLAPSE_CSS = """
-[data-testid="stSidebar"][aria-expanded="true"] {
-    transform: translateX(-100%) !important;
-    transition: none !important;
-    visibility: hidden !important;
-}
-"""
-
-
 def inject_wide_layout() -> None:
     """全ページで幅を統一するCSS・各種JSパッチを注入.
 
     app・各ページで呼び出し、レイアウト幅の差を解消する。
-    メニューから遷移した直後は _sidebar_collapse によりサイドバーを閉じる。
+    メニューから遷移した直後は _sidebar_collapse により折りたたみボタンを JS でクリックする。
     """
     should_collapse = st.session_state.pop("_sidebar_collapse", False)
 
@@ -155,8 +142,6 @@ def inject_wide_layout() -> None:
         #MainMenu {visibility: hidden;}
         iframe[height="0"] { display: none; }
     """
-    if should_collapse:
-        base_css += _SIDEBAR_FORCE_COLLAPSE_CSS
 
     st.markdown(f"<style>{base_css}</style>", unsafe_allow_html=True)
     _inject_select_toggle_fix()
