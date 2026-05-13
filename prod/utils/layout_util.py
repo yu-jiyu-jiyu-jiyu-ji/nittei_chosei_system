@@ -168,10 +168,143 @@ def _inject_sidebar_collapse_js() -> None:
     )
 
 
+def _inject_global_busy_overlay() -> None:
+    """stSpinner 表示中・および再実行直後に全画面の読み込みレイヤーを重ねる."""
+    components.html(
+        """
+        <script>
+        (function() {
+            var doc = window.parent.document;
+
+            function ensureLayer() {
+                if (doc.getElementById("_st_global_busy_layer")) return;
+
+                var css = "#_st_global_busy_layer{position:fixed;inset:0;z-index:999900;display:flex;"
+                    + "align-items:center;justify-content:center;pointer-events:none;opacity:0;"
+                    + "transition:opacity 0.12s ease-out;}"
+                    + "#_st_global_busy_layer._st_busy_on{opacity:1;pointer-events:auto;}"
+                    + "#_st_global_busy_layer ._st_busy_back{position:absolute;inset:0;"
+                    + "background:rgba(15,23,42,0.55);backdrop-filter:blur(2px);}"
+                    + "#_st_global_busy_layer ._st_busy_card{position:relative;z-index:1;"
+                    + "min-width:min(22rem,90vw);max-width:90vw;padding:1.75rem 2rem;border-radius:1rem;"
+                    + "background:#f8fafc;box-shadow:0 25px 50px -12px rgba(0,0,0,0.35);"
+                    + "text-align:center;font-family:system-ui,sans-serif;color:#0f172a;}"
+                    + "#_st_global_busy_layer ._st_busy_ring{width:3rem;height:3rem;margin:0 auto 1rem;"
+                    + "border:0.35rem solid #cbd5e1;border-top-color:#2563eb;border-radius:50%;"
+                    + "animation:_st_busy_spin 0.75s linear infinite;}"
+                    + "@keyframes _st_busy_spin{to{transform:rotate(360deg);}}"
+                    + "#_st_global_busy_layer ._st_busy_title{font-size:1.15rem;font-weight:600;margin:0 0 0.35rem;}"
+                    + "#_st_global_busy_layer ._st_busy_sub{font-size:0.85rem;margin:0;opacity:0.75;line-height:1.4;}";
+
+                var st = doc.createElement("style");
+                st.id = "_st_global_busy_layer_style";
+                st.textContent = css;
+                doc.head.appendChild(st);
+
+                var layer = doc.createElement("div");
+                layer.id = "_st_global_busy_layer";
+                layer.setAttribute("aria-live", "polite");
+                layer.setAttribute("aria-busy", "true");
+                layer.innerHTML = "<div class=\\"_st_busy_back\\"></div>"
+                    + "<div class=\\"_st_busy_card\\"><div class=\\"_st_busy_ring\\"></div>"
+                    + "<p class=\\"_st_busy_title\\">読み込み中です…</p>"
+                    + "<p class=\\"_st_busy_sub\\">しばらくお待ちください（画面の操作は一時的に無効です）</p></div>";
+                doc.body.appendChild(layer);
+            }
+
+            ensureLayer();
+
+            if (doc._stGlobalBusyOverlayHandlersV1) return;
+            doc._stGlobalBusyOverlayHandlersV1 = true;
+
+            var layer = doc.getElementById("_st_global_busy_layer");
+
+            function hasSpinner() {
+                return !!(doc.querySelector("[data-testid=\\"stSpinner\\"]"));
+            }
+
+            function setOn(on) {
+                if (on) layer.classList.add("_st_busy_on");
+                else layer.classList.remove("_st_busy_on");
+            }
+
+            var state = "idle";
+            var pendingTimer = null;
+            var debounceTimer = null;
+
+            function clearPending() {
+                if (pendingTimer) {
+                    clearTimeout(pendingTimer);
+                    pendingTimer = null;
+                }
+            }
+
+            function syncFromDom() {
+                if (hasSpinner()) {
+                    clearPending();
+                    state = "spin";
+                    setOn(true);
+                    return;
+                }
+                if (state === "spin") {
+                    state = "idle";
+                    setOn(false);
+                }
+            }
+
+            function scheduleSync() {
+                clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(syncFromDom, 50);
+            }
+
+            new MutationObserver(scheduleSync).observe(doc.body, { childList: true, subtree: true });
+
+            function isRerunTriggerTarget(t) {
+                if (!t || !t.closest) return false;
+                if (!t.closest("[data-testid=\\"stApp\\"]")) return false;
+                if (t.closest("#_st_global_busy_layer")) return false;
+                if (t.closest("[data-testid=\\"stChatInput\\"]")) return false;
+                if (t.closest("[data-testid=\\"stFileUploader\\"]")) return false;
+                if (t.closest('a[href^="http"]') || t.closest('a[href^="https"]')) return false;
+                if (t.closest("[data-testid=\\"stSidebar\\"]") && t.closest("button")) return true;
+                if (t.closest("[data-testid=\\"stFormSubmitButton\\"]")) return true;
+                if (t.closest("[data-testid=\\"stDownloadButton\\"]")) return true;
+                if (t.closest(".stButton") && t.tagName === "BUTTON") return true;
+                if (t.closest("[data-testid=\\"stBaseButton\\"]") && t.tagName === "BUTTON") return true;
+                if (t.closest("[data-testid=\\"stCheckbox\\"]")) return true;
+                if (t.closest("[data-testid=\\"stRadio\\"]")) return true;
+                if (t.closest("[data-testid=\\"stNumberInput\\"]") && t.tagName === "BUTTON") return true;
+                return false;
+            }
+
+            doc.addEventListener("pointerdown", function(e) {
+                if (!isRerunTriggerTarget(e.target)) return;
+                if (hasSpinner()) return;
+                state = "pending";
+                setOn(true);
+                clearPending();
+                pendingTimer = setTimeout(function() {
+                    pendingTimer = null;
+                    if (state === "pending" && !hasSpinner()) {
+                        state = "idle";
+                        setOn(false);
+                    }
+                }, 2000);
+            }, true);
+
+            setInterval(syncFromDom, 250);
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def inject_wide_layout() -> None:
     """全ページで幅を統一するCSS・各種JSパッチを注入.
 
     app・各ページで呼び出し、レイアウト幅の差を解消する。
+    全画面の読み込みレイヤー（stSpinner 連動・再実行トリガー）を注入する。
     メニューから遷移した直後は _sidebar_collapse により折りたたみボタンを JS でクリックする。
     """
     should_collapse = st.session_state.pop("_sidebar_collapse", False)
@@ -184,6 +317,7 @@ def inject_wide_layout() -> None:
     """
 
     st.markdown(f"<style>{base_css}</style>", unsafe_allow_html=True)
+    _inject_global_busy_overlay()
     _inject_select_toggle_fix()
     if should_collapse:
         _inject_sidebar_collapse_js()

@@ -151,6 +151,6 @@ def render_inquiry_floating_button() -> None:
             "top: auto !important; "
             "width: auto !important; "
             "max-width: 4.5rem !important; "
-            "z-index: 100 !important;"
+            "z-index: 1000020 !important;"
         )
     )
