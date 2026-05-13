@@ -12,16 +12,51 @@ STREAMLIT_MENU_ITEMS = {
     "About": None,
 }
 
+_NAV_PAGES = [
+    ("pages/01_案件一覧.py", "案件一覧", "📋"),
+    ("pages/03_候補検索.py", "候補検索", "🔍"),
+    ("pages/04_共通設定.py", "共通設定", "⚙️"),
+    ("pages/06_問い合わせ履歴.py", "問い合わせ履歴", "💬"),
+]
+_NAV_ADMIN_PAGES = [
+    ("pages/07_問い合わせ管理.py", "問い合わせ管理", "📨"),
+]
+
+_SIDEBAR_NAV_CSS = """<style>
+[data-testid="stSidebar"] div.nav-links .stButton > button {
+    background: transparent; border: none; color: inherit;
+    text-align: left; padding: 0.4rem 0.75rem; border-radius: 0.5rem;
+    font-size: 0.875rem; cursor: pointer; width: 100%;
+}
+[data-testid="stSidebar"] div.nav-links .stButton > button:hover {
+    background: rgba(151,166,195,0.18);
+}
+</style>"""
+
 
 def inject_sidebar_nav() -> None:
-    """サイドバーにページナビを注入（config.toml の showSidebarNavigation=false 用）."""
+    """サイドバーにページナビを注入（config.toml の showSidebarNavigation=false 用）.
+
+    st.sidebar.button + st.switch_page を使い、遷移前に session_state で
+    サイドバー折りたたみフラグを立てる。page_link と違い Python 側で
+    遷移を制御できるため、遷移先の初回描画でサイドバーを閉じられる。
+    """
+    st.sidebar.markdown(_SIDEBAR_NAV_CSS, unsafe_allow_html=True)
     st.sidebar.markdown("### メニュー")
-    st.sidebar.page_link("pages/01_案件一覧.py", label="案件一覧", icon="📋")
-    st.sidebar.page_link("pages/03_候補検索.py", label="候補検索", icon="🔍")
-    st.sidebar.page_link("pages/04_共通設定.py", label="共通設定", icon="⚙️")
-    st.sidebar.page_link("pages/06_問い合わせ履歴.py", label="問い合わせ履歴", icon="💬")
+    pages = list(_NAV_PAGES)
     if st.session_state.get("current_user_role") == "admin":
-        st.sidebar.page_link("pages/07_問い合わせ管理.py", label="問い合わせ管理", icon="📨")
+        pages.extend(_NAV_ADMIN_PAGES)
+    container = st.sidebar.container()
+    container.markdown('<div class="nav-links">', unsafe_allow_html=True)
+    for _path, _label, _icon in pages:
+        if container.button(
+            f"{_icon}　{_label}",
+            key=f"_nav_{_path}",
+            use_container_width=True,
+        ):
+            st.session_state["_sidebar_collapse"] = True
+            st.switch_page(_path)
+    container.markdown("</div>", unsafe_allow_html=True)
 
 
 def inject_floating_inquiry_button() -> None:
@@ -62,53 +97,34 @@ def _inject_select_toggle_fix() -> None:
     )
 
 
-def _inject_sidebar_auto_collapse() -> None:
-    """サイドバーのナビリンク押下後にサイドバーを自動で畳む JS パッチ.
-
-    page_link によるページ遷移では Streamlit が画面を再描画するため、
-    遷移前に即座に折りたたんでも復元されてしまう。localStorage に
-    フラグを保存し、遷移先ページのロード時にリトライ付きで折りたたむ。
-    """
+def _inject_sidebar_collapse_js() -> None:
+    """サイドバー折りたたみボタンをクリックして Streamlit 内部状態を更新する JS."""
     components.html(
         """
         <script>
         (function() {
             var doc = window.parent.document;
-            var storage = window.parent.localStorage;
-            var KEY = '_st_sidebar_collapse';
-
-            function collapseSidebar() {
-                var sidebar = doc.querySelector('[data-testid="stSidebar"]');
+            function collapse() {
                 var btn =
                     doc.querySelector('[data-testid="stSidebarCollapseButton"] button') ||
                     doc.querySelector('[data-testid="stSidebarCollapseButton"]') ||
-                    (sidebar && sidebar.querySelector('[data-testid="stBaseButton-headerNoPadding"]')) ||
-                    (sidebar && sidebar.querySelector('header button'));
+                    doc.querySelector('[data-testid="stSidebar"] [data-testid="stBaseButton-headerNoPadding"]') ||
+                    doc.querySelector('[data-testid="stSidebar"] header button');
                 if (btn) { btn.click(); return true; }
+                var sb = doc.querySelector('[data-testid="stSidebar"]');
+                if (sb && sb.getAttribute('aria-expanded') === 'true') {
+                    sb.setAttribute('aria-expanded', 'false');
+                    return true;
+                }
                 return false;
             }
-
-            if (storage.getItem(KEY)) {
-                storage.removeItem(KEY);
-                var attempts = 0;
-                (function tryCollapse() {
-                    if (collapseSidebar() || ++attempts > 15) return;
-                    setTimeout(tryCollapse, 80);
-                })();
-            }
-
-            if (doc._sidebarAutoCollapseApplied) return;
-            doc._sidebarAutoCollapseApplied = true;
-
-            doc.addEventListener('click', function(e) {
-                var sidebar = e.target.closest('[data-testid="stSidebar"]');
-                if (!sidebar) return;
-                var link = e.target.closest('a');
-                if (!link || link.target === '_blank') return;
-
-                storage.setItem(KEY, '1');
-                requestAnimationFrame(function() { collapseSidebar(); });
-            });
+            var n = 0;
+            var maxTries = 45;
+            var delayMs = 80;
+            (function retry() {
+                if (collapse() || ++n > maxTries) return;
+                setTimeout(retry, delayMs);
+            })();
         })();
         </script>
         """,
@@ -116,22 +132,34 @@ def _inject_sidebar_auto_collapse() -> None:
     )
 
 
+_SIDEBAR_FORCE_COLLAPSE_CSS = """
+[data-testid="stSidebar"][aria-expanded="true"] {
+    transform: translateX(-100%) !important;
+    transition: none !important;
+    visibility: hidden !important;
+}
+"""
+
+
 def inject_wide_layout() -> None:
     """全ページで幅を統一するCSS・各種JSパッチを注入.
 
     app・各ページで呼び出し、レイアウト幅の差を解消する。
+    メニューから遷移した直後は _sidebar_collapse によりサイドバーを閉じる。
     """
-    st.markdown(
-        """
-        <style>
+    should_collapse = st.session_state.pop("_sidebar_collapse", False)
+
+    base_css = """
         [data-testid="stAppViewContainer"] > section { max-width: 100%; }
         .main .block-container { max-width: 100%; padding: 1rem 2rem; }
         #MainMenu {visibility: hidden;}
         iframe[height="0"] { display: none; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    """
+    if should_collapse:
+        base_css += _SIDEBAR_FORCE_COLLAPSE_CSS
+
+    st.markdown(f"<style>{base_css}</style>", unsafe_allow_html=True)
     _inject_select_toggle_fix()
-    _inject_sidebar_auto_collapse()
+    if should_collapse:
+        _inject_sidebar_collapse_js()
     inject_floating_inquiry_button()
