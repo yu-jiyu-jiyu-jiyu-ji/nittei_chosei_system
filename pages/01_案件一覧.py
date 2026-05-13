@@ -15,6 +15,7 @@ from services.vehicle_service import list_vehicles
 from services.worker_service import list_workers
 from utils.display_util import format_status
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
+from utils.loading_util import visible_spinner
 from utils.session_util import init_session_state
 from utils.validation_util import validate_project_input
 
@@ -119,7 +120,7 @@ def _render_project_detail_dialog(project: Dict[str, Any]) -> None:
                     st.rerun()
 
             if st.session_state.get(processing_key, False):
-                with st.spinner("予定を取り消しています…"):
+                with visible_spinner("予定を取り消しています…"):
                     try:
                         wk = list_workers()
                         vc = list_vehicles()
@@ -368,7 +369,7 @@ def render_page() -> None:
                         st.write(f"- {msg}")
                 else:
                     try:
-                        with st.spinner("登録中…"):
+                        with visible_spinner("登録中…"):
                             create_project(
                                 form_values,
                                 current_user_name=st.session_state.get("current_user_name"),

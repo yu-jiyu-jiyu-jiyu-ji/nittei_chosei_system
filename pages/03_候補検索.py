@@ -30,6 +30,7 @@ from services.setting_service import get_settings
 from services.vehicle_service import list_vehicles
 from services.worker_service import list_workers
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
+from utils.loading_util import visible_spinner
 from utils.session_util import init_session_state
 
 
@@ -511,7 +512,7 @@ button {
     )
 
     # 案件・職人・車両は Firestore（またはダミーフォールバック）から取得
-    with st.spinner("データを読み込み中…"):
+    with visible_spinner("データを読み込み中…"):
         try:
             _all_projects = list_projects_from_service({})
             # 対応済み（リフォーム完了）は日程候補の対象外
@@ -711,7 +712,7 @@ button {
         vf_sess = gcal_tok.get("vehicle_fleet") if isinstance(gcal_tok, dict) else None
 
         if step == -1:
-            with st.spinner("カレンダー取得中…"):
+            with visible_spinner("カレンダー取得中…"):
                 bundle, wpre = fetch_week_calendar_events_bundle(
                     project=proj_job,
                     workers=workers_for_search,
@@ -736,7 +737,7 @@ button {
             st.rerun()
         elif step < 7:
             d = ws_job + timedelta(days=step)
-            with st.spinner(f"検索中…（{step + 1}/7日）"):
+            with visible_spinner(f"検索中…（{step + 1}/7日）"):
                 part, warns = search_candidates(
                     project=proj_job,
                     workers=workers_for_search,
@@ -1076,7 +1077,7 @@ button {
 
     cache_key = f"calendar_week_events_{ws.isoformat()}"
     if cache_key not in st.session_state:
-        with st.spinner("カレンダー予定を取得中…"):
+        with visible_spinner("カレンダー予定を取得中…"):
             try:
                 try:
                     settings_for_cal = get_settings()
@@ -1250,7 +1251,7 @@ button {
                     except FirestoreConnectionError:
                         settings_for_commit = {}
                     try:
-                        with st.spinner("カレンダーへ登録中…"):
+                        with visible_spinner("カレンダーへ登録中…"):
                             ok, msgs, save_project_schedule, new_event_refs = (
                                 commit_candidate_to_calendars(
                                     project=selected_project,
