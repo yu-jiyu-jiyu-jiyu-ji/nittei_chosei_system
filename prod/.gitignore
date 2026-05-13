@@ -23,7 +23,3 @@ data/inquiry_files/
 
 # Streamlit（秘密のみ除外。config.toml はリポジトリに含める）
 .streamlit/secrets.toml
-prod/.streamlit/secrets.toml
-
-# ローカル鍵ディレクトリ（リポジトリ外運用）
-key_honban/
