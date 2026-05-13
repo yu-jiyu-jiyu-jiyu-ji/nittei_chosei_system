@@ -67,16 +67,38 @@ def inject_floating_inquiry_button() -> None:
 
 
 def _inject_select_toggle_fix() -> None:
-    """プルダウンをクリックで開閉トグルできるようにする JS パッチ."""
+    """プルダウンをクリックで開閉トグルできるようにする JS パッチ.
+
+    メニュー展開後はフォーカスが input 外に出るため、aria-expanded と
+    表示中の listbox 付き popover で「開いている」を判定する。
+    """
     components.html(
         """
         <script>
         (function() {
             var doc = window.parent.document;
-            if (doc._selectToggleFixApplied) return;
-            doc._selectToggleFixApplied = true;
+            if (doc._stPullDownToggleFix) return;
+            doc._stPullDownToggleFix = true;
 
-            doc.addEventListener('mousedown', function(e) {
+            function basewebSelectMenuOpen(select) {
+                if (!select) return false;
+                if (select.getAttribute('aria-expanded') === 'true') return true;
+                if (select.querySelector('[aria-expanded="true"]')) return true;
+                var pops = doc.querySelectorAll('[data-baseweb="popover"]');
+                for (var i = 0; i < pops.length; i++) {
+                    var p = pops[i];
+                    if (!p.querySelector('[role="listbox"]')) continue;
+                    var st = window.getComputedStyle(p);
+                    if (st.display === 'none' || st.visibility === 'hidden') continue;
+                    if (parseFloat(st.opacity || '1') < 0.01) continue;
+                    var r = p.getBoundingClientRect();
+                    if (r.width < 2 || r.height < 2) continue;
+                    return true;
+                }
+                return false;
+            }
+
+            function onPress(e) {
                 var select = e.target.closest('[data-baseweb="select"]');
                 if (!select) return;
                 if (e.target.closest('[role="listbox"]')
@@ -85,11 +107,29 @@ def _inject_select_toggle_fix() -> None:
                     || e.target.closest('[data-baseweb="tag"]')) return;
 
                 var input = select.querySelector('input');
-                if (input && doc.activeElement === input) {
+                var menuOpen = basewebSelectMenuOpen(select);
+                var inputFocused = input && doc.activeElement === input;
+
+                if (menuOpen || inputFocused) {
                     e.preventDefault();
-                    input.blur();
+                    e.stopPropagation();
+                    var ae = doc.activeElement;
+                    if (ae && typeof ae.blur === 'function') ae.blur();
+                    if (input && typeof input.blur === 'function') input.blur();
+                    var esc = new KeyboardEvent('keydown', {
+                        key: 'Escape',
+                        code: 'Escape',
+                        keyCode: 27,
+                        which: 27,
+                        bubbles: true,
+                        cancelable: true,
+                    });
+                    doc.body.dispatchEvent(esc);
+                    select.dispatchEvent(esc);
                 }
-            });
+            }
+
+            doc.addEventListener('pointerdown', onPress, true);
         })();
         </script>
         """,
