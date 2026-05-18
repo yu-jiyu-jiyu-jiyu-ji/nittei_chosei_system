@@ -16,7 +16,7 @@ from services.worker_service import list_workers
 from utils.display_util import format_status
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
 from utils.loading_util import visible_spinner
-from utils.session_util import init_session_state
+from utils.session_util import init_session_state, navigate_to_candidate_search_after_register
 from utils.validation_util import validate_project_input
 
 
@@ -298,9 +298,6 @@ def render_page() -> None:
     st.title("案件一覧")
     st.caption("案件の登録・一覧・詳細を管理します。")
 
-    if st.session_state.pop("register_done_flash", False):
-        st.success("案件を登録しました。")
-
     # ----------------------------
     # 上部：新規登録フォーム
     # ----------------------------
@@ -370,12 +367,11 @@ def render_page() -> None:
                 else:
                     try:
                         with visible_spinner("登録中…"):
-                            create_project(
+                            created = create_project(
                                 form_values,
                                 current_user_name=st.session_state.get("current_user_name"),
                             )
-                        st.session_state["register_done_flash"] = True
-                        st.rerun()
+                        navigate_to_candidate_search_after_register(created)
                     except FirestoreSaveError as e:
                         st.error(f"保存に失敗しました。{e}")
                     except FirestoreConnectionError:

@@ -493,6 +493,9 @@ def render_page() -> None:
     notice = st.session_state.pop("schedule_commit_notice", None)
     if notice:
         st.success(notice)
+    post_register_notice = st.session_state.pop("candidate_search_post_register_notice", None)
+    if post_register_notice:
+        st.success(post_register_notice)
     flash_warnings = list(dict.fromkeys(st.session_state.get("candidate_search_warnings_flash") or []))
     for msg in flash_warnings:
         st.warning(msg)
