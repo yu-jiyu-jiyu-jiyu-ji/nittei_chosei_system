@@ -831,30 +831,21 @@ button {
     st.subheader("条件")
     st.caption(
         "ステータスが「対応済み（リフォーム完了）」の案件は、日程候補の対象外のためここには表示されません。"
+        " 未登録の案件は下の「案件を新規登録」から追加できます（登録後は自動で候補検索を開始します）。"
     )
 
-    project_options = {p["project_name"]: p for p in projects}
-    project_name_list = list(project_options.keys())
-
-    proj_col, reg_btn_col = st.columns([5, 1])
-    with proj_col:
-        selected_project_name = st.selectbox(
-            "案件",
-            options=[""] + project_name_list,
-            format_func=lambda v: v if v else "（選択してください）",
-            key="candidate_search_project_select",
-        )
-    with reg_btn_col:
-        st.write("")
+    reg_hdr, reg_btn = st.columns([4, 1])
+    with reg_hdr:
+        st.markdown("**新規登録**")
+    with reg_btn:
         if st.button(
-            "＋ 新規案件",
+            "フォームを開く",
             key="candidate_open_register",
             use_container_width=True,
-            help="候補検索画面から案件を登録します",
+            help="新規登録フォームを開きます",
         ):
             st.session_state["candidate_register_open"] = True
             st.rerun()
-    selected_project = project_options.get(selected_project_name)
 
     reg_expanded = bool(st.session_state.pop("candidate_register_open", False))
     created_on_page = render_project_register_expander(
@@ -864,6 +855,17 @@ button {
     if created_on_page:
         apply_registered_project_to_candidate_search(created_on_page)
         st.rerun()
+
+    project_options = {p["project_name"]: p for p in projects}
+    project_name_list = list(project_options.keys())
+
+    selected_project_name = st.selectbox(
+        "案件",
+        options=[""] + project_name_list,
+        format_func=lambda v: v if v else "（選択してください）",
+        key="candidate_search_project_select",
+    )
+    selected_project = project_options.get(selected_project_name)
 
     # 人数（- / 入力 / +）と 職人（選択 + 含む/含まない）と ボタン（右寄せ）
     if "candidate_search_capacity" not in st.session_state:
