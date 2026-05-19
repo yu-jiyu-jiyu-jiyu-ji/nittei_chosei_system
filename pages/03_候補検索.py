@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from contextlib import nullcontext
 from datetime import date, datetime, time, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import plotly.graph_objects as go
@@ -119,6 +119,45 @@ def _candidate_calendar_plot_height(n_visible_days: int) -> int:
     """表示日数に応じたチャート高さ（スマホはやや低め、PC は CSS で min-height も補強）."""
     base = 580 if n_visible_days <= 4 else 540
     return int(base + (7 - n_visible_days) * 52)
+
+
+def _assign_candidate_block_lanes(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """同一日付列で時間が重なる候補を横レーンに分け、塗りつぶし＋ラベル重なりを防ぐ."""
+    by_col: Dict[float, List[Dict[str, Any]]] = defaultdict(list)
+    for blk in blocks:
+        by_col[float(blk["xi"])].append(blk)
+
+    placed: List[Dict[str, Any]] = []
+    for _xi, col_blocks in by_col.items():
+        col_blocks.sort(key=lambda b: (float(b["y0"]), float(b["y1"])))
+        lane_ends: List[float] = []
+        for blk in col_blocks:
+            y0 = float(blk["y0"])
+            y1 = float(blk["y1"])
+            lane_idx = 0
+            for i, end_y in enumerate(lane_ends):
+                if y0 >= end_y - 0.5:
+                    lane_idx = i
+                    lane_ends[i] = max(lane_ends[i], y1)
+                    break
+            else:
+                lane_idx = len(lane_ends)
+                lane_ends.append(y1)
+            blk["lane"] = lane_idx
+        n_lanes = max(1, len(lane_ends))
+        for blk in col_blocks:
+            blk["n_lanes"] = n_lanes
+            placed.append(blk)
+    return placed
+
+
+def _lane_x_bounds(xi: float, lane: int, n_lanes: int, total_width: float) -> Tuple[float, float]:
+    """列内レーンごとの x0/x1（データ座標）."""
+    n = max(1, n_lanes)
+    lane_w = total_width / float(n)
+    x0 = xi - total_width / 2.0 + lane * lane_w + lane_w * 0.06
+    x1 = xi - total_width / 2.0 + (lane + 1) * lane_w - lane_w * 0.06
+    return x0, x1
 
 
 def _candidate_calendar_chunk_offsets(chunk: int) -> List[int]:
@@ -241,9 +280,11 @@ def _build_candidate_week_plotly_figure(
                 "xi": day_to_x[day_idx],
                 "y0": y0,
                 "y1": y1,
-                "label": f"{sa.strftime('%H:%M')}<br>〜{ea.strftime('%H:%M')}",
+                "label_short": f"{sa.strftime('%H:%M')}-{ea.strftime('%H:%M')}",
             }
         )
+
+    candidate_blocks = _assign_candidate_block_lanes(candidate_blocks)
 
     tickvals: List[int] = []
     ticktext: List[str] = []
@@ -294,7 +335,6 @@ def _build_candidate_week_plotly_figure(
             }
         )
 
-    half_w = _CANDIDATE_BLOCK_WIDTH / 2.0
     annotations: List[Dict[str, Any]] = []
     hit_x: List[float] = []
     hit_y: List[float] = []
@@ -310,39 +350,52 @@ def _build_candidate_week_plotly_figure(
         xi = float(blk["xi"])
         y0 = float(blk["y0"])
         y1 = float(blk["y1"])
+        lane = int(blk.get("lane", 0))
+        n_lanes = int(blk.get("n_lanes", 1))
+        x0, x1 = _lane_x_bounds(xi, lane, n_lanes, _CANDIDATE_BLOCK_WIDTH)
         layout_shapes.append(
             {
                 "type": "rect",
                 "xref": "x",
                 "yref": "y",
-                "x0": xi - half_w,
-                "x1": xi + half_w,
+                "x0": x0,
+                "x1": x1,
                 "y0": y0,
                 "y1": y1,
-                "fillcolor": "#15d6d6",
-                "line": {"color": "rgba(0, 0, 0, 0.22)", "width": 1},
+                "fillcolor": "rgba(21, 214, 214, 0.92)",
+                "line": {"color": "rgba(0, 0, 0, 0.28)", "width": 1},
                 "layer": "above",
             }
         )
         block_h = y1 - y0
-        if block_h >= 40:
+        x_center = (x0 + x1) / 2.0
+        # レーンが細い・候補が多い日はラベルを出さずホバー／クリックで確認
+        show_label = block_h >= 52 and n_lanes <= 2
+        if show_label:
+            label_px = int(min(text_px, max(11, (block_h / float(total_minutes)) * float(plot_h) * 0.42)))
             annotations.append(
                 {
-                    "x": xi,
+                    "x": x_center,
                     "y": (y0 + y1) / 2.0,
-                    "text": str(blk["label"]),
+                    "text": str(blk.get("label_short") or ""),
                     "showarrow": False,
                     "xref": "x",
                     "yref": "y",
                     "xanchor": "center",
                     "yanchor": "middle",
-                    "font": {"size": text_px, "color": "#022"},
+                    "font": {"size": label_px, "color": "#022"},
                 }
             )
-        hit_x.append(xi)
+        hit_x.append(x_center)
         hit_y.append((y0 + y1) / 2.0)
+        lane_w_px = (_CANDIDATE_BLOCK_WIDTH / float(max(n_lanes, 1))) / float(max(n_vis, 1)) * float(plot_h) * 0.5
         hit_sizes.append(
-            float(max(20.0, min(96.0, (block_h / float(total_minutes)) * float(plot_h) * 0.92)))
+            float(
+                max(
+                    18.0,
+                    min(72.0, (block_h / float(total_minutes)) * float(plot_h) * 0.88, lane_w_px),
+                )
+            )
         )
 
     fig = go.Figure()
@@ -1451,7 +1504,10 @@ button {
     st.session_state.pop("candidate_search_calendar_pending", None)
 
     if filtered:
-        st.caption("候補の色ブロックをクリックすると、詳細のポップアップが開きます。")
+        st.caption(
+            "青い枠＝対応可能な時間帯です。枠をクリックすると詳細が開きます。"
+            "同じ日に候補が多い場合は横に並べて表示します（細い枠はホバーで時刻を確認）。"
+        )
 
     dcid = st.session_state.get("candidate_dialog_id")
     if dcid and filtered:
