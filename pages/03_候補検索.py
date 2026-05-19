@@ -32,7 +32,8 @@ from services.vehicle_service import list_vehicles
 from services.worker_service import list_workers
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
 from utils.loading_util import visible_spinner
-from utils.session_util import init_session_state
+from utils.project_register_ui import render_project_register_expander
+from utils.session_util import apply_registered_project_to_candidate_search, init_session_state
 
 
 def _on_candidate_search_button_click() -> None:
@@ -84,9 +85,9 @@ def _render_calendar_table_header_html(week_dates: List[date]) -> None:
         label = _weekday_label_calendar_header(d)
         bg = _column_bg_color(d)
         border = "border-right:1px solid #d8d8d8;" if i < n - 1 else ""
-        # 列数が少ないときは文字を大きく（PC での視認性）
-        fs = 17 if n <= 3 else 15
-        pad = "11px 6px" if n <= 3 else "10px 5px"
+        # 列数が少ないときは文字を大きく（4日区切り・PC 向け）
+        fs = 19 if n <= 3 else (17 if n <= 4 else 15)
+        pad = "12px 8px" if n <= 4 else "10px 5px"
         parts.append(
             f'<div class="cal-head-cell" style="text-align:center;padding:{pad};font-size:{fs}px;'
             f"color:#222;font-weight:600;background:{bg};{border}\">{label}</div>"
@@ -108,6 +109,23 @@ def _render_calendar_table_header_html(week_dates: List[date]) -> None:
 
 
 PLOTLY_CALENDAR_KEY = "candidate_week_plot"
+
+
+def _candidate_marker_pixel_size(duration_minutes: float, n_visible_days: int) -> float:
+    """Plotly マーカー直径（px）。列が少ないほど・枠が長いほど大きくする（PC 幅広表示対策）."""
+    col_scale = 7.0 / float(max(n_visible_days, 1))
+    raw = (max(30.0, duration_minutes) / 60.0) * 40.0 * col_scale
+    if n_visible_days <= 3:
+        lo, hi = 40.0, 96.0
+    else:
+        lo, hi = 36.0, 84.0
+    return float(max(lo, min(hi, raw)))
+
+
+def _candidate_calendar_plot_height(n_visible_days: int) -> int:
+    """表示日数に応じたチャート高さ（スマホはやや低め、PC は CSS で min-height も補強）."""
+    base = 580 if n_visible_days <= 4 else 540
+    return int(base + (7 - n_visible_days) * 52)
 
 
 def _candidate_calendar_chunk_offsets(chunk: int) -> List[int]:
@@ -171,7 +189,6 @@ def _build_candidate_week_plotly_figure(
     valid_dates = {week_dates[i].isoformat() for i in visible_day_offsets}
     day_to_x = {off: float(local_i) for local_i, off in enumerate(visible_day_offsets)}
     n_vis = len(visible_day_offsets)
-    col_scale = 7.0 / float(max(n_vis, 1))
 
     start_minutes = day_start_hour * 60
     end_minutes = day_end_hour * 60
@@ -238,8 +255,7 @@ def _build_candidate_week_plotly_figure(
         texts.append(sa.strftime("%H:%M"))
         customdata.append(cid)
         ordered_ids.append(cid)
-        raw = (dur_m / 60.0) * 22.0 * col_scale
-        sizes.append(float(max(20.0, min(58.0, raw))))
+        sizes.append(_candidate_marker_pixel_size(dur_m, n_vis))
 
     tickvals: List[int] = []
     ticktext: List[str] = []
@@ -291,10 +307,10 @@ def _build_candidate_week_plotly_figure(
         )
 
     tick_headers = [_weekday_label_calendar_header(week_dates[off]) for off in visible_day_offsets]
-    x_tickfont = 15 if n_vis <= 3 else 14
-    y_tickfont = 12
-    text_px = 12 if n_vis <= 3 else 11
-    plot_h = int(520 + (7 - n_vis) * 28)
+    x_tickfont = 17 if n_vis <= 3 else (16 if n_vis <= 4 else 14)
+    y_tickfont = 13
+    text_px = 15 if n_vis <= 3 else (14 if n_vis <= 4 else 12)
+    plot_h = _candidate_calendar_plot_height(n_vis)
 
     fig = go.Figure()
     if xs:
@@ -308,7 +324,7 @@ def _build_candidate_week_plotly_figure(
                     color="#15d6d6",
                     symbol="square",
                     opacity=1.0,
-                    line=dict(width=1, color="rgba(0,0,0,0.14)"),
+                    line=dict(width=2, color="rgba(0,0,0,0.22)"),
                 ),
                 text=texts,
                 textposition="middle center",
@@ -324,10 +340,10 @@ def _build_candidate_week_plotly_figure(
         height=plot_h,
         shapes=layout_shapes,
         margin=dict(
-            l=58,
-            r=16,
+            l=62,
+            r=18,
             t=10 if hide_xaxis_tick_labels else 52,
-            b=28,
+            b=32,
         ),
         paper_bgcolor="#fff",
         plot_bgcolor="#ffffff",
@@ -398,11 +414,34 @@ def _render_week_calendar(
   gap: 8px !important;
   align-items: center !important;
 }
+.candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {
+  min-height: 560px;
+}
+.candidate-cal-plot-wrap .js-plotly-plot,
+.candidate-cal-plot-wrap .plotly-graph-div {
+  width: 100% !important;
+}
 @media (max-width: 767px) {
-  .candidate-cal-chunk-nav button { min-height: 46px !important; }
+  .candidate-cal-chunk-nav button {
+    min-height: 48px !important;
+    font-size: 1rem !important;
+  }
+  .candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {
+    min-height: 520px;
+  }
 }
 @media (min-width: 768px) {
-  .candidate-cal-chunk-nav button { min-height: 38px !important; font-size: 0.95rem !important; }
+  .candidate-cal-chunk-nav button {
+    min-height: 42px !important;
+    font-size: 1rem !important;
+    padding: 0.35rem 0.75rem !important;
+  }
+  .candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {
+    min-height: 700px;
+  }
+  .candidate-cal-plot-wrap .js-plotly-plot {
+    min-height: 660px !important;
+  }
 }
 </style>
 """,
@@ -439,6 +478,7 @@ def _render_week_calendar(
     st.markdown("</div>", unsafe_allow_html=True)
 
     _render_calendar_table_header_html(visible_dates)
+    st.markdown('<div class="candidate-cal-plot-wrap">', unsafe_allow_html=True)
     fig, ordered_ids = _build_candidate_week_plotly_figure(
         candidates=candidates,
         week_start_date=wd,
@@ -458,6 +498,7 @@ def _render_week_calendar(
         use_container_width=True,
     )
     _apply_plotly_point_selection(plot_state, ordered_ids)
+    st.markdown("</div>", unsafe_allow_html=True)
     note = footer_note or (
         "※ 色ブロックは「空きとして採用した候補」の開始〜終了です。"
         "（上の「この週のカレンダー予定」で参照IDを確認できます）"
@@ -683,6 +724,11 @@ button {
     st.caption(
         "ステータスが「対応済み（リフォーム完了）」の案件は、日程候補の対象外のためここには表示されません。"
     )
+
+    created_on_page = render_project_register_expander(key_prefix="candidate_search_new")
+    if created_on_page:
+        apply_registered_project_to_candidate_search(created_on_page)
+        st.rerun()
 
     project_options = {p["project_name"]: p for p in projects}
     project_name_list = list(project_options.keys())
