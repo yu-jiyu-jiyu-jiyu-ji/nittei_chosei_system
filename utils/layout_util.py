@@ -318,6 +318,8 @@ def _inject_global_busy_overlay() -> None:
                 if (t.closest('a[href^="http"]') || t.closest('a[href^="https"]')) return false;
                 if (t.closest("[data-testid=\\"stSidebar\\"]") && t.closest("button")) return true;
                 if (t.closest("[data-testid=\\"stFormSubmitButton\\"]")) return true;
+                /* フォーム内は送信まで再実行しない（± 等で読込オーバーレイを出さない） */
+                if (t.closest("[data-testid=\\"stForm\\"]")) return false;
                 if (t.closest("[data-testid=\\"stDownloadButton\\"]")) return true;
                 if (t.closest(".stButton") && t.tagName === "BUTTON") return true;
                 if (t.closest("[data-testid=\\"stBaseButton\\"]") && t.tagName === "BUTTON") return true;
