@@ -17,6 +17,7 @@ from services.candidate_search_service import (
     collect_week_busy_events,
     fetch_week_calendar_events_bundle,
     format_week_events_jst_table_rows,
+    is_company_closed_day,
     search_candidates,
     sunday_week_containing,
     work_hours_display_hours,
@@ -1597,8 +1598,14 @@ button {
         except (TypeError, ValueError):
             slot_gran = 30
 
+        display_candidates = [
+            c
+            for c in (filtered or [])
+            if isinstance(c.get("start_at"), datetime)
+            and not is_company_closed_day(c["start_at"].date(), cal_settings)
+        ]
         _render_week_calendar(
-            candidates=filtered or [],
+            candidates=display_candidates,
             week_start_date=st.session_state["candidate_calendar_week_start"],
             slot_minutes=slot_gran,
             day_start_hour=dsh,

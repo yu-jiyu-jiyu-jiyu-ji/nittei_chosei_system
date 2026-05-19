@@ -83,6 +83,57 @@ def _sunday_week_start(d: date) -> date:
     return d - timedelta(days=(d.weekday() + 1) % 7)
 
 
+def _parse_holiday_date_strings(raw: Any) -> Set[date]:
+    """YYYY-MM-DD 文字列リストを date の集合に変換."""
+    out: Set[date] = set()
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        s = str(item).strip()
+        if not s:
+            continue
+        try:
+            out.add(date.fromisoformat(s))
+        except ValueError:
+            continue
+    return out
+
+
+def _company_holidays_dow_set(settings: Dict[str, Any]) -> Set[int]:
+    """定休曜日（月=0 … 日=6）."""
+    raw = settings.get("company_holidays_dow") or []
+    if not isinstance(raw, list):
+        return set()
+    out: Set[int] = set()
+    for x in raw:
+        try:
+            n = int(x)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= n <= 6:
+            out.add(n)
+    return out
+
+
+def is_company_closed_day(d: date, settings: Dict[str, Any]) -> bool:
+    """共通設定の会社休日に該当する日か（候補検索から除外）."""
+    if d.weekday() in _company_holidays_dow_set(settings):
+        return True
+    if d in _parse_holiday_date_strings(settings.get("company_holidays_custom")):
+        return True
+    nat_dates = _parse_holiday_date_strings(settings.get("company_holidays_national_dates"))
+    if nat_dates:
+        return d in nat_dates
+    if settings.get("company_holidays_national", True):
+        try:
+            import jpholiday
+
+            return bool(jpholiday.is_holiday(d))
+        except ImportError:
+            return False
+    return False
+
+
 def sunday_week_containing(d: date) -> date:
     """d を含む週の日曜日（UI・検索の週の起点）。"""
     return _sunday_week_start(d)
@@ -677,6 +728,9 @@ def search_candidates(
     priority_rank = {wid: idx for idx, wid in enumerate(priority_order)}
 
     for d in search_days:
+        if is_company_closed_day(d, settings):
+            continue
+
         day_start = datetime.combine(d, time.min, tzinfo=TZ)
         day_end = day_start + timedelta(days=1)
 
