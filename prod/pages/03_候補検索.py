@@ -112,7 +112,7 @@ PLOTLY_CALENDAR_KEY = "candidate_week_plot"
 
 
 # 日付列内の候補ブロック幅（x 軸データ座標。1.0 ≒ 列幅いっぱい）
-_CANDIDATE_BAR_WIDTH = 0.9
+_CANDIDATE_BLOCK_WIDTH = 0.9
 
 
 def _candidate_calendar_plot_height(n_visible_days: int) -> int:
@@ -174,7 +174,7 @@ def _build_candidate_week_plotly_figure(
     vehicle_id_to_name: Dict[str, str],
     hide_xaxis_tick_labels: bool = False,
 ) -> tuple[go.Figure, List[str]]:
-    """週間候補を Plotly で描画（列幅いっぱいの棒＝候補枠。クリックで候補IDを取得可能）.
+    """週間候補を Plotly で描画（開始〜終了時刻に合わせた矩形。クリックで候補IDを取得可能）.
 
     visible_day_offsets: 週開始日からの日オフセット（例: [0,1,2,3] で4列のみ表示）。
     """
@@ -187,10 +187,7 @@ def _build_candidate_week_plotly_figure(
     end_minutes = day_end_hour * 60
     total_minutes = max(1, end_minutes - start_minutes)
 
-    bar_x: List[float] = []
-    bar_heights: List[float] = []
-    bar_bases: List[float] = []
-    bar_texts: List[str] = []
+    candidate_blocks: List[Dict[str, Any]] = []
     hover_texts: List[str] = []
     customdata: List[str] = []
     ordered_ids: List[str] = []
@@ -210,12 +207,10 @@ def _build_candidate_week_plotly_figure(
 
         start_m = sa.hour * 60 + sa.minute
         end_m = ea.hour * 60 + ea.minute
-        top_m = max(0, start_m - start_minutes)
-        height_m = max(
-            slot_minutes,
-            min(end_minutes, end_m) - max(start_minutes, start_m),
-        )
-        if height_m <= 0:
+        y0 = max(0, start_m - start_minutes)
+        y1 = min(total_minutes, end_m - start_minutes)
+        height_m = y1 - y0
+        if height_m < max(1, slot_minutes // 2):
             continue
 
         workers_text = "、".join(worker_id_to_name.get(wid, wid) for wid in c.get("worker_ids", []))
@@ -239,13 +234,16 @@ def _build_candidate_week_plotly_figure(
         if meh is not None and float(meh) > 0:
             hover_lines.append(f"資材追加拘束目安: ≈{float(meh):.0f}分")
         hover_texts.append("<br>".join(hover_lines))
-
-        bar_x.append(day_to_x[day_idx])
-        bar_bases.append(top_m)
-        bar_heights.append(height_m)
-        bar_texts.append(f"{sa.strftime('%H:%M')}<br>〜{ea.strftime('%H:%M')}")
         customdata.append(cid)
         ordered_ids.append(cid)
+        candidate_blocks.append(
+            {
+                "xi": day_to_x[day_idx],
+                "y0": y0,
+                "y1": y1,
+                "label": f"{sa.strftime('%H:%M')}<br>〜{ea.strftime('%H:%M')}",
+            }
+        )
 
     tickvals: List[int] = []
     ticktext: List[str] = []
@@ -296,28 +294,69 @@ def _build_candidate_week_plotly_figure(
             }
         )
 
+    half_w = _CANDIDATE_BLOCK_WIDTH / 2.0
+    annotations: List[Dict[str, Any]] = []
+    hit_x: List[float] = []
+    hit_y: List[float] = []
+    hit_sizes: List[float] = []
+
     tick_headers = [_weekday_label_calendar_header(week_dates[off]) for off in visible_day_offsets]
     x_tickfont = 17 if n_vis <= 3 else (16 if n_vis <= 4 else 14)
     y_tickfont = 13
     text_px = 15 if n_vis <= 3 else (14 if n_vis <= 4 else 12)
     plot_h = _candidate_calendar_plot_height(n_vis)
 
+    for blk in candidate_blocks:
+        xi = float(blk["xi"])
+        y0 = float(blk["y0"])
+        y1 = float(blk["y1"])
+        layout_shapes.append(
+            {
+                "type": "rect",
+                "xref": "x",
+                "yref": "y",
+                "x0": xi - half_w,
+                "x1": xi + half_w,
+                "y0": y0,
+                "y1": y1,
+                "fillcolor": "#15d6d6",
+                "line": {"color": "rgba(0, 0, 0, 0.22)", "width": 1},
+                "layer": "above",
+            }
+        )
+        block_h = y1 - y0
+        if block_h >= 40:
+            annotations.append(
+                {
+                    "x": xi,
+                    "y": (y0 + y1) / 2.0,
+                    "text": str(blk["label"]),
+                    "showarrow": False,
+                    "xref": "x",
+                    "yref": "y",
+                    "xanchor": "center",
+                    "yanchor": "middle",
+                    "font": {"size": text_px, "color": "#022"},
+                }
+            )
+        hit_x.append(xi)
+        hit_y.append((y0 + y1) / 2.0)
+        hit_sizes.append(
+            float(max(20.0, min(96.0, (block_h / float(total_minutes)) * float(plot_h) * 0.92)))
+        )
+
     fig = go.Figure()
-    if bar_x:
+    if hit_x:
         fig.add_trace(
-            go.Bar(
-                x=bar_x,
-                y=bar_heights,
-                base=bar_bases,
-                width=_CANDIDATE_BAR_WIDTH,
+            go.Scatter(
+                x=hit_x,
+                y=hit_y,
+                mode="markers",
                 marker=dict(
-                    color="#15d6d6",
-                    line=dict(width=1, color="rgba(0, 0, 0, 0.22)"),
+                    size=hit_sizes,
+                    color="rgba(21, 214, 214, 0.01)",
+                    line=dict(width=0),
                 ),
-                text=bar_texts,
-                textposition="inside",
-                insidetextanchor="middle",
-                textfont=dict(size=text_px, color="#022"),
                 customdata=customdata,
                 hovertext=hover_texts,
                 hoverinfo="text",
@@ -327,7 +366,7 @@ def _build_candidate_week_plotly_figure(
 
     fig.update_layout(
         height=plot_h,
-        barmode="overlay",
+        annotations=annotations,
         shapes=layout_shapes,
         margin=dict(
             l=62,
