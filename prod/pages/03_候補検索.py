@@ -759,12 +759,6 @@ button {
         and isinstance(masters_cache.get("projects"), list)
         and isinstance(masters_cache.get("workers"), list)
         and isinstance(masters_cache.get("vehicles"), list)
-        and (
-            cjob_early is not None
-            or cal_early
-            or search_press
-            or week_nav_trigger
-        )
     )
     show_search_phase = bool(
         cjob_early is not None
@@ -833,23 +827,8 @@ button {
         " 未登録の案件は下の「案件を新規登録」から追加できます（登録後は自動で候補検索を開始します）。"
     )
 
-    reg_hdr, reg_btn = st.columns([4, 1])
-    with reg_hdr:
-        st.markdown("**新規登録**")
-    with reg_btn:
-        if st.button(
-            "フォームを開く",
-            key="candidate_open_register",
-            use_container_width=True,
-            help="新規登録フォームを開きます",
-        ):
-            st.session_state["candidate_register_open"] = True
-            st.rerun()
-
-    reg_expanded = bool(st.session_state.pop("candidate_register_open", False))
     created_on_page = render_project_register_expander(
         key_prefix="candidate_search_new",
-        expanded=reg_expanded,
     )
     if created_on_page:
         apply_registered_project_to_candidate_search(created_on_page)

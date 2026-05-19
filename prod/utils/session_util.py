@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import streamlit as st
 
@@ -26,18 +26,37 @@ def init_session_state() -> None:
             st.session_state[key] = default_value
 
 
-def _clear_candidate_search_state_for_new_project() -> None:
+def _upsert_project_in_masters_cache(project: Dict[str, Any]) -> None:
+    """登録直後に案件一覧キャッシュへ反映（不要な全件再取得を避ける）."""
+    pname = str(project.get("project_name") or "").strip()
+    if not pname:
+        return
+    cache = st.session_state.get("_candidate_search_masters")
+    if not isinstance(cache, dict):
+        return
+    projects = cache.get("projects")
+    if not isinstance(projects, list):
+        return
+    rest = [p for p in projects if str(p.get("project_name") or "").strip() != pname]
+    cache["projects"] = rest + [project]
+    st.session_state["_candidate_search_masters"] = cache
+
+
+def _clear_candidate_search_state_for_new_project(project: Optional[Dict[str, Any]] = None) -> None:
     for key in (
         "candidate_results",
         "candidate_search_job",
         "candidate_search_calendar_pending",
-        "_candidate_search_masters",
         "candidate_cal_chunk",
         "_candidate_cal_chunk_week",
         "candidate_dialog_id",
     ):
         st.session_state.pop(key, None)
     st.session_state.pop("week_nav_trigger_search", None)
+    if project:
+        _upsert_project_in_masters_cache(project)
+    else:
+        st.session_state.pop("_candidate_search_masters", None)
 
 
 def apply_registered_project_to_candidate_search(project: Dict[str, Any]) -> bool:
@@ -54,7 +73,7 @@ def apply_registered_project_to_candidate_search(project: Dict[str, Any]) -> boo
         st.session_state["candidate_search_capacity"] = max(0, rw)
     except (TypeError, ValueError):
         pass
-    _clear_candidate_search_state_for_new_project()
+    _clear_candidate_search_state_for_new_project(project)
     st.session_state["_candidate_search_btn_pressed"] = True
     st.session_state["candidate_search_post_register_notice"] = (
         f"案件「{pname}」を登録しました。候補を検索しています。"
