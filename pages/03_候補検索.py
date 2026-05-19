@@ -113,12 +113,36 @@ PLOTLY_CALENDAR_KEY = "candidate_week_plot"
 
 # 日付列内の候補ブロック幅（x 軸データ座標。1.0 ≒ 列幅いっぱい）
 _CANDIDATE_BLOCK_WIDTH = 0.9
+# カレンダー表示は 1 時間刻み（検索の time_slot_minutes とは別。見やすさ優先）
+_CALENDAR_DISPLAY_SLOT_MINUTES = 60
 
 
 def _candidate_calendar_plot_height(n_visible_days: int) -> int:
     """表示日数に応じたチャート高さ（スマホはやや低め、PC は CSS で min-height も補強）."""
     base = 580 if n_visible_days <= 4 else 540
     return int(base + (7 - n_visible_days) * 52)
+
+
+def _collapse_candidates_for_hourly_calendar(
+    candidates: List[Dict[str, Any]],
+    *,
+    week_start_date: date,
+    visible_day_offsets: List[int],
+) -> List[Dict[str, Any]]:
+    """カレンダー用に「日付×開始の時」ごとに1件にまとめる（30分刻みの候補が並びすぎるのを防ぐ）."""
+    week_dates = [week_start_date + timedelta(days=i) for i in range(7)]
+    valid_dates = {week_dates[i].isoformat() for i in visible_day_offsets}
+    best: Dict[tuple[str, int], Dict[str, Any]] = {}
+    for c in candidates:
+        sa: datetime = c["start_at"]
+        dkey = sa.date().isoformat()
+        if dkey not in valid_dates:
+            continue
+        key = (dkey, int(sa.hour))
+        prev = best.get(key)
+        if prev is None or sa < prev["start_at"]:
+            best[key] = c
+    return sorted(best.values(), key=lambda x: x["start_at"])
 
 
 def _assign_candidate_block_lanes(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -225,6 +249,13 @@ def _build_candidate_week_plotly_figure(
     start_minutes = day_start_hour * 60
     end_minutes = day_end_hour * 60
     total_minutes = max(1, end_minutes - start_minutes)
+    display_slot = _CALENDAR_DISPLAY_SLOT_MINUTES
+
+    candidates = _collapse_candidates_for_hourly_calendar(
+        candidates,
+        week_start_date=week_start_date,
+        visible_day_offsets=visible_day_offsets,
+    )
 
     candidate_blocks: List[Dict[str, Any]] = []
     hover_texts: List[str] = []
@@ -245,11 +276,10 @@ def _build_candidate_week_plotly_figure(
             continue
 
         start_m = sa.hour * 60 + sa.minute
-        end_m = ea.hour * 60 + ea.minute
-        y0 = max(0, start_m - start_minutes)
-        y1 = min(total_minutes, end_m - start_minutes)
-        height_m = y1 - y0
-        if height_m < max(1, slot_minutes // 2):
+        hour_row_start = int(sa.hour) * 60
+        y0 = max(0, hour_row_start - start_minutes)
+        y1 = min(total_minutes, y0 + display_slot)
+        if y1 <= y0:
             continue
 
         workers_text = "、".join(worker_id_to_name.get(wid, wid) for wid in c.get("worker_ids", []))
@@ -280,7 +310,7 @@ def _build_candidate_week_plotly_figure(
                 "xi": day_to_x[day_idx],
                 "y0": y0,
                 "y1": y1,
-                "label_short": f"{sa.strftime('%H:%M')}-{ea.strftime('%H:%M')}",
+                "label_short": sa.strftime("%H:%M"),
             }
         )
 
@@ -288,14 +318,12 @@ def _build_candidate_week_plotly_figure(
 
     tickvals: List[int] = []
     ticktext: List[str] = []
-    slot_count = max(1, (total_minutes + slot_minutes - 1) // slot_minutes)
+    slot_count = max(1, (total_minutes + display_slot - 1) // display_slot)
     for i in range(slot_count + 1):
-        m_abs = start_minutes + i * slot_minutes
-        off = i * slot_minutes
+        m_abs = start_minutes + i * display_slot
+        off = i * display_slot
         if off > total_minutes:
             break
-        if m_abs % 60 != 0:
-            continue
         tickvals.append(off)
         hh = m_abs // 60
         mm = m_abs % 60
@@ -369,23 +397,21 @@ def _build_candidate_week_plotly_figure(
         )
         block_h = y1 - y0
         x_center = (x0 + x1) / 2.0
-        # レーンが細い・候補が多い日はラベルを出さずホバー／クリックで確認
-        show_label = block_h >= 52 and n_lanes <= 2
-        if show_label:
-            label_px = int(min(text_px, max(11, (block_h / float(total_minutes)) * float(plot_h) * 0.42)))
-            annotations.append(
-                {
-                    "x": x_center,
-                    "y": (y0 + y1) / 2.0,
-                    "text": str(blk.get("label_short") or ""),
-                    "showarrow": False,
-                    "xref": "x",
-                    "yref": "y",
-                    "xanchor": "center",
-                    "yanchor": "middle",
-                    "font": {"size": label_px, "color": "#022"},
-                }
-            )
+        # 判別は開始時刻ラベル（1時間マス内の上部寄せ）
+        label_px = int(min(16, max(12, text_px)))
+        annotations.append(
+            {
+                "x": x_center,
+                "y": y0 + min(14.0, block_h * 0.22),
+                "text": f"<b>{blk.get('label_short') or ''}</b>",
+                "showarrow": False,
+                "xref": "x",
+                "yref": "y",
+                "xanchor": "center",
+                "yanchor": "top",
+                "font": {"size": label_px, "color": "#022"},
+            }
+        )
         hit_x.append(x_center)
         hit_y.append((y0 + y1) / 2.0)
         lane_w_px = (_CANDIDATE_BLOCK_WIDTH / float(max(n_lanes, 1))) / float(max(n_vis, 1)) * float(plot_h) * 0.5
@@ -1505,8 +1531,8 @@ button {
 
     if filtered:
         st.caption(
-            "青い枠＝対応可能な時間帯です。枠をクリックすると詳細が開きます。"
-            "同じ日に候補が多い場合は横に並べて表示します（細い枠はホバーで時刻を確認）。"
+            "青い枠は開始時刻（1時間刻み）で並べています。枠左上の時刻が開始時刻です。"
+            "クリックで詳細（終了・職人など）を確認できます。検索の刻み幅は共通設定の値のままです。"
         )
 
     dcid = st.session_state.get("candidate_dialog_id")
