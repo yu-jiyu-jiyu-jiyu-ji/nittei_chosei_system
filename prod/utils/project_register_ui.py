@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
 
 import streamlit as st
 
@@ -27,19 +28,48 @@ def _field_key(key_prefix: str, suffix: str) -> str:
     return f"{key_prefix}_{suffix}"
 
 
+@contextmanager
+def _register_expander(
+    title: str,
+    *,
+    key_prefix: str,
+    close_after_register: bool,
+    expanded: bool,
+) -> Iterator[None]:
+    """登録用エキスパンダー.
+
+    expanded を session_state で固定しない（送信のたびに折りたたむと送信が無効になる）。
+    close_after_register 時は登録成功後のみ force_close で閉じる。
+    """
+    if close_after_register:
+        force_close = st.session_state.pop(_field_key(key_prefix, "force_close_expander"), False)
+        if force_close:
+            with st.expander(title, expanded=False):
+                yield
+        else:
+            with st.expander(title):
+                yield
+    else:
+        with st.expander(title):
+            yield
+
+
 def render_project_register_expander(
     *,
     key_prefix: str = "proj_reg",
     expanded: bool = False,
-    expanded_session_key: Optional[str] = None,
+    close_after_register: bool = False,
     title: str = "案件を新規登録",
 ) -> Optional[Dict[str, Any]]:
     """新規登録エキスパンダーを描画する。成功時は作成した案件 dict を返す."""
-    expanded_key = expanded_session_key or _field_key(key_prefix, "register_expanded")
-    if expanded_key not in st.session_state:
-        st.session_state[expanded_key] = expanded
+    created: Optional[Dict[str, Any]] = None
 
-    with st.expander(title, expanded=bool(st.session_state.get(expanded_key, False))):
+    with _register_expander(
+        title,
+        key_prefix=key_prefix,
+        close_after_register=close_after_register,
+        expanded=expanded,
+    ):
         with st.form(key=_field_key(key_prefix, "project_register_form"), clear_on_submit=False):
             new_construction_type = st.multiselect(
                 "施工内容*（複数選択可）",
@@ -102,8 +132,8 @@ def render_project_register_expander(
                                 form_values,
                                 current_user_name=st.session_state.get("current_user_name"),
                             )
-                        st.session_state[_field_key(key_prefix, "register_created")] = created
-                        st.session_state[expanded_key] = False
+                        if close_after_register:
+                            st.session_state[_field_key(key_prefix, "force_close_expander")] = True
                     except FirestoreSaveError as e:
                         st.error(f"保存に失敗しました。{e}")
                     except FirestoreConnectionError:
@@ -112,4 +142,4 @@ def render_project_register_expander(
                         st.error("想定外エラーが発生しました。")
                         st.exception(exc)
 
-    return st.session_state.pop(_field_key(key_prefix, "register_created"), None)
+    return created
