@@ -58,6 +58,33 @@ def _format_date_jp(d: date) -> str:
     return f"{d.year}年{d.month}月{d.day}日（{_YOUBI[d.weekday()]}）"
 
 
+def _format_week_range_short(ws: date) -> str:
+    """週ナビ用: 日曜始まりの7日間（例: 5/18（日）〜5/24（土））."""
+    we = ws + timedelta(days=6)
+    return f"{ws.month}/{ws.day}（{_YOUBI[ws.weekday()]}）〜{we.month}/{we.day}（{_YOUBI[we.weekday()]}）"
+
+
+def _sunday_week_from_today(week_offset: int) -> date:
+    """今日を含む週の日曜 + week_offset 週（0=今週, 1=来週, 2=再来週）."""
+    return sunday_week_containing(date.today()) + timedelta(days=7 * week_offset)
+
+
+def _has_candidate_search_results() -> bool:
+    return "candidate_results" in st.session_state
+
+
+def _go_to_calendar_week(ws: date, *, trigger_research: bool) -> None:
+    """表示週を切り替え。検索済みなら trigger_research でその週を再検索."""
+    st.session_state["candidate_calendar_week_start"] = ws
+    st.session_state["candidate_cal_chunk"] = 0
+    st.session_state.pop("_candidate_cal_chunk_week", None)
+    if trigger_research and _has_candidate_search_results():
+        st.session_state["week_nav_trigger_search"] = True
+    else:
+        st.session_state["week_calendar_browse"] = True
+    st.rerun()
+
+
 def _is_jp_public_holiday(d: date) -> bool:
     """日本の祝日（振替・国民の休日を含む）。jpholiday が無い場合は常に False."""
     try:
@@ -972,6 +999,21 @@ button {
     # nowrap-row の閉じタグ
     st.markdown("</div>", unsafe_allow_html=True)
 
+    st.caption("検索しなくても週の予定を確認できます（日曜始まり）")
+    bw1, bw2, bw3, bw4 = st.columns(4)
+    with bw1:
+        if st.button("今週の予定", key="browse_week_0", use_container_width=True):
+            _go_to_calendar_week(_sunday_week_from_today(0), trigger_research=False)
+    with bw2:
+        if st.button("来週の予定", key="browse_week_1", use_container_width=True):
+            _go_to_calendar_week(_sunday_week_from_today(1), trigger_research=False)
+    with bw3:
+        if st.button("再来週の予定", key="browse_week_2", use_container_width=True):
+            _go_to_calendar_week(_sunday_week_from_today(2), trigger_research=False)
+    with bw4:
+        if st.button("翌々週の予定", key="browse_week_3", use_container_width=True):
+            _go_to_calendar_week(_sunday_week_from_today(3), trigger_research=False)
+
     required_capacity = int(st.session_state.get("candidate_search_capacity", 0))
     loc_ov: Dict[str, str] = st.session_state.setdefault("candidate_location_overrides", {})
 
@@ -1297,10 +1339,14 @@ button {
                             )
                             st.rerun()
 
-    # 週移動での再実行時にもカレンダーを維持
+    week_calendar_browse = bool(st.session_state.pop("week_calendar_browse", False))
+    browse_only_view = week_calendar_browse
+
+    # 週移動での再実行時にもカレンダーを維持（来週・再来週の予定閲覧も含む）
     if (
         not search_clicked
         and not week_nav_trigger
+        and not week_calendar_browse
         and "candidate_results" not in st.session_state
         and not st.session_state.get("candidate_search_job")
     ):
@@ -1394,10 +1440,13 @@ button {
     with _cal_out:
         st.subheader("候補")
         if not filtered:
-            st.info(
-                "候補が見つかりませんでした。案件・職人・車両の連携、人数、就業時間、またはカレンダー上の空き状況を確認してください。"
-                "（特定の日だけ午前で途切れる場合は、その日の Google カレンダーに午後の予定が入っている可能性があります。）"
-            )
+            if browse_only_view or not _has_candidate_search_results():
+                st.caption("予定カレンダーを表示しています。候補を探すには検索を実行してください。")
+            else:
+                st.info(
+                    "候補が見つかりませんでした。案件・職人・車両の連携、人数、就業時間、またはカレンダー上の空き状況を確認してください。"
+                    "（特定の日だけ午前で途切れる場合は、その日の Google カレンダーに午後の予定が入っている可能性があります。）"
+                )
 
         # ----------------------------
         # 下部：週カレンダー形式の候補表示（色ブロック）
@@ -1405,27 +1454,50 @@ button {
         # 週移動（前週/次週）— 押下時は表示週の7日分を再検索
         ws = st.session_state["candidate_calendar_week_start"]
 
-        # 週ナビゲーション（＜ 3月 ＞）: ボタンで同一セッション内の rerun（タブ遷移しない）
+        st.caption("表示週（日曜始まり）")
+        q1, q2, q3, q4 = st.columns(4)
+        with q1:
+            if st.button("今週", key="week_jump_0", use_container_width=True):
+                _go_to_calendar_week(_sunday_week_from_today(0), trigger_research=True)
+        with q2:
+            if st.button("来週", key="week_jump_1", use_container_width=True):
+                _go_to_calendar_week(_sunday_week_from_today(1), trigger_research=True)
+        with q3:
+            if st.button("再来週", key="week_jump_2", use_container_width=True):
+                _go_to_calendar_week(_sunday_week_from_today(2), trigger_research=True)
+        with q4:
+            if st.button("翌々週", key="week_jump_3", use_container_width=True):
+                _go_to_calendar_week(_sunday_week_from_today(3), trigger_research=True)
+
+        # 週ナビゲーション（＜ 日付範囲 ＞）: ボタンで同一セッション内の rerun（タブ遷移しない）
         st.markdown('<div class="week-nav-wrap">', unsafe_allow_html=True)
         col_prev, col_month, col_next = st.columns([1.0, 2.0, 1.0])
         with col_prev:
             if st.button("＜", key="week_prev_btn"):
                 st.session_state["_week_nav_undo"] = ws
                 st.session_state["candidate_calendar_week_start"] = ws - timedelta(days=7)
-                st.session_state["week_nav_trigger_search"] = True
+                if _has_candidate_search_results():
+                    st.session_state["week_nav_trigger_search"] = True
+                else:
+                    st.session_state["week_calendar_browse"] = True
                 st.rerun()
         with col_month:
             st.markdown(
-                f"<div style='text-align:left;font-weight:700;'>{ws.month}月</div>",
+                f"<div style='text-align:left;font-weight:700;'>{_format_week_range_short(ws)}</div>",
                 unsafe_allow_html=True,
             )
         with col_next:
             if st.button("＞", key="week_next_btn"):
                 st.session_state["_week_nav_undo"] = ws
                 st.session_state["candidate_calendar_week_start"] = ws + timedelta(days=7)
-                st.session_state["week_nav_trigger_search"] = True
+                if _has_candidate_search_results():
+                    st.session_state["week_nav_trigger_search"] = True
+                else:
+                    st.session_state["week_calendar_browse"] = True
                 st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
+        if not _has_candidate_search_results():
+            st.caption("検索前は予定カレンダーのみ表示します。候補を見るには検索を実行してください。")
 
         cache_key = f"calendar_week_events_{ws.isoformat()}_{'veh' if use_vehicle_calendar else 'worker'}"
         if cache_key not in st.session_state:
