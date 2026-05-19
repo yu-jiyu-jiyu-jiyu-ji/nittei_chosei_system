@@ -185,6 +185,7 @@ def _inject_global_busy_overlay() -> None:
                     + "align-items:center;justify-content:center;pointer-events:none;opacity:0;"
                     + "transition:opacity 0.12s ease-out;}"
                     + "#_st_global_busy_layer._st_busy_on{opacity:1;pointer-events:auto;}"
+                    + "#_st_global_busy_layer._st_busy_on._st_busy_pending{pointer-events:none;}"
                     + "#_st_global_busy_layer ._st_busy_back{position:absolute;inset:0;"
                     + "background:rgba(15,23,42,0.55);backdrop-filter:blur(2px);}"
                     + "#_st_global_busy_layer ._st_busy_card{position:relative;z-index:1;"
@@ -224,8 +225,13 @@ def _inject_global_busy_overlay() -> None:
             function setBusy(on) {
                 var L = layerEl();
                 if (!L) return;
-                if (on) L.classList.add("_st_busy_on");
-                else L.classList.remove("_st_busy_on");
+                if (on) {
+                    L.classList.add("_st_busy_on");
+                    if (S.state === "pending") L.classList.add("_st_busy_pending");
+                    else L.classList.remove("_st_busy_pending");
+                } else {
+                    L.classList.remove("_st_busy_on", "_st_busy_pending");
+                }
             }
 
             var S = doc._stGlobalBusyOverlay || (doc._stGlobalBusyOverlay = {});
@@ -320,6 +326,11 @@ def _inject_global_busy_overlay() -> None:
                 if (t.closest("[data-testid=\\"stFormSubmitButton\\"]")) return true;
                 /* フォーム内は送信まで再実行しない（± 等で読込オーバーレイを出さない） */
                 if (t.closest("[data-testid=\\"stForm\\"]")) return false;
+                if (t.closest("[data-testid=\\"stSelectbox\\"]")) return false;
+                if (t.closest("[data-testid=\\"stMultiSelect\\"]")) return false;
+                if (t.closest("[data-baseweb=\\"popover\\"]")) return false;
+                if (t.closest("[data-baseweb=\\"menu\\"]")) return false;
+                if (t.closest("[data-testid=\\"stDialog\\"]")) return false;
                 if (t.closest("[data-testid=\\"stDownloadButton\\"]")) return true;
                 if (t.closest(".stButton") && t.tagName === "BUTTON") return true;
                 if (t.closest("[data-testid=\\"stBaseButton\\"]") && t.tagName === "BUTTON") return true;

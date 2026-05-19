@@ -32,7 +32,10 @@ from services.vehicle_service import list_vehicles
 from services.worker_service import list_workers
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
 from utils.loading_util import visible_spinner
-from utils.project_register_ui import render_project_register_expander
+from utils.project_register_ui import (
+    CANDIDATE_REGISTER_DIALOG_RESULT_KEY,
+    render_candidate_search_register_ui,
+)
 from utils.session_util import apply_registered_project_to_candidate_search, init_session_state
 
 
@@ -621,6 +624,12 @@ def render_page() -> None:
         menu_items=STREAMLIT_MENU_ITEMS,
     )
     init_session_state()
+
+    registered_from_dialog = st.session_state.pop(CANDIDATE_REGISTER_DIALOG_RESULT_KEY, None)
+    if registered_from_dialog:
+        apply_registered_project_to_candidate_search(registered_from_dialog)
+        st.rerun()
+
     # 候補検索ページへ再入場したときは、前回候補を残さず毎回リフレッシュする。
     if st.session_state.get("_active_page_id") != "candidate_search":
         st.session_state.pop("candidate_results", None)
@@ -824,16 +833,10 @@ button {
     st.subheader("条件")
     st.caption(
         "ステータスが「対応済み（リフォーム完了）」の案件は、日程候補の対象外のためここには表示されません。"
-        " 未登録の案件は下の「案件を新規登録」から追加できます（登録後は自動で候補検索を開始します）。"
+        " 未登録の案件は「＋ 案件を新規登録」から追加できます（登録後は自動で候補検索を開始します）。"
     )
 
-    created_on_page = render_project_register_expander(
-        key_prefix="candidate_search_new",
-        close_after_register=True,
-    )
-    if created_on_page:
-        apply_registered_project_to_candidate_search(created_on_page)
-        st.rerun()
+    render_candidate_search_register_ui()
 
     project_options = {p["project_name"]: p for p in projects}
     project_name_list = list(project_options.keys())
