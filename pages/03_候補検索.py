@@ -32,7 +32,8 @@ from services.vehicle_service import list_vehicles
 from services.worker_service import list_workers
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
 from utils.loading_util import visible_spinner
-from utils.session_util import init_session_state
+from utils.project_register_ui import render_project_register_expander
+from utils.session_util import apply_registered_project_to_candidate_search, init_session_state
 
 
 def _on_candidate_search_button_click() -> None:
@@ -84,9 +85,9 @@ def _render_calendar_table_header_html(week_dates: List[date]) -> None:
         label = _weekday_label_calendar_header(d)
         bg = _column_bg_color(d)
         border = "border-right:1px solid #d8d8d8;" if i < n - 1 else ""
-        # 列数が少ないときは文字を大きく（PC での視認性）
-        fs = 17 if n <= 3 else 15
-        pad = "11px 6px" if n <= 3 else "10px 5px"
+        # 列数が少ないときは文字を大きく（4日区切り・PC 向け）
+        fs = 19 if n <= 3 else (17 if n <= 4 else 15)
+        pad = "12px 8px" if n <= 4 else "10px 5px"
         parts.append(
             f'<div class="cal-head-cell" style="text-align:center;padding:{pad};font-size:{fs}px;'
             f"color:#222;font-weight:600;background:{bg};{border}\">{label}</div>"
@@ -108,6 +109,16 @@ def _render_calendar_table_header_html(week_dates: List[date]) -> None:
 
 
 PLOTLY_CALENDAR_KEY = "candidate_week_plot"
+
+
+# 日付列内の候補ブロック幅（x 軸データ座標。1.0 ≒ 列幅いっぱい）
+_CANDIDATE_BAR_WIDTH = 0.9
+
+
+def _candidate_calendar_plot_height(n_visible_days: int) -> int:
+    """表示日数に応じたチャート高さ（スマホはやや低め、PC は CSS で min-height も補強）."""
+    base = 580 if n_visible_days <= 4 else 540
+    return int(base + (7 - n_visible_days) * 52)
 
 
 def _candidate_calendar_chunk_offsets(chunk: int) -> List[int]:
@@ -163,7 +174,7 @@ def _build_candidate_week_plotly_figure(
     vehicle_id_to_name: Dict[str, str],
     hide_xaxis_tick_labels: bool = False,
 ) -> tuple[go.Figure, List[str]]:
-    """週間候補を Plotly で描画（セル＝マーカー。クリックで候補IDを取得可能）.
+    """週間候補を Plotly で描画（列幅いっぱいの棒＝候補枠。クリックで候補IDを取得可能）.
 
     visible_day_offsets: 週開始日からの日オフセット（例: [0,1,2,3] で4列のみ表示）。
     """
@@ -171,18 +182,17 @@ def _build_candidate_week_plotly_figure(
     valid_dates = {week_dates[i].isoformat() for i in visible_day_offsets}
     day_to_x = {off: float(local_i) for local_i, off in enumerate(visible_day_offsets)}
     n_vis = len(visible_day_offsets)
-    col_scale = 7.0 / float(max(n_vis, 1))
 
     start_minutes = day_start_hour * 60
     end_minutes = day_end_hour * 60
     total_minutes = max(1, end_minutes - start_minutes)
 
-    xs: List[float] = []
-    ys: List[float] = []
-    texts: List[str] = []
+    bar_x: List[float] = []
+    bar_heights: List[float] = []
+    bar_bases: List[float] = []
+    bar_texts: List[str] = []
     hover_texts: List[str] = []
     customdata: List[str] = []
-    sizes: List[float] = []
     ordered_ids: List[str] = []
 
     for c in candidates:
@@ -208,9 +218,6 @@ def _build_candidate_week_plotly_figure(
         if height_m <= 0:
             continue
 
-        mid_m = top_m + height_m / 2.0
-        dur_m = max(slot_minutes, end_m - start_m)
-
         workers_text = "、".join(worker_id_to_name.get(wid, wid) for wid in c.get("worker_ids", []))
         vehicles_text = "、".join(vehicle_id_to_name.get(vid, vid) for vid in c.get("vehicle_ids", []))
         hover_lines = [
@@ -233,13 +240,12 @@ def _build_candidate_week_plotly_figure(
             hover_lines.append(f"資材追加拘束目安: ≈{float(meh):.0f}分")
         hover_texts.append("<br>".join(hover_lines))
 
-        xs.append(day_to_x[day_idx])
-        ys.append(mid_m)
-        texts.append(sa.strftime("%H:%M"))
+        bar_x.append(day_to_x[day_idx])
+        bar_bases.append(top_m)
+        bar_heights.append(height_m)
+        bar_texts.append(f"{sa.strftime('%H:%M')}<br>〜{ea.strftime('%H:%M')}")
         customdata.append(cid)
         ordered_ids.append(cid)
-        raw = (dur_m / 60.0) * 22.0 * col_scale
-        sizes.append(float(max(20.0, min(58.0, raw))))
 
     tickvals: List[int] = []
     ticktext: List[str] = []
@@ -291,27 +297,26 @@ def _build_candidate_week_plotly_figure(
         )
 
     tick_headers = [_weekday_label_calendar_header(week_dates[off]) for off in visible_day_offsets]
-    x_tickfont = 15 if n_vis <= 3 else 14
-    y_tickfont = 12
-    text_px = 12 if n_vis <= 3 else 11
-    plot_h = int(520 + (7 - n_vis) * 28)
+    x_tickfont = 17 if n_vis <= 3 else (16 if n_vis <= 4 else 14)
+    y_tickfont = 13
+    text_px = 15 if n_vis <= 3 else (14 if n_vis <= 4 else 12)
+    plot_h = _candidate_calendar_plot_height(n_vis)
 
     fig = go.Figure()
-    if xs:
+    if bar_x:
         fig.add_trace(
-            go.Scatter(
-                x=xs,
-                y=ys,
-                mode="markers+text",
+            go.Bar(
+                x=bar_x,
+                y=bar_heights,
+                base=bar_bases,
+                width=_CANDIDATE_BAR_WIDTH,
                 marker=dict(
-                    size=sizes,
                     color="#15d6d6",
-                    symbol="square",
-                    opacity=1.0,
-                    line=dict(width=1, color="rgba(0,0,0,0.14)"),
+                    line=dict(width=1, color="rgba(0, 0, 0, 0.22)"),
                 ),
-                text=texts,
-                textposition="middle center",
+                text=bar_texts,
+                textposition="inside",
+                insidetextanchor="middle",
                 textfont=dict(size=text_px, color="#022"),
                 customdata=customdata,
                 hovertext=hover_texts,
@@ -322,12 +327,13 @@ def _build_candidate_week_plotly_figure(
 
     fig.update_layout(
         height=plot_h,
+        barmode="overlay",
         shapes=layout_shapes,
         margin=dict(
-            l=58,
-            r=16,
+            l=62,
+            r=18,
             t=10 if hide_xaxis_tick_labels else 52,
-            b=28,
+            b=32,
         ),
         paper_bgcolor="#fff",
         plot_bgcolor="#ffffff",
@@ -398,11 +404,34 @@ def _render_week_calendar(
   gap: 8px !important;
   align-items: center !important;
 }
+.candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {
+  min-height: 560px;
+}
+.candidate-cal-plot-wrap .js-plotly-plot,
+.candidate-cal-plot-wrap .plotly-graph-div {
+  width: 100% !important;
+}
 @media (max-width: 767px) {
-  .candidate-cal-chunk-nav button { min-height: 46px !important; }
+  .candidate-cal-chunk-nav button {
+    min-height: 48px !important;
+    font-size: 1rem !important;
+  }
+  .candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {
+    min-height: 520px;
+  }
 }
 @media (min-width: 768px) {
-  .candidate-cal-chunk-nav button { min-height: 38px !important; font-size: 0.95rem !important; }
+  .candidate-cal-chunk-nav button {
+    min-height: 42px !important;
+    font-size: 1rem !important;
+    padding: 0.35rem 0.75rem !important;
+  }
+  .candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {
+    min-height: 700px;
+  }
+  .candidate-cal-plot-wrap .js-plotly-plot {
+    min-height: 660px !important;
+  }
 }
 </style>
 """,
@@ -439,6 +468,7 @@ def _render_week_calendar(
     st.markdown("</div>", unsafe_allow_html=True)
 
     _render_calendar_table_header_html(visible_dates)
+    st.markdown('<div class="candidate-cal-plot-wrap">', unsafe_allow_html=True)
     fig, ordered_ids = _build_candidate_week_plotly_figure(
         candidates=candidates,
         week_start_date=wd,
@@ -458,6 +488,7 @@ def _render_week_calendar(
         use_container_width=True,
     )
     _apply_plotly_point_selection(plot_state, ordered_ids)
+    st.markdown("</div>", unsafe_allow_html=True)
     note = footer_note or (
         "※ 色ブロックは「空きとして採用した候補」の開始〜終了です。"
         "（上の「この週のカレンダー予定」で参照IDを確認できます）"
@@ -493,6 +524,9 @@ def render_page() -> None:
     notice = st.session_state.pop("schedule_commit_notice", None)
     if notice:
         st.success(notice)
+    post_register_notice = st.session_state.pop("candidate_search_post_register_notice", None)
+    if post_register_notice:
+        st.success(post_register_notice)
     flash_warnings = list(dict.fromkeys(st.session_state.get("candidate_search_warnings_flash") or []))
     for msg in flash_warnings:
         st.warning(msg)
@@ -684,14 +718,34 @@ button {
     project_options = {p["project_name"]: p for p in projects}
     project_name_list = list(project_options.keys())
 
-    # 案件（横幅いっぱい）
-    selected_project_name = st.selectbox(
-        "案件",
-        options=[""] + project_name_list,
-        format_func=lambda v: v if v else "（選択してください）",
-        key="candidate_search_project_select",
-    )
+    proj_col, reg_btn_col = st.columns([5, 1])
+    with proj_col:
+        selected_project_name = st.selectbox(
+            "案件",
+            options=[""] + project_name_list,
+            format_func=lambda v: v if v else "（選択してください）",
+            key="candidate_search_project_select",
+        )
+    with reg_btn_col:
+        st.write("")
+        if st.button(
+            "＋ 新規案件",
+            key="candidate_open_register",
+            use_container_width=True,
+            help="候補検索画面から案件を登録します",
+        ):
+            st.session_state["candidate_register_open"] = True
+            st.rerun()
     selected_project = project_options.get(selected_project_name)
+
+    reg_expanded = bool(st.session_state.pop("candidate_register_open", False))
+    created_on_page = render_project_register_expander(
+        key_prefix="candidate_search_new",
+        expanded=reg_expanded,
+    )
+    if created_on_page:
+        apply_registered_project_to_candidate_search(created_on_page)
+        st.rerun()
 
     # 人数（- / 入力 / +）と 職人（選択 + 含む/含まない）と ボタン（右寄せ）
     if "candidate_search_capacity" not in st.session_state:

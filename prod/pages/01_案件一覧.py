@@ -8,7 +8,7 @@ import streamlit as st
 from config.constants import APP_TITLE, CONSTRUCTION_TYPE_OPTIONS, CONSTRUCTION_TYPE_OTHER, DB_UNAVAILABLE_MESSAGE
 from config.status_labels import STATUS_LABELS
 from services.firestore_service import FirestoreConnectionError, FirestoreSaveError
-from services.project_service import create_project, delete_project, list_projects, update_project
+from services.project_service import delete_project, list_projects, update_project
 from services.schedule_commit_service import remove_project_schedule_from_google
 from services.setting_service import get_settings
 from services.vehicle_service import list_vehicles
@@ -16,7 +16,8 @@ from services.worker_service import list_workers
 from utils.display_util import format_status
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
 from utils.loading_util import visible_spinner
-from utils.session_util import init_session_state
+from utils.project_register_ui import render_project_register_expander
+from utils.session_util import init_session_state, navigate_to_candidate_search_after_register
 from utils.validation_util import validate_project_input
 
 
@@ -298,91 +299,13 @@ def render_page() -> None:
     st.title("案件一覧")
     st.caption("案件の登録・一覧・詳細を管理します。")
 
-    if st.session_state.pop("register_done_flash", False):
-        st.success("案件を登録しました。")
-
     # ----------------------------
     # 上部：新規登録フォーム
     # ----------------------------
     st.subheader("新規登録")
-    with st.expander("案件を新規登録", expanded=False):
-        st.write("施工内容*（複数選択可）")
-        new_construction_type = []
-        for opt in CONSTRUCTION_TYPE_OPTIONS:
-            if st.checkbox(opt, key=f"new_ct_{opt}"):
-                new_construction_type.append(opt)
-        if CONSTRUCTION_TYPE_OTHER in new_construction_type:
-            new_construction_type_other = st.text_input(
-                "施工内容詳細*",
-                key="new_construction_type_other",
-                placeholder="自由入力",
-            )
-        else:
-            new_construction_type_other = ""
-
-        with st.form(key="project_register_form"):
-            col_left, col_right = st.columns(2)
-            with col_left:
-                new_project_name = st.text_input("案件名*", key="new_project_name")
-                new_customer_name = st.text_input("顧客名*", key="new_customer_name")
-                new_address = st.text_input("住所*", key="new_address")
-
-            with col_right:
-                new_work_duration = st.number_input(
-                    "作業時間（分）*",
-                    min_value=0,
-                    step=30,
-                    key="new_work_duration_minutes",
-                )
-                new_required_workers = st.number_input(
-                    "必要人数*",
-                    min_value=0,
-                    step=1,
-                    key="new_required_workers",
-                )
-                new_required_vehicle_count = st.number_input(
-                    "必要車両数（任意）",
-                    min_value=0,
-                    step=1,
-                    key="new_required_vehicle_count",
-                )
-
-            new_note = st.text_area("備考", key="new_note")
-
-            submitted_reg = st.form_submit_button("新規登録")
-            if submitted_reg:
-                form_values = {
-                    "project_name": new_project_name,
-                    "customer_name": new_customer_name,
-                    "address": new_address,
-                    "construction_type": new_construction_type,
-                    "construction_type_other": new_construction_type_other,
-                    "work_duration_minutes": new_work_duration,
-                    "required_workers": new_required_workers,
-                    "required_vehicle_count": new_required_vehicle_count,
-                    "note": new_note,
-                }
-                is_valid, errors = validate_project_input(form_values)
-                if not is_valid:
-                    st.error("必須未入力または不正な値があります。")
-                    for msg in errors:
-                        st.write(f"- {msg}")
-                else:
-                    try:
-                        with visible_spinner("登録中…"):
-                            create_project(
-                                form_values,
-                                current_user_name=st.session_state.get("current_user_name"),
-                            )
-                        st.session_state["register_done_flash"] = True
-                        st.rerun()
-                    except FirestoreSaveError as e:
-                        st.error(f"保存に失敗しました。{e}")
-                    except FirestoreConnectionError:
-                        st.error(DB_UNAVAILABLE_MESSAGE)
-                    except Exception as exc:
-                        st.error("想定外エラーが発生しました。")
-                        st.exception(exc)
+    created = render_project_register_expander(key_prefix="project_list_new")
+    if created:
+        navigate_to_candidate_search_after_register(created)
 
     # ----------------------------
     # 絞り込み条件（案件は常時表示、条件で絞り込み）
