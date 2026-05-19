@@ -334,6 +334,12 @@ def material_return_extra_minutes_cached(
     return float(load_minutes) + to_office + to_site
 
 
+_VEHICLE_SKIPPED_WARNING = (
+    "車両の Google カレンダーは確認していません（職人のみで候補を検索しています）。"
+    "確定時も職人カレンダーのみ登録されます。"
+)
+
+
 def fetch_week_calendar_events_bundle(
     *,
     project: Optional[Dict[str, Any]],
@@ -345,6 +351,7 @@ def fetch_week_calendar_events_bundle(
     vehicle_fleet_session: Optional[Dict[str, Any]] = None,
     excluded_worker_ids: Optional[Set[str]] = None,
     search_week_start: Optional[date] = None,
+    use_vehicle_calendar: bool = True,
 ) -> Tuple[Optional[Dict[str, List[Dict[str, Any]]]], List[str]]:
     """候補検索の前段として、週の Google カレンダー予定だけを取得する（API はこの1回分）.
 
@@ -362,33 +369,36 @@ def fetch_week_calendar_events_bundle(
         if c:
             creds_map[str(w["worker_id"])] = c
 
-    active_vehicles = [v for v in vehicles if v.get("is_active", True)]
-    eligible_vehicles: List[Dict[str, Any]] = []
-    vehicles_missing_creds: List[str] = []
-    for v in active_vehicles:
-        cid = str(v.get("calendar_id") or "").strip()
-        if not cid:
-            continue
-        vc = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
-        if vc is None:
-            vehicles_missing_creds.append(str(v.get("vehicle_id", "?")))
-            continue
-        eligible_vehicles.append(v)
+    if not use_vehicle_calendar:
+        warnings.append(_VEHICLE_SKIPPED_WARNING)
+    else:
+        active_vehicles = [v for v in vehicles if v.get("is_active", True)]
+        eligible_vehicles: List[Dict[str, Any]] = []
+        vehicles_missing_creds: List[str] = []
+        for v in active_vehicles:
+            cid = str(v.get("calendar_id") or "").strip()
+            if not cid:
+                continue
+            vc = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
+            if vc is None:
+                vehicles_missing_creds.append(str(v.get("vehicle_id", "?")))
+                continue
+            eligible_vehicles.append(v)
 
-    vehicle_options = assign_vehicle_options_for_crew(headcount, eligible_vehicles)
-    if not vehicle_options:
-        detail = (
-            f"（カレンダー認証が不足している車両: {', '.join(vehicles_missing_creds)}）"
-            if vehicles_missing_creds
-            else ""
-        )
-        warnings.append(
-            "車両の割当ができません。利用中かつ利用可能な車両のうち、"
-            "少なくとも 2人乗りまたは 3人乗りが 1 台以上必要です。"
-            "あわせて、検索に使う車両は Google カレンダー連携済みである必要があります。"
-            + detail
-        )
-        return None, warnings
+        vehicle_options = assign_vehicle_options_for_crew(headcount, eligible_vehicles)
+        if not vehicle_options:
+            detail = (
+                f"（カレンダー認証が不足している車両: {', '.join(vehicles_missing_creds)}）"
+                if vehicles_missing_creds
+                else ""
+            )
+            warnings.append(
+                "車両の割当ができません。利用中かつ利用可能な車両のうち、"
+                "少なくとも 2人乗りまたは 3人乗りが 1 台以上必要です。"
+                "あわせて、検索に使う車両は Google カレンダー連携済みである必要があります。"
+                + detail
+            )
+            return None, warnings
 
     use_real = len(creds_map) >= headcount
     if not use_real:
@@ -427,20 +437,37 @@ def fetch_week_calendar_events_bundle(
         if cid not in seen_cal:
             seen_cal.add(cid)
             prefetch_pairs.append((c, cid))
-    for v in eligible_vehicles:
-        cid = str(v.get("calendar_id") or "").strip()
-        if not cid:
-            continue
-        vc = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
-        if vc:
-            if cid not in seen_cal:
-                seen_cal.add(cid)
-                prefetch_pairs.append((vc, cid))
+    if use_vehicle_calendar:
+        active_vehicles = [v for v in vehicles if v.get("is_active", True)]
+        eligible_vehicles = []
+        for v in active_vehicles:
+            cid = str(v.get("calendar_id") or "").strip()
+            if not cid:
+                continue
+            vc = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
+            if vc:
+                eligible_vehicles.append(v)
+        for v in eligible_vehicles:
+            cid = str(v.get("calendar_id") or "").strip()
+            if not cid:
+                continue
+            vc = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
+            if vc:
+                if cid not in seen_cal:
+                    seen_cal.add(cid)
+                    prefetch_pairs.append((vc, cid))
 
     bundle, fetch_errors = _parallel_fetch_events_by_calendar_id_with_errors(
         prefetch_pairs, time_min_fetch, time_max_fetch
     )
-    if fetch_errors:
+    if use_vehicle_calendar and fetch_errors:
+        active_vehicles = [v for v in vehicles if v.get("is_active", True)]
+        eligible_vehicles = [
+            v
+            for v in active_vehicles
+            if str(v.get("calendar_id") or "").strip()
+            and _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
+        ]
         for v in eligible_vehicles:
             vid = str(v.get("vehicle_id") or "?")
             cid = str(v.get("calendar_id") or "").strip()
@@ -467,6 +494,7 @@ def search_candidates(
     search_week_start: Optional[date] = None,
     limit_search_days: Optional[List[date]] = None,
     shared_events_by_calendar_id: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    use_vehicle_calendar: bool = True,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """候補一覧と警告メッセージ群を返す.
 
@@ -492,33 +520,37 @@ def search_candidates(
         if c:
             creds_map[str(w["worker_id"])] = c
 
-    active_vehicles = [v for v in vehicles if v.get("is_active", True)]
     eligible_vehicles: List[Dict[str, Any]] = []
-    vehicles_missing_creds: List[str] = []
-    for v in active_vehicles:
-        cid = str(v.get("calendar_id") or "").strip()
-        if not cid:
-            continue
-        vc = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
-        if vc is None:
-            vehicles_missing_creds.append(str(v.get("vehicle_id", "?")))
-            continue
-        eligible_vehicles.append(v)
+    if use_vehicle_calendar:
+        active_vehicles = [v for v in vehicles if v.get("is_active", True)]
+        vehicles_missing_creds: List[str] = []
+        for v in active_vehicles:
+            cid = str(v.get("calendar_id") or "").strip()
+            if not cid:
+                continue
+            vc = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
+            if vc is None:
+                vehicles_missing_creds.append(str(v.get("vehicle_id", "?")))
+                continue
+            eligible_vehicles.append(v)
 
-    vehicle_options = assign_vehicle_options_for_crew(headcount, eligible_vehicles)
-    if not vehicle_options:
-        detail = (
-            f"（カレンダー認証が不足している車両: {', '.join(vehicles_missing_creds)}）"
-            if vehicles_missing_creds
-            else ""
-        )
-        warnings.append(
-            "車両の割当ができません。利用中かつ利用可能な車両のうち、"
-            "少なくとも 2人乗りまたは 3人乗りが 1 台以上必要です。"
-            "あわせて、検索に使う車両は Google カレンダー連携済みである必要があります。"
-            + detail
-        )
-        return [], warnings
+        vehicle_options = assign_vehicle_options_for_crew(headcount, eligible_vehicles)
+        if not vehicle_options:
+            detail = (
+                f"（カレンダー認証が不足している車両: {', '.join(vehicles_missing_creds)}）"
+                if vehicles_missing_creds
+                else ""
+            )
+            warnings.append(
+                "車両の割当ができません。利用中かつ利用可能な車両のうち、"
+                "少なくとも 2人乗りまたは 3人乗りが 1 台以上必要です。"
+                "あわせて、検索に使う車両は Google カレンダー連携済みである必要があります。"
+                + detail
+            )
+            return [], warnings
+    else:
+        warnings.append(_VEHICLE_SKIPPED_WARNING)
+        vehicle_options: List[List[str]] = [[]]
 
     use_real = len(creds_map) >= headcount
 
@@ -611,15 +643,16 @@ def search_candidates(
         if cid not in seen_cal:
             seen_cal.add(cid)
             prefetch_pairs.append((c, cid))
-    for v in eligible_vehicles:
-        cid = str(v.get("calendar_id") or "").strip()
-        if not cid:
-            continue
-        vc = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
-        if vc:
-            if cid not in seen_cal:
-                seen_cal.add(cid)
-                prefetch_pairs.append((vc, cid))
+    if use_vehicle_calendar:
+        for v in eligible_vehicles:
+            cid = str(v.get("calendar_id") or "").strip()
+            if not cid:
+                continue
+            vc = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
+            if vc:
+                if cid not in seen_cal:
+                    seen_cal.add(cid)
+                    prefetch_pairs.append((vc, cid))
 
     vehicle_fetch_errors: Dict[str, str] = {}
     if shared_events_by_calendar_id is not None:
@@ -628,7 +661,7 @@ def search_candidates(
         events_by_cal_id, vehicle_fetch_errors = _parallel_fetch_events_by_calendar_id_with_errors(
             prefetch_pairs, time_min_fetch, time_max_fetch
         )
-    if vehicle_fetch_errors:
+    if use_vehicle_calendar and vehicle_fetch_errors:
         for v in eligible_vehicles:
             vid = str(v.get("vehicle_id") or "?")
             cid = str(v.get("calendar_id") or "").strip()
@@ -719,7 +752,7 @@ def search_candidates(
                             loc_n = loc_ov[okey_n]
                         if loc_n:
                             dm_pairs.append((pa, loc_n.strip()))
-                if office:
+                if use_vehicle_calendar and office:
                     oa = office.strip()
                     seen_vid: Set[str] = set()
                     for opt in vehicle_options:
@@ -894,7 +927,9 @@ def search_candidates(
 
                 selected_vids: Optional[List[str]] = None
                 selected_material_extra_first: Optional[float] = None
-                for assigned_vids in vehicle_options:
+                if not use_vehicle_calendar:
+                    selected_vids = []
+                for assigned_vids in ([] if not use_vehicle_calendar else vehicle_options):
                     ok_vehicle = True
                     material_extra_first: Optional[float] = None
                     first_vid = str(assigned_vids[0]) if assigned_vids else None
@@ -1051,7 +1086,7 @@ def search_candidates(
             break
 
     if not candidates:
-        if vehicle_fetch_errors:
+        if use_vehicle_calendar and vehicle_fetch_errors:
             warnings.append(
                 "候補ゼロの主因として、車両カレンダー参照不可（404 / invalid_grant 等）が疑われます。"
                 "車両ごとの取得失敗メッセージを確認し、対象車両の OAuth 再連携またはカレンダー共有設定を見直してください。"
@@ -1076,6 +1111,7 @@ def collect_week_busy_events(
     session_tokens: Optional[Dict[str, Any]],
     settings: Optional[Dict[str, Any]],
     vehicle_fleet_session: Optional[Dict[str, Any]],
+    use_vehicle_calendar: bool = True,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """表示用：週（week_start 〜 土曜）の職人・車両カレンダーから予定を取得する.
 
@@ -1116,34 +1152,35 @@ def collect_week_busy_events(
                 }
             )
 
-    for v in vehicles:
-        if not v.get("is_active", True):
-            continue
-        cal_id = str(v.get("calendar_id") or "").strip()
-        if not cal_id:
-            continue
-        creds = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
-        if not creds:
-            continue
-        label = f"車両:{v.get('name', v.get('vehicle_id'))}"
-        events, err = list_events_in_range_safe(creds, cal_id, time_min, time_max)
-        if err:
-            warnings.append(f"車両 {v.get('name', v.get('vehicle_id'))} の予定取得に失敗しました: {err}")
-        for ev in events:
-            b = event_time_bounds(ev)
-            if not b:
+    if use_vehicle_calendar:
+        for v in vehicles:
+            if not v.get("is_active", True):
                 continue
-            s, e = b
-            out.append(
-                {
-                    "kind": "vehicle",
-                    "label": label,
-                    "calendar_id": cal_id,
-                    "summary": (ev.get("summary") or "（無題）")[:120],
-                    "start_at": s,
-                    "end_at": e,
-                }
-            )
+            cal_id = str(v.get("calendar_id") or "").strip()
+            if not cal_id:
+                continue
+            creds = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
+            if not creds:
+                continue
+            label = f"車両:{v.get('name', v.get('vehicle_id'))}"
+            events, err = list_events_in_range_safe(creds, cal_id, time_min, time_max)
+            if err:
+                warnings.append(f"車両 {v.get('name', v.get('vehicle_id'))} の予定取得に失敗しました: {err}")
+            for ev in events:
+                b = event_time_bounds(ev)
+                if not b:
+                    continue
+                s, e = b
+                out.append(
+                    {
+                        "kind": "vehicle",
+                        "label": label,
+                        "calendar_id": cal_id,
+                        "summary": (ev.get("summary") or "（無題）")[:120],
+                        "start_at": s,
+                        "end_at": e,
+                    }
+                )
 
     out.sort(key=lambda x: x["start_at"])
     return out, warnings

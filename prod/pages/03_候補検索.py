@@ -400,6 +400,7 @@ def _build_candidate_week_plotly_figure(
         )
         block_h = y1 - y0
         x_center = (x0 + x1) / 2.0
+        # 判別は開始時刻ラベル（1時間マス内の上部寄せ）
         label_px = int(min(16, max(12, text_px)))
         annotations.append(
             {
@@ -624,6 +625,8 @@ def render_page() -> None:
         menu_items=STREAMLIT_MENU_ITEMS,
     )
     init_session_state()
+    if "candidate_search_vehicle_mode" not in st.session_state:
+        st.session_state["candidate_search_vehicle_mode"] = "なし"
 
     registered_from_dialog = st.session_state.pop(CANDIDATE_REGISTER_DIALOG_RESULT_KEY, None)
     if registered_from_dialog:
@@ -763,6 +766,7 @@ button {
     cal_early = bool(st.session_state.get("candidate_search_calendar_pending"))
     search_press = st.session_state.pop("_candidate_search_btn_pressed", None)
     masters_cache = st.session_state.get("_candidate_search_masters")
+    # 検索中以外の操作（新規登録フォームのチェックボックス等）でも毎回 Firestore を取り直さない
     reuse_masters = (
         isinstance(masters_cache, dict)
         and isinstance(masters_cache.get("projects"), list)
@@ -848,6 +852,19 @@ button {
         key="candidate_search_project_select",
     )
     selected_project = project_options.get(selected_project_name)
+
+    vehicle_mode = st.radio(
+        "車両",
+        options=["なし", "あり"],
+        horizontal=True,
+        key="candidate_search_vehicle_mode",
+        help="なし: 職人の Google カレンダーのみで候補を出します。あり: 従来どおり車両の空きも確認します。",
+    )
+    use_vehicle_calendar = vehicle_mode == "あり"
+    if not use_vehicle_calendar:
+        st.caption(
+            "車両の Google カレンダーは使いません。候補確定時も職人カレンダーのみ登録されます。"
+        )
 
     # 人数（- / 入力 / +）と 職人（選択 + 含む/含まない）と ボタン（右寄せ）
     if "candidate_search_capacity" not in st.session_state:
@@ -988,6 +1005,7 @@ button {
             pj_n = (cjob.get("project_name") or "").strip()
             proj_job = project_options.get(pj_n) if pj_n else None
             cap_job = int(cjob.get("required_capacity", 0))
+            use_vc_job = bool(cjob.get("use_vehicle_calendar", False))
             try:
                 settings_job = get_settings()
             except FirestoreConnectionError:
@@ -1007,6 +1025,7 @@ button {
                         vehicle_fleet_session=vf_sess,
                         excluded_worker_ids=excl_job,
                         search_week_start=ws_job,
+                        use_vehicle_calendar=use_vc_job,
                     )
                 else:
                     with visible_spinner("カレンダー取得中…"):
@@ -1020,6 +1039,7 @@ button {
                             vehicle_fleet_session=vf_sess,
                             excluded_worker_ids=excl_job,
                             search_week_start=ws_job,
+                            use_vehicle_calendar=use_vc_job,
                         )
                 if wpre:
                     cjob["warnings_acc"].extend(wpre)
@@ -1050,6 +1070,7 @@ button {
                         search_week_start=ws_job,
                         limit_search_days=[d],
                         shared_events_by_calendar_id=cjob["bundle"],
+                        use_vehicle_calendar=use_vc_job,
                     )
                 else:
                     with visible_spinner(f"検索中…（{step + 1}/7日）"):
@@ -1067,6 +1088,7 @@ button {
                             search_week_start=ws_job,
                             limit_search_days=[d],
                             shared_events_by_calendar_id=cjob["bundle"],
+                            use_vehicle_calendar=use_vc_job,
                         )
                 cjob["accum"].extend(part)
                 cjob["warnings_acc"].extend(warns)
@@ -1349,6 +1371,7 @@ button {
                 "excluded": list(excluded_for_real),
                 "must_include": list(must_include_worker_ids),
                 "from_search_btn": bool(search_clicked),
+                "use_vehicle_calendar": use_vehicle_calendar,
             }
             st.rerun()
         else:
@@ -1404,7 +1427,7 @@ button {
                 st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
-        cache_key = f"calendar_week_events_{ws.isoformat()}"
+        cache_key = f"calendar_week_events_{ws.isoformat()}_{'veh' if use_vehicle_calendar else 'worker'}"
         if cache_key not in st.session_state:
             if st.session_state.get("candidate_search_calendar_pending"):
                 try:
@@ -1423,6 +1446,7 @@ button {
                         session_tokens=st.session_state.get("google_calendar_tokens"),
                         settings=settings_for_cal,
                         vehicle_fleet_session=vf_sess2,
+                        use_vehicle_calendar=use_vehicle_calendar,
                     )
                     st.session_state[cache_key] = week_events
                     if week_warns:
@@ -1452,6 +1476,7 @@ button {
                             session_tokens=st.session_state.get("google_calendar_tokens"),
                             settings=settings_for_cal,
                             vehicle_fleet_session=vf_sess2,
+                            use_vehicle_calendar=use_vehicle_calendar,
                         )
                         st.session_state[cache_key] = week_events
                         if week_warns:
