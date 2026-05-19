@@ -111,15 +111,8 @@ def _render_calendar_table_header_html(week_dates: List[date]) -> None:
 PLOTLY_CALENDAR_KEY = "candidate_week_plot"
 
 
-def _candidate_marker_pixel_size(duration_minutes: float, n_visible_days: int) -> float:
-    """Plotly マーカー直径（px）。列が少ないほど・枠が長いほど大きくする（PC 幅広表示対策）."""
-    col_scale = 7.0 / float(max(n_visible_days, 1))
-    raw = (max(30.0, duration_minutes) / 60.0) * 40.0 * col_scale
-    if n_visible_days <= 3:
-        lo, hi = 40.0, 96.0
-    else:
-        lo, hi = 36.0, 84.0
-    return float(max(lo, min(hi, raw)))
+# 日付列内の候補ブロック幅（x 軸データ座標。1.0 ≒ 列幅いっぱい）
+_CANDIDATE_BAR_WIDTH = 0.9
 
 
 def _candidate_calendar_plot_height(n_visible_days: int) -> int:
@@ -181,7 +174,7 @@ def _build_candidate_week_plotly_figure(
     vehicle_id_to_name: Dict[str, str],
     hide_xaxis_tick_labels: bool = False,
 ) -> tuple[go.Figure, List[str]]:
-    """週間候補を Plotly で描画（セル＝マーカー。クリックで候補IDを取得可能）.
+    """週間候補を Plotly で描画（列幅いっぱいの棒＝候補枠。クリックで候補IDを取得可能）.
 
     visible_day_offsets: 週開始日からの日オフセット（例: [0,1,2,3] で4列のみ表示）。
     """
@@ -194,12 +187,12 @@ def _build_candidate_week_plotly_figure(
     end_minutes = day_end_hour * 60
     total_minutes = max(1, end_minutes - start_minutes)
 
-    xs: List[float] = []
-    ys: List[float] = []
-    texts: List[str] = []
+    bar_x: List[float] = []
+    bar_heights: List[float] = []
+    bar_bases: List[float] = []
+    bar_texts: List[str] = []
     hover_texts: List[str] = []
     customdata: List[str] = []
-    sizes: List[float] = []
     ordered_ids: List[str] = []
 
     for c in candidates:
@@ -225,9 +218,6 @@ def _build_candidate_week_plotly_figure(
         if height_m <= 0:
             continue
 
-        mid_m = top_m + height_m / 2.0
-        dur_m = max(slot_minutes, end_m - start_m)
-
         workers_text = "、".join(worker_id_to_name.get(wid, wid) for wid in c.get("worker_ids", []))
         vehicles_text = "、".join(vehicle_id_to_name.get(vid, vid) for vid in c.get("vehicle_ids", []))
         hover_lines = [
@@ -250,12 +240,12 @@ def _build_candidate_week_plotly_figure(
             hover_lines.append(f"資材追加拘束目安: ≈{float(meh):.0f}分")
         hover_texts.append("<br>".join(hover_lines))
 
-        xs.append(day_to_x[day_idx])
-        ys.append(mid_m)
-        texts.append(sa.strftime("%H:%M"))
+        bar_x.append(day_to_x[day_idx])
+        bar_bases.append(top_m)
+        bar_heights.append(height_m)
+        bar_texts.append(f"{sa.strftime('%H:%M')}<br>〜{ea.strftime('%H:%M')}")
         customdata.append(cid)
         ordered_ids.append(cid)
-        sizes.append(_candidate_marker_pixel_size(dur_m, n_vis))
 
     tickvals: List[int] = []
     ticktext: List[str] = []
@@ -313,21 +303,20 @@ def _build_candidate_week_plotly_figure(
     plot_h = _candidate_calendar_plot_height(n_vis)
 
     fig = go.Figure()
-    if xs:
+    if bar_x:
         fig.add_trace(
-            go.Scatter(
-                x=xs,
-                y=ys,
-                mode="markers+text",
+            go.Bar(
+                x=bar_x,
+                y=bar_heights,
+                base=bar_bases,
+                width=_CANDIDATE_BAR_WIDTH,
                 marker=dict(
-                    size=sizes,
                     color="#15d6d6",
-                    symbol="square",
-                    opacity=1.0,
-                    line=dict(width=2, color="rgba(0,0,0,0.22)"),
+                    line=dict(width=1, color="rgba(0, 0, 0, 0.22)"),
                 ),
-                text=texts,
-                textposition="middle center",
+                text=bar_texts,
+                textposition="inside",
+                insidetextanchor="middle",
                 textfont=dict(size=text_px, color="#022"),
                 customdata=customdata,
                 hovertext=hover_texts,
@@ -338,6 +327,7 @@ def _build_candidate_week_plotly_figure(
 
     fig.update_layout(
         height=plot_h,
+        barmode="overlay",
         shapes=layout_shapes,
         margin=dict(
             l=62,
@@ -725,22 +715,37 @@ button {
         "ステータスが「対応済み（リフォーム完了）」の案件は、日程候補の対象外のためここには表示されません。"
     )
 
-    created_on_page = render_project_register_expander(key_prefix="candidate_search_new")
-    if created_on_page:
-        apply_registered_project_to_candidate_search(created_on_page)
-        st.rerun()
-
     project_options = {p["project_name"]: p for p in projects}
     project_name_list = list(project_options.keys())
 
-    # 案件（横幅いっぱい）
-    selected_project_name = st.selectbox(
-        "案件",
-        options=[""] + project_name_list,
-        format_func=lambda v: v if v else "（選択してください）",
-        key="candidate_search_project_select",
-    )
+    proj_col, reg_btn_col = st.columns([5, 1])
+    with proj_col:
+        selected_project_name = st.selectbox(
+            "案件",
+            options=[""] + project_name_list,
+            format_func=lambda v: v if v else "（選択してください）",
+            key="candidate_search_project_select",
+        )
+    with reg_btn_col:
+        st.write("")
+        if st.button(
+            "＋ 新規案件",
+            key="candidate_open_register",
+            use_container_width=True,
+            help="候補検索画面から案件を登録します",
+        ):
+            st.session_state["candidate_register_open"] = True
+            st.rerun()
     selected_project = project_options.get(selected_project_name)
+
+    reg_expanded = bool(st.session_state.pop("candidate_register_open", False))
+    created_on_page = render_project_register_expander(
+        key_prefix="candidate_search_new",
+        expanded=reg_expanded,
+    )
+    if created_on_page:
+        apply_registered_project_to_candidate_search(created_on_page)
+        st.rerun()
 
     # 人数（- / 入力 / +）と 職人（選択 + 含む/含まない）と ボタン（右寄せ）
     if "candidate_search_capacity" not in st.session_state:
