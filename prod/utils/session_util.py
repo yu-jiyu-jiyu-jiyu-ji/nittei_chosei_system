@@ -78,7 +78,6 @@ def apply_registered_project_to_candidate_search(project: Dict[str, Any]) -> boo
     st.session_state["candidate_search_post_register_notice"] = (
         f"登録しました。案件「{pname}」の候補を検索しています。"
     )
-    st.session_state["candidate_search_new_register_expanded"] = False
     return True
 
 

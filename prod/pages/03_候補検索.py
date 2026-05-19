@@ -829,7 +829,7 @@ button {
 
     created_on_page = render_project_register_expander(
         key_prefix="candidate_search_new",
-        expanded_session_key="candidate_search_new_register_expanded",
+        close_after_register=True,
     )
     if created_on_page:
         apply_registered_project_to_candidate_search(created_on_page)
