@@ -397,22 +397,20 @@ def _build_candidate_week_plotly_figure(
         )
         block_h = y1 - y0
         x_center = (x0 + x1) / 2.0
-        show_label = block_h >= 52 and n_lanes <= 2
-        if show_label:
-            label_px = int(min(text_px, max(11, (block_h / float(total_minutes)) * float(plot_h) * 0.42)))
-            annotations.append(
-                {
-                    "x": x_center,
-                    "y": (y0 + y1) / 2.0,
-                    "text": str(blk.get("label_short") or ""),
-                    "showarrow": False,
-                    "xref": "x",
-                    "yref": "y",
-                    "xanchor": "center",
-                    "yanchor": "middle",
-                    "font": {"size": label_px, "color": "#022"},
-                }
-            )
+        label_px = int(min(16, max(12, text_px)))
+        annotations.append(
+            {
+                "x": x_center,
+                "y": y0 + min(14.0, block_h * 0.22),
+                "text": f"<b>{blk.get('label_short') or ''}</b>",
+                "showarrow": False,
+                "xref": "x",
+                "yref": "y",
+                "xanchor": "center",
+                "yanchor": "top",
+                "font": {"size": label_px, "color": "#022"},
+            }
+        )
         hit_x.append(x_center)
         hit_y.append((y0 + y1) / 2.0)
         lane_w_px = (_CANDIDATE_BLOCK_WIDTH / float(max(n_lanes, 1))) / float(max(n_vis, 1)) * float(plot_h) * 0.5
