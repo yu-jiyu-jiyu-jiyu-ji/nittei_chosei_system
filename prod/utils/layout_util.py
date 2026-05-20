@@ -171,9 +171,10 @@ def _inject_sidebar_collapse_js() -> None:
 
 
 def _inject_page_busy_reset(page_id: str) -> None:
-    """ページ遷移のたびに強制マーカーとオーバーレイを解除（components.html は key で毎回再実行）."""
+    """ページ遷移のたびに強制マーカーとオーバーレイを解除（HTML をページごとに変えて再実行）."""
     pid_js = json.dumps(page_id or "app")
     components.html(
+        f"<!-- st-page-reset:{page_id or 'app'} -->\n"
         f"""
         <script>
         (function() {{
@@ -195,7 +196,6 @@ def _inject_page_busy_reset(page_id: str) -> None:
         </script>
         """,
         height=0,
-        key=f"_st_busy_page_reset_{page_id or 'app'}",
     )
 
 
