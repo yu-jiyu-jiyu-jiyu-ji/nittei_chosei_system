@@ -222,6 +222,18 @@ def _inject_global_busy_overlay() -> None:
                 return doc.getElementById("_st_global_busy_layer");
             }
 
+            function applyForceBusyTitle() {
+                var m = doc.getElementById("_st_force_busy_marker");
+                var L = layerEl();
+                if (!m || !L) return;
+                var t = m.getAttribute("data-busy-title");
+                if (!t) return;
+                var titleEl = L.querySelector("._st_busy_title");
+                var subEl = L.querySelector("._st_busy_sub");
+                if (titleEl) titleEl.textContent = t;
+                if (subEl) subEl.textContent = "しばらくお待ちください（画面の操作は一時的に無効です）";
+            }
+
             function setBusy(on) {
                 var L = layerEl();
                 if (!L) return;
@@ -229,6 +241,7 @@ def _inject_global_busy_overlay() -> None:
                     L.classList.add("_st_busy_on");
                     if (S.state === "pending") L.classList.add("_st_busy_pending");
                     else L.classList.remove("_st_busy_pending");
+                    if (S.state === "force" || forceBusyActive()) applyForceBusyTitle();
                 } else {
                     L.classList.remove("_st_busy_on", "_st_busy_pending");
                 }
@@ -261,6 +274,10 @@ def _inject_global_busy_overlay() -> None:
                 return !!(doc.querySelector("[data-testid=\\"stSpinner\\"]"));
             }
 
+            function forceBusyActive() {
+                return !!doc.getElementById("_st_force_busy_marker");
+            }
+
             function reconnectObserver() {
                 if (!S.mo || !S.handlersInstalled) return;
                 try {
@@ -279,15 +296,24 @@ def _inject_global_busy_overlay() -> None:
                 var L = layerEl();
                 if (!L) return;
 
-                if (hasSpinner()) {
+                if (hasSpinner() || forceBusyActive()) {
                     clearHideSpin();
                     clearPending();
-                    S.state = "spin";
+                    S.state = hasSpinner() ? "spin" : "force";
                     setBusy(true);
                     return;
                 }
 
-                if (S.state === "spin") {
+                if (S.state === "spin" || S.state === "force") {
+                    if (S.state === "force") {
+                        if (forceBusyActive()) {
+                            setBusy(true);
+                            return;
+                        }
+                        S.state = "idle";
+                        setBusy(false);
+                        return;
+                    }
                     if (S.hideSpinTimer) return;
                     S.hideSpinTimer = setTimeout(function() {
                         S.hideSpinTimer = null;
@@ -309,11 +335,6 @@ def _inject_global_busy_overlay() -> None:
             }
 
             ensureLayer();
-            clearHideSpin();
-            clearPending();
-            clearMoDeb();
-            setBusy(false);
-            S.state = "idle";
 
             function isRerunTriggerTarget(t) {
                 if (!t || !t.closest) return false;
@@ -342,6 +363,11 @@ def _inject_global_busy_overlay() -> None:
 
             if (!S.handlersInstalled) {
                 S.handlersInstalled = true;
+                clearHideSpin();
+                clearPending();
+                clearMoDeb();
+                setBusy(false);
+                S.state = "idle";
                 S.mo = new MutationObserver(scheduleSync);
                 try {
                     S.mo.observe(doc.body, { childList: true, subtree: true });
@@ -350,14 +376,14 @@ def _inject_global_busy_overlay() -> None:
 
                 doc.addEventListener("pointerdown", function(e) {
                     if (!isRerunTriggerTarget(e.target)) return;
-                    if (hasSpinner()) return;
-                    if (S.state === "spin") return;
+                    if (hasSpinner() || forceBusyActive()) return;
+                    if (S.state === "spin" || S.state === "force") return;
                     S.state = "pending";
                     setBusy(true);
                     clearPending();
                     S.pendingTimer = setTimeout(function() {
                         S.pendingTimer = null;
-                        if (S.state === "pending" && !hasSpinner()) {
+                        if (S.state === "pending" && !hasSpinner() && !forceBusyActive()) {
                             S.state = "idle";
                             setBusy(false);
                         }

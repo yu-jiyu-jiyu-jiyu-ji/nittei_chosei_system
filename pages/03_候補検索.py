@@ -17,6 +17,7 @@ from services.candidate_search_service import (
     collect_week_busy_events,
     fetch_week_calendar_events_bundle,
     format_week_events_jst_table_rows,
+    candidate_includes_worker_off,
     is_company_closed_day,
     search_candidates,
     sunday_week_containing,
@@ -32,7 +33,11 @@ from services.setting_service import get_settings
 from services.vehicle_service import list_vehicles
 from services.worker_service import list_workers
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
-from utils.loading_util import visible_spinner
+from utils.loading_util import (
+    candidate_search_busy_active,
+    inject_force_busy_marker,
+    visible_spinner,
+)
 from utils.project_register_ui import (
     CANDIDATE_REGISTER_DIALOG_RESULT_KEY,
     render_candidate_search_register_ui,
@@ -44,6 +49,11 @@ def _on_candidate_search_button_click() -> None:
     """「検索」用 on_click。Streamlit はコールバックをスクリプト本体より先に実行するため、
     ページ先頭のマスタ取得でも「検索・カレンダー表示中…」に切り替えられる。"""
     st.session_state["_candidate_search_btn_pressed"] = True
+    st.session_state["candidate_search_ui_busy"] = True
+
+
+def _clear_candidate_search_ui_busy() -> None:
+    st.session_state.pop("candidate_search_ui_busy", None)
 
 
 _YOUBI = ("月", "火", "水", "木", "金", "土", "日")
@@ -666,6 +676,7 @@ def render_page() -> None:
         st.session_state.pop("candidate_results", None)
         st.session_state.pop("candidate_search_job", None)
         st.session_state.pop("candidate_search_calendar_pending", None)
+        _clear_candidate_search_ui_busy()
         st.session_state.pop("_candidate_search_masters", None)
         st.session_state.pop("candidate_cal_chunk", None)
         st.session_state.pop("_candidate_cal_chunk_week", None)
@@ -674,6 +685,13 @@ def render_page() -> None:
     st.session_state["_active_page_id"] = "candidate_search"
     inject_wide_layout()
     inject_sidebar_nav()
+    if (
+        st.session_state.get("candidate_search_ui_busy")
+        or st.session_state.get("candidate_search_job")
+        or st.session_state.get("candidate_search_calendar_pending")
+        or st.session_state.get("_candidate_search_btn_pressed")
+    ):
+        inject_force_busy_marker("検索・カレンダー表示中…")
 
     st.title("候補検索")
     st.caption("案件条件をもとに、予定を入れても問題ない候補日時を検索します。")
@@ -802,10 +820,7 @@ button {
         and isinstance(masters_cache.get("vehicles"), list)
     )
     show_search_phase = bool(
-        cjob_early is not None
-        or cal_early
-        or search_press
-        or week_nav_trigger
+        candidate_search_busy_active() or search_press or week_nav_trigger
     )
     top_spinner_msg = (
         "検索・カレンダー表示中…" if show_search_phase else "データを読み込み中…"
@@ -1039,117 +1054,84 @@ button {
     cjob = st.session_state.get("candidate_search_job")
     if cjob is not None:
         _btn_search = bool(cjob.get("from_search_btn"))
-        _cjob_outer = visible_spinner("検索・カレンダー表示中…") if _btn_search else nullcontext()
-        with _cjob_outer:
-            step = int(cjob.get("step", -99))
-            ws_job = cjob["week_start"]
-            excl_job = {str(x) for x in cjob.get("excluded", [])}
-            must_inc_job = [str(x) for x in cjob.get("must_include", [])]
-            pj_n = (cjob.get("project_name") or "").strip()
-            proj_job = project_options.get(pj_n) if pj_n else None
-            cap_job = int(cjob.get("required_capacity", 0))
-            use_vc_job = bool(cjob.get("use_vehicle_calendar", False))
-            try:
-                settings_job = get_settings()
-            except FirestoreConnectionError:
-                settings_job = {}
-            gcal_tok = st.session_state.get("google_calendar_tokens") or {}
-            vf_sess = gcal_tok.get("vehicle_fleet") if isinstance(gcal_tok, dict) else None
+        step = int(cjob.get("step", -99))
+        ws_job = cjob["week_start"]
+        excl_job = {str(x) for x in cjob.get("excluded", [])}
+        must_inc_job = [str(x) for x in cjob.get("must_include", [])]
+        pj_n = (cjob.get("project_name") or "").strip()
+        proj_job = project_options.get(pj_n) if pj_n else None
+        cap_job = int(cjob.get("required_capacity", 0))
+        use_vc_job = bool(cjob.get("use_vehicle_calendar", False))
+        try:
+            settings_job = get_settings()
+        except FirestoreConnectionError:
+            settings_job = {}
+        gcal_tok = st.session_state.get("google_calendar_tokens") or {}
+        vf_sess = gcal_tok.get("vehicle_fleet") if isinstance(gcal_tok, dict) else None
 
-            if step == -1:
-                if _btn_search:
-                    bundle, wpre = fetch_week_calendar_events_bundle(
-                        project=proj_job,
-                        workers=workers_for_search,
-                        vehicles=vehicles,
-                        settings=settings_job,
-                        ui_capacity=cap_job,
-                        session_tokens=st.session_state.get("google_calendar_tokens"),
-                        vehicle_fleet_session=vf_sess,
-                        excluded_worker_ids=excl_job,
-                        search_week_start=ws_job,
-                        use_vehicle_calendar=use_vc_job,
-                    )
-                else:
-                    with visible_spinner("カレンダー取得中…"):
-                        bundle, wpre = fetch_week_calendar_events_bundle(
-                            project=proj_job,
-                            workers=workers_for_search,
-                            vehicles=vehicles,
-                            settings=settings_job,
-                            ui_capacity=cap_job,
-                            session_tokens=st.session_state.get("google_calendar_tokens"),
-                            vehicle_fleet_session=vf_sess,
-                            excluded_worker_ids=excl_job,
-                            search_week_start=ws_job,
-                            use_vehicle_calendar=use_vc_job,
-                        )
-                if wpre:
-                    cjob["warnings_acc"].extend(wpre)
-                if bundle is None:
-                    st.session_state["candidate_search_warnings_flash"] = list(
-                        dict.fromkeys(cjob.get("warnings_acc") or [])
-                    )
-                    st.session_state.pop("candidate_search_job", None)
-                    st.session_state.pop("candidate_search_calendar_pending", None)
-                    st.rerun()
-                cjob["bundle"] = bundle
-                cjob["step"] = 0
-                st.rerun()
-            elif step < 7:
-                d = ws_job + timedelta(days=step)
-                if _btn_search:
-                    part, warns = search_candidates(
-                        project=proj_job,
-                        workers=workers_for_search,
-                        vehicles=vehicles,
-                        settings=settings_job,
-                        ui_capacity=cap_job,
-                        session_tokens=st.session_state.get("google_calendar_tokens"),
-                        vehicle_fleet_session=vf_sess,
-                        location_overrides=st.session_state.get("candidate_location_overrides") or {},
-                        excluded_worker_ids=excl_job,
-                        must_include_worker_ids=must_inc_job,
-                        search_week_start=ws_job,
-                        limit_search_days=[d],
-                        shared_events_by_calendar_id=cjob["bundle"],
-                        use_vehicle_calendar=use_vc_job,
-                    )
-                else:
-                    with visible_spinner(f"検索中…（{step + 1}/7日）"):
-                        part, warns = search_candidates(
-                            project=proj_job,
-                            workers=workers_for_search,
-                            vehicles=vehicles,
-                            settings=settings_job,
-                            ui_capacity=cap_job,
-                            session_tokens=st.session_state.get("google_calendar_tokens"),
-                            vehicle_fleet_session=vf_sess,
-                            location_overrides=st.session_state.get("candidate_location_overrides") or {},
-                            excluded_worker_ids=excl_job,
-                            must_include_worker_ids=must_inc_job,
-                            search_week_start=ws_job,
-                            limit_search_days=[d],
-                            shared_events_by_calendar_id=cjob["bundle"],
-                            use_vehicle_calendar=use_vc_job,
-                        )
-                cjob["accum"].extend(part)
-                cjob["warnings_acc"].extend(warns)
-                cjob["step"] = step + 1
-                st.rerun()
-            else:
-                st.session_state["candidate_results"] = cjob["accum"]
+        if step == -1:
+            with visible_spinner("カレンダー取得中…"):
+                bundle, wpre = fetch_week_calendar_events_bundle(
+                    project=proj_job,
+                    workers=workers_for_search,
+                    vehicles=vehicles,
+                    settings=settings_job,
+                    ui_capacity=cap_job,
+                    session_tokens=st.session_state.get("google_calendar_tokens"),
+                    vehicle_fleet_session=vf_sess,
+                    excluded_worker_ids=excl_job,
+                    search_week_start=ws_job,
+                    use_vehicle_calendar=use_vc_job,
+                )
+            if wpre:
+                cjob["warnings_acc"].extend(wpre)
+            if bundle is None:
                 st.session_state["candidate_search_warnings_flash"] = list(
                     dict.fromkeys(cjob.get("warnings_acc") or [])
                 )
-                if _btn_search:
-                    st.session_state["candidate_search_calendar_pending"] = True
                 st.session_state.pop("candidate_search_job", None)
-                st.session_state.pop("_week_nav_undo", None)
-                for _k in list(st.session_state.keys()):
-                    if isinstance(_k, str) and _k.startswith("calendar_week_events_"):
-                        del st.session_state[_k]
+                st.session_state.pop("candidate_search_calendar_pending", None)
+                _clear_candidate_search_ui_busy()
                 st.rerun()
+            cjob["bundle"] = bundle
+            cjob["step"] = 0
+            st.rerun()
+        elif step < 7:
+            d = ws_job + timedelta(days=step)
+            with visible_spinner(f"検索中…（{step + 1}/7日）"):
+                part, warns = search_candidates(
+                    project=proj_job,
+                    workers=workers_for_search,
+                    vehicles=vehicles,
+                    settings=settings_job,
+                    ui_capacity=cap_job,
+                    session_tokens=st.session_state.get("google_calendar_tokens"),
+                    vehicle_fleet_session=vf_sess,
+                    location_overrides=st.session_state.get("candidate_location_overrides") or {},
+                    excluded_worker_ids=excl_job,
+                    must_include_worker_ids=must_inc_job,
+                    search_week_start=ws_job,
+                    limit_search_days=[d],
+                    shared_events_by_calendar_id=cjob["bundle"],
+                    use_vehicle_calendar=use_vc_job,
+                )
+            cjob["accum"].extend(part)
+            cjob["warnings_acc"].extend(warns)
+            cjob["step"] = step + 1
+            st.rerun()
+        else:
+            st.session_state["candidate_results"] = cjob["accum"]
+            st.session_state["candidate_search_warnings_flash"] = list(
+                dict.fromkeys(cjob.get("warnings_acc") or [])
+            )
+            if _btn_search:
+                st.session_state["candidate_search_calendar_pending"] = True
+            st.session_state.pop("candidate_search_job", None)
+            st.session_state.pop("_week_nav_undo", None)
+            for _k in list(st.session_state.keys()):
+                if isinstance(_k, str) and _k.startswith("calendar_week_events_"):
+                    del st.session_state[_k]
+            st.rerun()
 
     if selected_project:
         missing_prev = collect_missing_previous_locations(
@@ -1262,6 +1244,7 @@ button {
             del st.session_state["candidate_results"]
         st.session_state.pop("candidate_search_job", None)
         st.session_state.pop("candidate_search_calendar_pending", None)
+        _clear_candidate_search_ui_busy()
         st.session_state.pop("_candidate_search_masters", None)
         st.session_state.pop("candidate_cal_chunk", None)
         st.session_state.pop("_candidate_cal_chunk_week", None)
@@ -1361,6 +1344,7 @@ button {
     # 案件未選択でも「人数が選択されている」場合は候補表示する（要望⑧）
     if not selected_project and required_capacity <= 0 and search_clicked:
         st.error("案件が選択されていません。検索を行う前に案件を選択するか、人数を指定してください。")
+        _clear_candidate_search_ui_busy()
         return
 
     if week_nav_trigger and not selected_project and required_capacity <= 0:
@@ -1368,12 +1352,14 @@ button {
         if prev_ws is not None:
             st.session_state["candidate_calendar_week_start"] = prev_ws
         st.error("週を移動して再検索するには、案件を選択するか人数を指定してください。")
+        _clear_candidate_search_ui_busy()
         return
 
     try:
         # 検索ボタン／週ナビ → カレンダー1回取得＋7日分割計算（candidate_search_job ブロック）
         run_search = search_clicked or week_nav_trigger
         if run_search:
+            st.session_state["candidate_search_ui_busy"] = True
             st.session_state.pop("candidate_search_warnings_flash", None)
             ws_target = st.session_state["candidate_calendar_week_start"]
             now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
@@ -1428,17 +1414,21 @@ button {
         st.error("候補検索中に想定外エラーが発生しました。")
         st.exception(exc)
         st.session_state.pop("candidate_search_calendar_pending", None)
+        _clear_candidate_search_ui_busy()
         return
 
     worker_id_to_name = {w["worker_id"]: w["name"] for w in workers}
     vehicle_id_to_name = {v["vehicle_id"]: v["name"] for v in vehicles}
 
+    _cal_pending_now = bool(st.session_state.get("candidate_search_calendar_pending"))
     _cal_out = (
-        visible_spinner("検索・カレンダー表示中…")
-        if st.session_state.get("candidate_search_calendar_pending")
+        visible_spinner("カレンダー表示中…")
+        if _cal_pending_now
         else nullcontext()
     )
     with _cal_out:
+        if _cal_pending_now:
+            inject_force_busy_marker("カレンダー表示中…")
         st.subheader("候補")
         if not filtered:
             if browse_only_view or not _has_candidate_search_results():
@@ -1598,11 +1588,13 @@ button {
         except (TypeError, ValueError):
             slot_gran = 30
 
+        workers_by_id = {str(w["worker_id"]): w for w in workers}
         display_candidates = [
             c
             for c in (filtered or [])
             if isinstance(c.get("start_at"), datetime)
             and not is_company_closed_day(c["start_at"].date(), cal_settings)
+            and not candidate_includes_worker_off(c, workers_by_id)
         ]
         _render_week_calendar(
             candidates=display_candidates,
@@ -1614,8 +1606,9 @@ button {
             vehicle_id_to_name=vehicle_id_to_name,
             footer_note=footer_note,
         )
-
-    st.session_state.pop("candidate_search_calendar_pending", None)
+        if _cal_pending_now:
+            st.session_state.pop("candidate_search_calendar_pending", None)
+            _clear_candidate_search_ui_busy()
 
     if filtered:
         st.caption(
