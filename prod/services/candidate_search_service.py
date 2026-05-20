@@ -134,6 +134,43 @@ def is_company_closed_day(d: date, settings: Dict[str, Any]) -> bool:
     return False
 
 
+def worker_fixed_days_off_set(worker: Dict[str, Any]) -> Set[int]:
+    """職人マスタの曜日固定休日（月=0 … 日=6）."""
+    raw = worker.get("fixed_days_off") or []
+    if not isinstance(raw, list):
+        return set()
+    out: Set[int] = set()
+    for x in raw:
+        try:
+            n = int(x)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= n <= 6:
+            out.add(n)
+    return out
+
+
+def is_worker_off_on_day(worker: Dict[str, Any], d: date) -> bool:
+    """職人の曜日固定休日に該当する日か."""
+    return d.weekday() in worker_fixed_days_off_set(worker)
+
+
+def candidate_includes_worker_off(
+    candidate: Dict[str, Any],
+    workers_by_id: Dict[str, Dict[str, Any]],
+) -> bool:
+    """候補に、当日が固定休日の職人が含まれるか（表示フィルタ用）."""
+    start_at = candidate.get("start_at")
+    if not isinstance(start_at, datetime):
+        return False
+    d = start_at.date()
+    for wid in candidate.get("worker_ids") or []:
+        w = workers_by_id.get(str(wid).strip())
+        if w and is_worker_off_on_day(w, d):
+            return True
+    return False
+
+
 def sunday_week_containing(d: date) -> date:
     """d を含む週の日曜日（UI・検索の週の起点）。"""
     return _sunday_week_start(d)
@@ -726,6 +763,9 @@ def search_candidates(
     preferred_ids = [str(x) for x in (must_include_worker_ids or []) if x]
     priority_order = preferred_ids + [wid for wid in sorted(ready_ids) if wid not in set(preferred_ids)]
     priority_rank = {wid: idx for idx, wid in enumerate(priority_order)}
+    worker_off_dow: Dict[str, Set[int]] = {
+        wid: worker_fixed_days_off_set(wid_to_worker[wid]) for wid in ready_ids
+    }
 
     for d in search_days:
         if is_company_closed_day(d, settings):
@@ -764,6 +804,8 @@ def search_candidates(
             slot_free_ids: List[str] = []
             for wid in sorted(ready_ids):
                 w = wid_to_worker[wid]
+                if slot_start.weekday() in worker_off_dow.get(wid, set()):
+                    continue
                 cal_id = str(w.get("calendar_id") or "").strip()
                 if not cal_id:
                     continue
