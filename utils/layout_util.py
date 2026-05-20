@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -168,6 +170,35 @@ def _inject_sidebar_collapse_js() -> None:
     )
 
 
+def _inject_page_busy_reset(page_id: str) -> None:
+    """ページ遷移のたびに強制マーカーとオーバーレイを解除（components.html は key で毎回再実行）."""
+    pid_js = json.dumps(page_id or "app")
+    components.html(
+        f"""
+        <script>
+        (function() {{
+            var doc = window.parent.document;
+            var pageId = {pid_js};
+            doc.body.setAttribute("data-st-active-page-id", pageId);
+            doc.querySelectorAll("#_st_force_busy_marker, ._st_force_busy_marker").forEach(function(el) {{
+                el.remove();
+            }});
+            var S = doc._stGlobalBusyOverlay;
+            if (S) {{
+                if (S.hideSpinTimer) {{ clearTimeout(S.hideSpinTimer); S.hideSpinTimer = null; }}
+                if (S.pendingTimer) {{ clearTimeout(S.pendingTimer); S.pendingTimer = null; }}
+                S.state = "idle";
+            }}
+            var L = doc.getElementById("_st_global_busy_layer");
+            if (L) L.classList.remove("_st_busy_on", "_st_busy_pending");
+        }})();
+        </script>
+        """,
+        height=0,
+        key=f"_st_busy_page_reset_{page_id or 'app'}",
+    )
+
+
 def _inject_global_busy_overlay() -> None:
     """stSpinner 表示中・および再実行直後に全画面の読み込みレイヤーを重ねる."""
     components.html(
@@ -178,31 +209,6 @@ def _inject_global_busy_overlay() -> None:
             var SPIN_HIDE_MS = 480;
             var PENDING_MAX_MS = 2200;
             var MO_DEBOUNCE_MS = 40;
-
-            /* ページ遷移のたびに実行: 古い #_st_force_busy_marker が DOM に残ると永久ローディングになる */
-            try {
-                doc.querySelectorAll("#_st_force_busy_marker").forEach(function(el) {
-                    el.remove();
-                });
-            } catch (eCleanup) {}
-            var S0 = doc._stGlobalBusyOverlay;
-            if (S0) {
-                if (S0.hideSpinTimer) {
-                    clearTimeout(S0.hideSpinTimer);
-                    S0.hideSpinTimer = null;
-                }
-                if (S0.pendingTimer) {
-                    clearTimeout(S0.pendingTimer);
-                    S0.pendingTimer = null;
-                }
-                if (S0.state === "force" || S0.state === "pending") {
-                    S0.state = "idle";
-                }
-            }
-            var L0 = doc.getElementById("_st_global_busy_layer");
-            if (L0) {
-                L0.classList.remove("_st_busy_on", "_st_busy_pending");
-            }
 
             function ensureStyle() {
                 if (doc.getElementById("_st_global_busy_layer_style")) return;
@@ -248,7 +254,15 @@ def _inject_global_busy_overlay() -> None:
             }
 
             function applyForceBusyTitle() {
-                var m = doc.getElementById("_st_force_busy_marker");
+                var pageId = doc.body.getAttribute("data-st-active-page-id") || "";
+                var nodes = doc.querySelectorAll("._st_force_busy_marker, #_st_force_busy_marker");
+                var m = null;
+                for (var i = 0; i < nodes.length; i++) {
+                    if ((nodes[i].getAttribute("data-st-page") || "") === pageId) {
+                        m = nodes[i];
+                        break;
+                    }
+                }
                 var L = layerEl();
                 if (!m || !L) return;
                 var t = m.getAttribute("data-busy-title");
@@ -300,8 +314,21 @@ def _inject_global_busy_overlay() -> None:
             }
 
             function forceBusyActive() {
-                var nodes = doc.querySelectorAll("#_st_force_busy_marker");
-                return nodes && nodes.length > 0;
+                var pageId = doc.body.getAttribute("data-st-active-page-id") || "";
+                var nodes = doc.querySelectorAll("._st_force_busy_marker, #_st_force_busy_marker");
+                for (var i = 0; i < nodes.length; i++) {
+                    if ((nodes[i].getAttribute("data-st-page") || "") === pageId) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            function releaseBusyOverlay() {
+                clearHideSpin();
+                clearPending();
+                S.state = "idle";
+                setBusy(false);
             }
 
             function reconnectObserver() {
@@ -350,6 +377,7 @@ def _inject_global_busy_overlay() -> None:
                     }, SPIN_HIDE_MS);
                     return;
                 }
+                releaseBusyOverlay();
             }
 
             function scheduleSync() {
@@ -439,6 +467,8 @@ def _clear_candidate_search_busy_if_left_page() -> None:
     """候補検索以外へ遷移したあと、セッションの強制ローディングが残らないようにする."""
     if st.session_state.get("_active_page_id") != "candidate_search":
         st.session_state.pop("candidate_search_ui_busy", None)
+        st.session_state.pop("candidate_search_job", None)
+        st.session_state.pop("candidate_search_calendar_pending", None)
 
 
 def inject_wide_layout() -> None:
@@ -449,6 +479,8 @@ def inject_wide_layout() -> None:
     メニューから遷移した直後は _sidebar_collapse により折りたたみボタンを JS でクリックする。
     """
     _clear_candidate_search_busy_if_left_page()
+    page_id = str(st.session_state.get("_active_page_id") or "app")
+    _inject_page_busy_reset(page_id)
     should_collapse = st.session_state.pop("_sidebar_collapse", False)
 
     base_css = """

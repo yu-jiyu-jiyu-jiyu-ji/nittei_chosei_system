@@ -21,11 +21,12 @@ def visible_spinner(text: str) -> Iterator[None]:
 
 
 def inject_force_busy_marker(title: str = "検索・カレンダー表示中…") -> None:
-    """layout_util の全画面読み込みレイヤーを、再実行の合間も維持する."""
+    """layout_util の全画面読み込みレイヤーを、再実行の合間も維持する（現ページのみ有効）."""
     safe_title = html.escape(str(title or "検索・カレンダー表示中…"), quote=True)
+    page_id = html.escape(str(st.session_state.get("_active_page_id") or ""), quote=True)
     st.markdown(
-        f'<span id="_st_force_busy_marker" data-busy-title="{safe_title}" '
-        'aria-hidden="true" style="display:none"></span>',
+        f'<span class="_st_force_busy_marker" data-st-page="{page_id}" '
+        f'data-busy-title="{safe_title}" aria-hidden="true" style="display:none"></span>',
         unsafe_allow_html=True,
     )
 
