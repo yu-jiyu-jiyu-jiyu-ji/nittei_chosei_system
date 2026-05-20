@@ -16,6 +16,7 @@ from services.inquiry_service import (
     get_inquiry,
     list_all_inquiries,
     resolve_attachment_path,
+    save_inquiry_attachment_files,
     update_inquiry_status,
 )
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
@@ -25,6 +26,20 @@ CATEGORY_LABEL = {"usage": "使い方", "system": "システム"}
 STATUS_LABEL = {"open": "未対応", "in_progress": "対応中", "closed": "完了"}
 STATUS_OPTIONS = ["open", "in_progress", "closed"]
 ADMIN_PASS_ENV = "INQUIRY_ADMIN_PASSWORD"
+
+
+def _render_attachment_images(paths: List[str]) -> None:
+    """保存済み画像パスをグリッド表示."""
+    if not paths:
+        return
+    cols = st.columns(min(4, len(paths)))
+    for j, p in enumerate(paths):
+        rp = resolve_attachment_path(str(p))
+        with cols[j % len(cols)]:
+            if rp:
+                st.image(str(rp))
+            else:
+                st.caption(str(p))
 
 
 def _format_ts(raw: Optional[str]) -> str:
@@ -168,11 +183,26 @@ def render_page() -> None:
 
         st.divider()
         reply = st.text_area("返信を入力（管理者）", key=f"inq_reply_{inquiry_id}", height=120)
+        reply_uploads = st.file_uploader(
+            "返信に画像を添付（複数可・任意）",
+            type=["png", "jpg", "jpeg", "gif", "webp"],
+            accept_multiple_files=True,
+            key=f"inq_reply_files_{inquiry_id}",
+        )
         c1, c2, c3 = st.columns([1, 1, 2])
         with c1:
             if st.button("返信を送信", type="primary", key=f"inq_reply_send_{inquiry_id}"):
                 try:
-                    append_admin_message(inquiry_id, reply, admin_name=admin_name or None)
+                    image_paths: List[str] = []
+                    if reply_uploads:
+                        file_list = [(uf.name, uf.getvalue()) for uf in reply_uploads]
+                        image_paths = save_inquiry_attachment_files(inquiry_id, file_list)
+                    append_admin_message(
+                        inquiry_id,
+                        reply,
+                        admin_name=admin_name or None,
+                        image_paths=image_paths or None,
+                    )
                     st.success("返信を記録しました。")
                     st.rerun()
                 except (FirestoreConnectionError, FirestoreSaveError) as e:
@@ -195,7 +225,11 @@ def render_page() -> None:
                 with st.chat_message("assistant" if m.get("role") == "admin" else "user"):
                     who = "管理者" if m.get("role") == "admin" else (m.get("sender_name") or "起票者")
                     st.caption(f"{who} · {_format_ts(m.get('created_at'))}")
-                    st.write(m.get("content", ""))
+                    if m.get("content"):
+                        st.write(m.get("content", ""))
+                    msg_images = m.get("image_urls") or []
+                    if msg_images:
+                        _render_attachment_images([str(p) for p in msg_images])
 
 
 def main() -> None:

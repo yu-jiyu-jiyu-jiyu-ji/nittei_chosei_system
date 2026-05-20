@@ -206,11 +206,18 @@ def append_inquirer_message(
     return get_inquiry(inquiry_id)
 
 
-def append_admin_message(inquiry_id: str, content: str, *, admin_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """管理者返信を messages に追記。"""
+def append_admin_message(
+    inquiry_id: str,
+    content: str,
+    *,
+    admin_name: Optional[str] = None,
+    image_paths: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """管理者返信を messages に追記（画像は image_urls に相対パスを格納）。"""
     text = (content or "").strip()
-    if not text:
-        raise ValueError("返信内容を入力してください。")
+    paths = [str(p).strip() for p in (image_paths or []) if str(p).strip()]
+    if not text and not paths:
+        raise ValueError("返信内容を入力するか、画像を添付してください。")
     client = require_firestore_client()
     ref = client.collection(_COLLECTION).document(inquiry_id)
     doc = ref.get()
@@ -226,6 +233,8 @@ def append_admin_message(inquiry_id: str, content: str, *, admin_name: Optional[
     }
     if admin_name:
         entry["sender_name"] = admin_name
+    if paths:
+        entry["image_urls"] = paths
     messages.append(entry)
     data["messages"] = messages
     data["updated_at"] = datetime.utcnow()

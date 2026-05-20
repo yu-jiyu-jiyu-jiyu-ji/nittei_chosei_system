@@ -199,7 +199,18 @@ def render_page() -> None:
                     else:
                         who = (m.get("sender_name") or "").strip() or "起票者"
                     st.caption(f"{who} · {_format_ts(m.get('created_at'))}")
-                    st.write(m.get("content", ""))
+                    if m.get("content"):
+                        st.write(m.get("content", ""))
+                    msg_images = m.get("image_urls") or []
+                    if msg_images:
+                        cols = st.columns(min(4, len(msg_images)))
+                        for j, p in enumerate(msg_images):
+                            rp = resolve_attachment_path(str(p))
+                            with cols[j % len(cols)]:
+                                if rp:
+                                    st.image(str(rp))
+                                else:
+                                    st.caption(str(p))
 
         st.divider()
         st.markdown("**返信を追加（起票者）**")
