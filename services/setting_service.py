@@ -34,6 +34,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "worker_ranks": ["A", "B", "C"],
     "recalc_travel_on_commit": False,
     "google_vehicle_refresh_token": "",
+    "company_holidays_dow": [6],
+    "company_holidays_national": True,
+    "company_holidays_national_dates": [],
+    "company_holidays_custom": [],
 }
 
 SETTINGS_DOC_ID = "system"
