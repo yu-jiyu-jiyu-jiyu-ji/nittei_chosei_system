@@ -13,6 +13,7 @@ import pandas as pd
 from config.constants import APP_TITLE, DB_UNAVAILABLE_MESSAGE
 from services.candidate_search_service import (
     apply_previous_location_overrides_to_calendars,
+    calendar_chunk_for_date,
     calendar_display_day_offsets,
     collect_missing_previous_locations,
     collect_week_busy_events,
@@ -86,15 +87,34 @@ def _has_candidate_search_results() -> bool:
     return "candidate_results" in st.session_state
 
 
+def _apply_calendar_chunk_for_reference_day(week_start: date, ref: Optional[date] = None) -> None:
+    """表示週内で ref（既定=今日）が含まれる前半/後半チャンクを選ぶ."""
+    ref_day = ref or date.today()
+    ws = sunday_week_containing(week_start)
+    st.session_state["candidate_cal_chunk"] = calendar_chunk_for_date(ws, ref_day)
+
+
 def _go_to_calendar_week(ws: date, *, trigger_research: bool) -> None:
-    """表示週を切り替え。検索済みなら trigger_research でその週を再検索."""
+    """表示週を切り替え。trigger_research 時はその週・チャンクで候補検索を開始."""
     st.session_state["candidate_calendar_week_start"] = ws
-    st.session_state["candidate_cal_chunk"] = 0
+    _apply_calendar_chunk_for_reference_day(ws)
     st.session_state.pop("_candidate_cal_chunk_week", None)
-    if trigger_research and _has_candidate_search_results():
+    st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
+    if trigger_research:
         st.session_state["week_nav_trigger_search"] = True
+        st.session_state["candidate_search_ui_busy"] = True
     else:
         st.session_state["week_calendar_browse"] = True
+    st.rerun()
+
+
+def _trigger_chunk_research(week_start: date, chunk: int) -> None:
+    """前半/後半切替と同条件で候補検索を再実行."""
+    st.session_state["candidate_cal_chunk"] = max(0, min(1, int(chunk)))
+    st.session_state.pop("_candidate_cal_chunk_week", None)
+    st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
+    st.session_state["week_nav_trigger_search"] = True
+    st.session_state["candidate_search_ui_busy"] = True
     st.rerun()
 
 
@@ -560,7 +580,7 @@ def _render_week_calendar(
     wk_id = wd.isoformat()
     if st.session_state.get("_candidate_cal_chunk_week") != wk_id:
         st.session_state["_candidate_cal_chunk_week"] = wk_id
-        st.session_state["candidate_cal_chunk"] = 0
+        _apply_calendar_chunk_for_reference_day(wd)
     chunk = int(st.session_state.get("candidate_cal_chunk", 0) or 0)
     chunk = max(0, min(1, chunk))
     offsets = _candidate_calendar_chunk_offsets(chunk)
@@ -615,9 +635,7 @@ def _render_week_calendar(
             disabled=chunk <= 0,
             use_container_width=True,
         ):
-            st.session_state["candidate_cal_chunk"] = 0
-            st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
-            st.rerun()
+            _trigger_chunk_research(wd, 0)
     with nav_b:
         d0, d1 = visible_dates[0], visible_dates[-1]
         span = f"{d0.month}/{d0.day}〜{d1.month}/{d1.day}"
@@ -631,9 +649,7 @@ def _render_week_calendar(
             disabled=chunk >= 1,
             use_container_width=True,
         ):
-            st.session_state["candidate_cal_chunk"] = 1
-            st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
-            st.rerun()
+            _trigger_chunk_research(wd, 1)
     st.markdown("</div>", unsafe_allow_html=True)
 
     _render_calendar_table_header_html(visible_dates)
@@ -695,13 +711,24 @@ def render_page() -> None:
     st.session_state["_active_page_id"] = "candidate_search"
     inject_wide_layout()
     inject_sidebar_nav()
-    if (
-        st.session_state.get("candidate_search_ui_busy")
-        or st.session_state.get("candidate_search_job")
-        or st.session_state.get("candidate_search_calendar_pending")
-        or st.session_state.get("_candidate_search_btn_pressed")
-    ):
-        inject_force_busy_marker("検索・カレンダー表示中…")
+    _cjob_top = st.session_state.get("candidate_search_job")
+    if _cjob_top:
+        _step_top = int(_cjob_top.get("step", -99))
+        _n_top = len(_cjob_top.get("day_offsets") or calendar_display_day_offsets(0))
+        if _step_top == -1:
+            _busy_msg = "カレンダー取得中…"
+        elif _step_top < _n_top:
+            _busy_msg = f"検索中…（{_step_top + 1}/{_n_top}日）"
+        else:
+            _busy_msg = "検索・カレンダー表示中…"
+    elif candidate_search_busy_active() or st.session_state.get("_candidate_search_btn_pressed"):
+        _busy_msg = "検索・カレンダー表示中…"
+    else:
+        _busy_msg = ""
+    if _busy_msg:
+        inject_force_busy_marker(_busy_msg)
+        with visible_spinner(_busy_msg):
+            st.caption("検索処理中です。しばらくお待ちください…")
 
     st.title("候補検索")
     st.caption("案件条件をもとに、予定を入れても問題ない候補日時を検索します。")
@@ -725,7 +752,9 @@ def render_page() -> None:
 
     week_nav_trigger = st.session_state.pop("week_nav_trigger_search", False)
     if "candidate_calendar_week_start" not in st.session_state:
-        st.session_state["candidate_calendar_week_start"] = sunday_week_containing(date.today())
+        _ws_init = sunday_week_containing(date.today())
+        st.session_state["candidate_calendar_week_start"] = _ws_init
+        st.session_state["candidate_cal_chunk"] = calendar_chunk_for_date(_ws_init, date.today())
 
     # 画面用CSS（業務向けに崩れを抑制）
     # ※ 詳細ポップアップ開閉時でも幅が変わらないよう、メインコンテナの幅を固定
@@ -820,7 +849,7 @@ button {
     # 分割検索中は毎 rerun でマスタを取り直さない（体感遅延の主因）。検索ボタン直後は on_click で先にフラグが立つ。
     cjob_early = st.session_state.get("candidate_search_job")
     cal_early = bool(st.session_state.get("candidate_search_calendar_pending"))
-    search_press = st.session_state.pop("_candidate_search_btn_pressed", None)
+    search_press = bool(st.session_state.get("_candidate_search_btn_pressed"))
     masters_cache = st.session_state.get("_candidate_search_masters")
     # 検索中以外の操作（新規登録フォームのチェックボックス等）でも毎回 Firestore を取り直さない
     reuse_masters = (
@@ -830,7 +859,11 @@ button {
         and isinstance(masters_cache.get("vehicles"), list)
     )
     show_search_phase = bool(
-        candidate_search_busy_active() or search_press or week_nav_trigger
+        cjob_early
+        or cal_early
+        or candidate_search_busy_active()
+        or search_press
+        or week_nav_trigger
     )
     top_spinner_msg = (
         "検索・カレンダー表示中…" if show_search_phase else "データを読み込み中…"
@@ -1400,6 +1433,7 @@ button {
         run_search = search_clicked or week_nav_trigger
         if run_search:
             st.session_state["candidate_search_ui_busy"] = True
+            st.session_state.pop("candidate_results", None)
             st.session_state.pop("candidate_search_warnings_flash", None)
             for _mk in list(st.session_state.keys()):
                 if isinstance(_mk, str) and _mk.startswith("_missing_prev_"):
@@ -1438,8 +1472,10 @@ button {
                 # headcount=1 の既存仕様（優先フォールバック）を維持するため must_include に渡す
                 must_include_worker_ids = sorted(selected_ids_set)
 
+            _apply_calendar_chunk_for_reference_day(ws_target)
             cal_chunk = int(st.session_state.get("candidate_cal_chunk", 0) or 0)
             day_offsets = calendar_display_day_offsets(cal_chunk)
+            st.session_state.pop("_candidate_search_btn_pressed", None)
             st.session_state["candidate_search_job"] = {
                 "step": -1,
                 "accum": [],
@@ -1451,7 +1487,7 @@ button {
                 "required_capacity": required_capacity,
                 "excluded": list(excluded_for_real),
                 "must_include": list(must_include_worker_ids),
-                "from_search_btn": bool(search_clicked),
+                "from_search_btn": bool(search_clicked or week_nav_trigger),
                 "use_vehicle_calendar": use_vehicle_calendar,
             }
             st.rerun()
@@ -1505,13 +1541,7 @@ button {
         col_prev, col_month, col_next = st.columns([1.0, 2.0, 1.0])
         with col_prev:
             if st.button("＜", key="week_prev_btn"):
-                st.session_state["_week_nav_undo"] = ws
-                st.session_state["candidate_calendar_week_start"] = ws - timedelta(days=7)
-                if _has_candidate_search_results():
-                    st.session_state["week_nav_trigger_search"] = True
-                else:
-                    st.session_state["week_calendar_browse"] = True
-                st.rerun()
+                _go_to_calendar_week(ws - timedelta(days=7), trigger_research=True)
         with col_month:
             st.markdown(
                 f"<div style='text-align:left;font-weight:700;'>{_format_week_range_short(ws)}</div>",
@@ -1519,13 +1549,7 @@ button {
             )
         with col_next:
             if st.button("＞", key="week_next_btn"):
-                st.session_state["_week_nav_undo"] = ws
-                st.session_state["candidate_calendar_week_start"] = ws + timedelta(days=7)
-                if _has_candidate_search_results():
-                    st.session_state["week_nav_trigger_search"] = True
-                else:
-                    st.session_state["week_calendar_browse"] = True
-                st.rerun()
+                _go_to_calendar_week(ws + timedelta(days=7), trigger_research=True)
         st.markdown("</div>", unsafe_allow_html=True)
         if not _has_candidate_search_results():
             st.caption("検索前は予定カレンダーのみ表示します。候補を見るには検索を実行してください。")

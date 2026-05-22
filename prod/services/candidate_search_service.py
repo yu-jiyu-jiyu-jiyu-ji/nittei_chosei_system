@@ -183,6 +183,17 @@ def calendar_display_day_offsets(chunk: int) -> List[int]:
     return [4, 5, 6]
 
 
+def calendar_chunk_for_date(week_start: date, ref: date) -> int:
+    """ref が含まれる週（week_start 日曜〜土曜）の表示チャンク番号を返す."""
+    ws = _sunday_week_start(week_start)
+    day_idx = (ref - ws).days
+    if day_idx < 0 or day_idx > 6:
+        return 0
+    if day_idx <= 3:
+        return 0
+    return 1
+
+
 def _fetch_time_range_for_week_offsets(
     week_start: date, day_offsets: Optional[List[int]]
 ) -> Tuple[datetime, datetime]:
