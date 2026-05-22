@@ -176,6 +176,27 @@ def sunday_week_containing(d: date) -> date:
     return _sunday_week_start(d)
 
 
+def calendar_display_day_offsets(chunk: int) -> List[int]:
+    """候補カレンダー表示チャンクの週内オフセット（前半4日 / 後半3日）。"""
+    if int(chunk) <= 0:
+        return [0, 1, 2, 3]
+    return [4, 5, 6]
+
+
+def _fetch_time_range_for_week_offsets(
+    week_start: date, day_offsets: Optional[List[int]]
+) -> Tuple[datetime, datetime]:
+    """カレンダー API 取得の timeMin/timeMax（表示・検索対象日のみ）。"""
+    offs = day_offsets if day_offsets else list(range(7))
+    lo = min(offs)
+    hi = max(offs)
+    time_min = datetime.combine(week_start + timedelta(days=lo), time.min, tzinfo=TZ) - timedelta(
+        days=1
+    )
+    time_max = datetime.combine(week_start + timedelta(days=hi + 1), time.min, tzinfo=TZ)
+    return time_min, time_max
+
+
 def _parse_hhmm(s: str, default_h: int, default_m: int) -> Tuple[int, int]:
     """HH:MM 形式を (時, 分) に。不正時はデフォルト。"""
     raw = (s or "").strip()
@@ -439,11 +460,13 @@ def fetch_week_calendar_events_bundle(
     vehicle_fleet_session: Optional[Dict[str, Any]] = None,
     excluded_worker_ids: Optional[Set[str]] = None,
     search_week_start: Optional[date] = None,
+    search_day_offsets: Optional[List[int]] = None,
     use_vehicle_calendar: bool = True,
 ) -> Tuple[Optional[Dict[str, List[Dict[str, Any]]]], List[str]]:
     """候補検索の前段として、週の Google カレンダー予定だけを取得する（API はこの1回分）.
 
     検証に通らない場合は (None, warnings)。成功時は (calendar_id -> events, warnings)。
+    search_day_offsets: 表示チャンクに合わせた週内オフセット（未指定時は7日）。
     """
     warnings: List[str] = []
     headcount = _required_headcount(project, ui_capacity)
@@ -511,8 +534,9 @@ def fetch_week_calendar_events_bundle(
     week_start = (
         _sunday_week_start(search_week_start) if search_week_start is not None else _sunday_week_start(today)
     )
-    time_min_fetch = datetime.combine(week_start, time.min, tzinfo=TZ) - timedelta(days=1)
-    time_max_fetch = datetime.combine(week_start + timedelta(days=8), time.min, tzinfo=TZ)
+    time_min_fetch, time_max_fetch = _fetch_time_range_for_week_offsets(
+        week_start, search_day_offsets
+    )
 
     prefetch_pairs: List[Tuple[Credentials, str]] = []
     seen_cal: Set[str] = set()
@@ -583,12 +607,14 @@ def search_candidates(
     limit_search_days: Optional[List[date]] = None,
     shared_events_by_calendar_id: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     use_vehicle_calendar: bool = True,
+    search_started_at: Optional[datetime] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """候補一覧と警告メッセージ群を返す.
 
     search_week_start: 検索対象週の「含まれる任意の日」。None のときは今週（当日を含む日曜始まり）。
     limit_search_days: 指定時はその日だけを走査（UI の分割検索・タイムアウト対策用）。
     shared_events_by_calendar_id: 週の予定を呼び出し元で取得済みのとき渡す（Google カレンダー API を再実行しない）。
+    search_started_at: 分割検索ジョブ全体の開始時刻（タイムアウトを日ごとにリセットしない）。
     """
     warnings: List[str] = []
     loc_ov = location_overrides or {}
@@ -667,7 +693,7 @@ def search_candidates(
     search_time_limit_seconds = _parse_positive_int(
         settings.get("search_time_limit_seconds"), 20
     )
-    search_started_at = datetime.now(TZ)
+    started = search_started_at if search_started_at is not None else datetime.now(TZ)
 
     project_address = str(project.get("address", "") if project else "").strip()
     if not project_address:
@@ -778,7 +804,7 @@ def search_candidates(
         while minutes < 24 * 60:
             if len(candidates) >= max_candidate_count:
                 break
-            elapsed = (datetime.now(TZ) - search_started_at).total_seconds()
+            elapsed = (datetime.now(TZ) - started).total_seconds()
             if elapsed > search_time_limit_seconds:
                 if not warned_timeout:
                     warnings.append(
@@ -1199,6 +1225,82 @@ def search_candidates(
     return candidates, warnings
 
 
+def _events_to_week_busy_rows(
+    events: List[Dict[str, Any]],
+    *,
+    kind: str,
+    label: str,
+    calendar_id: str,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for ev in events:
+        b = event_time_bounds(ev)
+        if not b:
+            continue
+        s, e = b
+        rows.append(
+            {
+                "kind": kind,
+                "label": label,
+                "calendar_id": calendar_id,
+                "summary": (ev.get("summary") or "（無題）")[:120],
+                "start_at": s,
+                "end_at": e,
+            }
+        )
+    return rows
+
+
+def week_busy_events_from_bundle(
+    bundle: Dict[str, List[Dict[str, Any]]],
+    *,
+    workers: List[Dict[str, Any]],
+    vehicles: List[Dict[str, Any]],
+    session_tokens: Optional[Dict[str, Any]],
+    settings: Optional[Dict[str, Any]],
+    vehicle_fleet_session: Optional[Dict[str, Any]],
+    use_vehicle_calendar: bool = True,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """検索時に取得済みの bundle から週表示用の予定一覧を組み立てる（API 再取得なし）。"""
+    out: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    for w in workers:
+        if not w.get("is_active", True):
+            continue
+        cal_id = str(w.get("calendar_id") or "").strip()
+        if not cal_id:
+            continue
+        label = f"職人:{w.get('name', w.get('worker_id'))}"
+        out.extend(
+            _events_to_week_busy_rows(
+                bundle.get(cal_id) or [],
+                kind="worker",
+                label=label,
+                calendar_id=cal_id,
+            )
+        )
+    if use_vehicle_calendar:
+        for v in vehicles:
+            if not v.get("is_active", True):
+                continue
+            cal_id = str(v.get("calendar_id") or "").strip()
+            if not cal_id:
+                continue
+            if not _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session):
+                continue
+            label = f"車両:{v.get('name', v.get('vehicle_id'))}"
+            out.extend(
+                _events_to_week_busy_rows(
+                    bundle.get(cal_id) or [],
+                    kind="vehicle",
+                    label=label,
+                    calendar_id=cal_id,
+                )
+            )
+    out.sort(key=lambda x: x["start_at"])
+    return out, warnings
+
+
 def collect_week_busy_events(
     *,
     week_start: date,
@@ -1208,16 +1310,29 @@ def collect_week_busy_events(
     settings: Optional[Dict[str, Any]],
     vehicle_fleet_session: Optional[Dict[str, Any]],
     use_vehicle_calendar: bool = True,
+    search_day_offsets: Optional[List[int]] = None,
+    events_bundle: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """表示用：週（week_start 〜 土曜）の職人・車両カレンダーから予定を取得する.
+    """表示用：週の職人・車両カレンダーから予定を取得する.
 
-    ブラウザで見ている Google アカウントと異なる場合、内容が一致しないことがある。
+    events_bundle が渡された場合は API を呼ばない。
     """
-    week_end = week_start + timedelta(days=6)
-    time_min = datetime.combine(week_start, time.min, tzinfo=TZ)
-    time_max = datetime.combine(week_end + timedelta(days=1), time.min, tzinfo=TZ)
+    if events_bundle is not None:
+        return week_busy_events_from_bundle(
+            events_bundle,
+            workers=workers,
+            vehicles=vehicles,
+            session_tokens=session_tokens,
+            settings=settings,
+            vehicle_fleet_session=vehicle_fleet_session,
+            use_vehicle_calendar=use_vehicle_calendar,
+        )
+
+    time_min, time_max = _fetch_time_range_for_week_offsets(week_start, search_day_offsets)
     out: List[Dict[str, Any]] = []
     warnings: List[str] = []
+    prefetch_pairs: List[Tuple[Credentials, str]] = []
+    seen_cal: Set[str] = set()
 
     for w in workers:
         if not w.get("is_active", True):
@@ -1228,25 +1343,9 @@ def collect_week_busy_events(
         creds = _worker_credentials(w, session_tokens)
         if not creds:
             continue
-        label = f"職人:{w.get('name', w.get('worker_id'))}"
-        events, err = list_events_in_range_safe(creds, cal_id, time_min, time_max)
-        if err:
-            warnings.append(f"職人 {w.get('name', w.get('worker_id'))} の予定取得に失敗しました: {err}")
-        for ev in events:
-            b = event_time_bounds(ev)
-            if not b:
-                continue
-            s, e = b
-            out.append(
-                {
-                    "kind": "worker",
-                    "label": label,
-                    "calendar_id": cal_id,
-                    "summary": (ev.get("summary") or "（無題）")[:120],
-                    "start_at": s,
-                    "end_at": e,
-                }
-            )
+        if cal_id not in seen_cal:
+            seen_cal.add(cal_id)
+            prefetch_pairs.append((creds, cal_id))
 
     if use_vehicle_calendar:
         for v in vehicles:
@@ -1258,25 +1357,48 @@ def collect_week_busy_events(
             creds = _vehicle_calendar_credentials(v, session_tokens, settings, vehicle_fleet_session)
             if not creds:
                 continue
-            label = f"車両:{v.get('name', v.get('vehicle_id'))}"
-            events, err = list_events_in_range_safe(creds, cal_id, time_min, time_max)
-            if err:
-                warnings.append(f"車両 {v.get('name', v.get('vehicle_id'))} の予定取得に失敗しました: {err}")
-            for ev in events:
-                b = event_time_bounds(ev)
-                if not b:
-                    continue
-                s, e = b
-                out.append(
-                    {
-                        "kind": "vehicle",
-                        "label": label,
-                        "calendar_id": cal_id,
-                        "summary": (ev.get("summary") or "（無題）")[:120],
-                        "start_at": s,
-                        "end_at": e,
-                    }
+            if cal_id not in seen_cal:
+                seen_cal.add(cal_id)
+                prefetch_pairs.append((creds, cal_id))
+
+    cal_id_to_meta: Dict[str, Tuple[str, str, str]] = {}
+    for w in workers:
+        if not w.get("is_active", True):
+            continue
+        cal_id = str(w.get("calendar_id") or "").strip()
+        if cal_id:
+            cal_id_to_meta[cal_id] = (
+                "worker",
+                f"職人:{w.get('name', w.get('worker_id'))}",
+                cal_id,
+            )
+    if use_vehicle_calendar:
+        for v in vehicles:
+            if not v.get("is_active", True):
+                continue
+            cal_id = str(v.get("calendar_id") or "").strip()
+            if cal_id:
+                cal_id_to_meta[cal_id] = (
+                    "vehicle",
+                    f"車両:{v.get('name', v.get('vehicle_id'))}",
+                    cal_id,
                 )
+
+    bundle, fetch_errors = _parallel_fetch_events_by_calendar_id_with_errors(
+        prefetch_pairs, time_min, time_max
+    )
+    for cal_id, err in (fetch_errors or {}).items():
+        meta = cal_id_to_meta.get(cal_id)
+        if meta and err:
+            warnings.append(f"{meta[1]} の予定取得に失敗しました: {err}")
+    for cal_id, events in bundle.items():
+        meta = cal_id_to_meta.get(cal_id)
+        if not meta:
+            continue
+        kind, label, cid = meta
+        out.extend(
+            _events_to_week_busy_rows(events, kind=kind, label=label, calendar_id=cid)
+        )
 
     out.sort(key=lambda x: x["start_at"])
     return out, warnings

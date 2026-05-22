@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import streamlit as st
+
 from services.firestore_service import (
     FirestoreConnectionError,
     FirestoreSaveError,
@@ -33,8 +35,9 @@ def _generate_worker_id_firestore(client: Any) -> str:
     return f"W{next_num:03d}"
 
 
-def list_workers() -> List[Dict[str, Any]]:
-    """職人一覧を取得."""
+@st.cache_data(ttl=120, show_spinner=False)
+def _list_workers_cached() -> List[Dict[str, Any]]:
+    """職人一覧を取得（キャッシュ）."""
     client = require_firestore_client()
     try:
         coll = client.collection("workers")
@@ -51,6 +54,11 @@ def list_workers() -> List[Dict[str, Any]]:
 
     workers.sort(key=lambda x: (x.get("display_order", 999), x.get("worker_id", "")))
     return workers
+
+
+def list_workers() -> List[Dict[str, Any]]:
+    """職人一覧を取得."""
+    return _list_workers_cached()
 
 
 def create_worker(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -70,6 +78,9 @@ def create_worker(data: Dict[str, Any]) -> Dict[str, Any]:
             "display_order": int(data.get("display_order", 0)),
         }
         client.collection("workers").document(worker_id).set(worker)
+        from utils.data_cache_util import invalidate_master_data_caches
+
+        invalidate_master_data_caches()
         return worker
     except FirestoreConnectionError:
         raise
@@ -87,6 +98,9 @@ def update_worker(worker_id: str, data: Dict[str, Any]) -> Optional[Dict[str, An
             return None
         updated = {**doc.to_dict(), **data}
         ref.set(updated)
+        from utils.data_cache_util import invalidate_master_data_caches
+
+        invalidate_master_data_caches()
         return updated
     except FirestoreConnectionError:
         raise
@@ -107,6 +121,9 @@ def delete_worker(worker_id: str) -> bool:
         if not ref.get().exists:
             return False
         ref.delete()
+        from utils.data_cache_util import invalidate_master_data_caches
+
+        invalidate_master_data_caches()
         return True
     except FirestoreConnectionError:
         raise

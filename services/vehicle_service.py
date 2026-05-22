@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import streamlit as st
+
 from services.firestore_service import (
     FirestoreConnectionError,
     FirestoreSaveError,
@@ -35,8 +37,9 @@ def _generate_vehicle_id_firestore(client: Any) -> str:
     return f"V{next_num:03d}"
 
 
-def list_vehicles() -> List[Dict[str, Any]]:
-    """車両一覧を取得."""
+@st.cache_data(ttl=120, show_spinner=False)
+def _list_vehicles_cached() -> List[Dict[str, Any]]:
+    """車両一覧を取得（キャッシュ）."""
     client = require_firestore_client()
     try:
         coll = client.collection("vehicles")
@@ -53,6 +56,11 @@ def list_vehicles() -> List[Dict[str, Any]]:
 
     vehicles.sort(key=lambda x: (x.get("display_order", 999), x.get("vehicle_id", "")))
     return vehicles
+
+
+def list_vehicles() -> List[Dict[str, Any]]:
+    """車両一覧を取得."""
+    return _list_vehicles_cached()
 
 
 def create_vehicle(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -72,6 +80,9 @@ def create_vehicle(data: Dict[str, Any]) -> Dict[str, Any]:
             "display_order": int(data.get("display_order", 0)),
         }
         client.collection("vehicles").document(vehicle_id).set(vehicle)
+        from utils.data_cache_util import invalidate_master_data_caches
+
+        invalidate_master_data_caches()
         return vehicle
     except FirestoreConnectionError:
         raise
@@ -89,6 +100,9 @@ def update_vehicle(vehicle_id: str, data: Dict[str, Any]) -> Optional[Dict[str, 
             return None
         updated = {**doc.to_dict(), **data}
         ref.set(updated)
+        from utils.data_cache_util import invalidate_master_data_caches
+
+        invalidate_master_data_caches()
         return updated
     except FirestoreConnectionError:
         raise
@@ -109,6 +123,9 @@ def delete_vehicle(vehicle_id: str) -> bool:
         if not ref.get().exists:
             return False
         ref.delete()
+        from utils.data_cache_util import invalidate_master_data_caches
+
+        invalidate_master_data_caches()
         return True
     except FirestoreConnectionError:
         raise
