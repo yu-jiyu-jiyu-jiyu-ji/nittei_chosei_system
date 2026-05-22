@@ -14,9 +14,22 @@ from googleapiclient.errors import HttpError
 
 from services.google_oauth_service import refresh_if_needed
 
+try:
+    import google_auth_httplib2
+except ImportError:
+    google_auth_httplib2 = None  # type: ignore
+
+import httplib2
+
+CALENDAR_HTTP_TIMEOUT_SEC = 30
+
 
 def _service(creds: Credentials):
     c = refresh_if_needed(creds)
+    if google_auth_httplib2 is not None:
+        http = httplib2.Http(timeout=CALENDAR_HTTP_TIMEOUT_SEC)
+        authorized = google_auth_httplib2.AuthorizedHttp(c, http=http)
+        return build("calendar", "v3", http=authorized, cache_discovery=False)
     return build("calendar", "v3", credentials=c, cache_discovery=False)
 
 

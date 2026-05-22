@@ -27,3 +27,8 @@ prod/.streamlit/secrets.toml
 
 # ローカル鍵ディレクトリ（リポジトリ外運用）
 key_honban/
+
+# Firestore 移行ツールの実行レポート（ローカル生成物）
+firestore_migration_report.json
+firestore_migration_report_dryrun.json
+firestore_precheck_report.json

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+import streamlit as st
+
 from services.firestore_service import (
     FirestoreConnectionError,
     FirestoreSaveError,
@@ -56,8 +58,9 @@ def _normalize_worker_ranks(value: Any) -> List[str]:
     return []
 
 
-def get_settings() -> Dict[str, Any]:
-    """共通設定を取得."""
+@st.cache_data(ttl=120, show_spinner=False)
+def _get_settings_cached() -> Dict[str, Any]:
+    """共通設定を取得（キャッシュ）."""
     client = require_firestore_client()
     try:
         ref = client.collection("settings").document(SETTINGS_DOC_ID)
@@ -75,6 +78,11 @@ def get_settings() -> Dict[str, Any]:
         raise FirestoreConnectionError(f"設定の取得に失敗しました: {e}") from e
 
 
+def get_settings() -> Dict[str, Any]:
+    """共通設定を取得."""
+    return _get_settings_cached()
+
+
 def save_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     """共通設定を保存."""
     client = require_firestore_client()
@@ -84,6 +92,9 @@ def save_settings(data: Dict[str, Any]) -> Dict[str, Any]:
         base = current.to_dict() if current.exists else dict(DEFAULT_SETTINGS)
         updated = {**base, **data}
         ref.set(updated)
+        from utils.data_cache_util import invalidate_master_data_caches
+
+        invalidate_master_data_caches()
         return dict(updated)
     except FirestoreConnectionError:
         raise
@@ -97,6 +108,9 @@ def reset_to_defaults() -> Dict[str, Any]:
     try:
         ref = client.collection("settings").document(SETTINGS_DOC_ID)
         ref.set(DEFAULT_SETTINGS)
+        from utils.data_cache_util import invalidate_master_data_caches
+
+        invalidate_master_data_caches()
         return dict(DEFAULT_SETTINGS)
     except FirestoreConnectionError:
         raise

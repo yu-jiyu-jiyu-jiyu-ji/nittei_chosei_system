@@ -344,7 +344,11 @@ def render_page() -> None:
             st.session_state.pop("project_detail_id", None)
             st.rerun()
 
-    # 全案件を取得し、絞り込み条件でフィルタ
+    filters = {
+        "project_name": (filter_project_name or "").strip(),
+        "customer_name": (filter_customer_name or "").strip(),
+        "status": (filter_status or "").strip(),
+    }
     try:
         all_projects = list_projects({})
     except FirestoreConnectionError:
@@ -355,12 +359,20 @@ def render_page() -> None:
         st.exception(exc)
         return
 
-    filters = {
-        "project_name": (filter_project_name or "").strip(),
-        "customer_name": (filter_customer_name or "").strip(),
-        "status": (filter_status or "").strip(),
-    }
-    projects = list_projects(filters)
+    project_name_f = filters["project_name"]
+    customer_name_f = filters["customer_name"]
+    status_f = filters["status"]
+
+    def _matches(p: Dict[str, Any]) -> bool:
+        if project_name_f and project_name_f not in str(p.get("project_name", "")):
+            return False
+        if customer_name_f and customer_name_f not in str(p.get("customer_name", "")):
+            return False
+        if status_f and status_f != p.get("status"):
+            return False
+        return True
+
+    projects = [p for p in all_projects if _matches(p)]
 
     # 削除確認ダイアログ
     pending_del = st.session_state.get("pending_delete_project_id")

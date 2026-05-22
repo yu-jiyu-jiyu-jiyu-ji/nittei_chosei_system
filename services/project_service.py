@@ -7,6 +7,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import streamlit as st
+
 from config.constants import CONSTRUCTION_TYPE_OTHER
 from config.status_labels import STATUS_LABELS
 from services.firestore_service import (
@@ -89,6 +91,9 @@ def create_project(
         }
         coll = client.collection("projects")
         coll.document(project_id).set(project)
+        from utils.data_cache_util import invalidate_master_data_caches
+
+        invalidate_master_data_caches()
         return {**project, "created_at": now.isoformat(), "updated_at": now.isoformat()}
     except FirestoreConnectionError:
         raise
@@ -122,6 +127,9 @@ def update_project(
             if s in STATUS_LABELS:
                 updated["status"] = s
         ref.set(updated)
+        from utils.data_cache_util import invalidate_master_data_caches
+
+        invalidate_master_data_caches()
         return {**updated, "updated_at": now.isoformat(), "updated_by": current_user_name}
     except FirestoreConnectionError:
         raise
@@ -138,6 +146,9 @@ def delete_project(project_id: str, current_user_name: Optional[str] = None) -> 
         if not ref.get().exists:
             return False
         ref.delete()
+        from utils.data_cache_util import invalidate_master_data_caches
+
+        invalidate_master_data_caches()
         return True
     except FirestoreConnectionError:
         raise
@@ -168,6 +179,9 @@ def patch_project_fields(
             "updated_by": current_user_name,
         }
         ref.set(updated)
+        from utils.data_cache_util import invalidate_master_data_caches
+
+        invalidate_master_data_caches()
         return {**updated, "updated_at": now.isoformat(), "updated_by": current_user_name}
     except FirestoreConnectionError:
         raise
@@ -175,8 +189,9 @@ def patch_project_fields(
         raise FirestoreSaveError(f"案件の更新に失敗しました: {e}") from e
 
 
-def list_projects(filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    """案件一覧を取得（フィルタ付き）."""
+@st.cache_data(ttl=120, show_spinner=False)
+def _list_all_projects_cached() -> List[Dict[str, Any]]:
+    """案件コレクション全件（メモリ上でフィルタする前提）."""
     client = require_firestore_client()
     try:
         coll = client.collection("projects")
@@ -190,7 +205,12 @@ def list_projects(filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, An
         raise
     except Exception as e:
         raise FirestoreConnectionError(f"案件一覧の取得に失敗しました: {e}") from e
+    return projects
 
+
+def list_projects(filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """案件一覧を取得（フィルタ付き）."""
+    projects = _list_all_projects_cached()
     filters = filters or {}
     project_name = (filters.get("project_name") or "").strip()
     customer_name = (filters.get("customer_name") or "").strip()

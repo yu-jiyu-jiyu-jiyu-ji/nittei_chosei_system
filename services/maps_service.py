@@ -32,7 +32,7 @@ def _get_gmaps_client():
     if _gmaps_client is None:
         key = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
         if key:
-            _gmaps_client = googlemaps.Client(key=key)
+            _gmaps_client = googlemaps.Client(key=key, timeout=30)
     return _gmaps_client
 
 

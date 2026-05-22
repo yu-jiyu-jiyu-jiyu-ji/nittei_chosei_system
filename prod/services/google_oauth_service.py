@@ -104,10 +104,13 @@ def credentials_from_refresh_token(refresh_token: str) -> Optional[Credentials]:
 
 
 def refresh_if_needed(creds: Credentials) -> Credentials:
+    import requests
     from google.auth.transport.requests import Request
 
     if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        session = requests.Session()
+        session.timeout = 30
+        creds.refresh(Request(session=session))
     return creds
 
 
