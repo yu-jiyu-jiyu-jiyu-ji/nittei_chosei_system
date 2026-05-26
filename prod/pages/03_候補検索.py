@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections import defaultdict
 from contextlib import nullcontext
@@ -1058,20 +1058,6 @@ button {
     # nowrap-row の閉じタグ
     st.markdown("</div>", unsafe_allow_html=True)
 
-    st.caption("検索しなくても週の予定を確認できます（日曜始まり）")
-    bw1, bw2, bw3, bw4 = st.columns(4)
-    with bw1:
-        if st.button("今週の予定", key="browse_week_0", use_container_width=True):
-            _go_to_calendar_week(_sunday_week_from_today(0), trigger_research=False)
-    with bw2:
-        if st.button("来週の予定", key="browse_week_1", use_container_width=True):
-            _go_to_calendar_week(_sunday_week_from_today(1), trigger_research=False)
-    with bw3:
-        if st.button("再来週の予定", key="browse_week_2", use_container_width=True):
-            _go_to_calendar_week(_sunday_week_from_today(2), trigger_research=False)
-    with bw4:
-        if st.button("翌々週の予定", key="browse_week_3", use_container_width=True):
-            _go_to_calendar_week(_sunday_week_from_today(3), trigger_research=False)
 
     required_capacity = int(st.session_state.get("candidate_search_capacity", 0))
     loc_ov: Dict[str, str] = st.session_state.setdefault("candidate_location_overrides", {})
@@ -1833,4 +1819,5 @@ button {
 
 if __name__ == "__main__":
     render_page()
+
 
