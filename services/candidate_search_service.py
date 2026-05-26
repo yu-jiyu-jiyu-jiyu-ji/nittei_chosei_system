@@ -176,22 +176,16 @@ def sunday_week_containing(d: date) -> date:
     return _sunday_week_start(d)
 
 
-def calendar_display_day_offsets(chunk: int) -> List[int]:
-    """候補カレンダー表示チャンクの週内オフセット（前半4日 / 後半3日）。"""
-    if int(chunk) <= 0:
-        return [0, 1, 2, 3]
-    return [4, 5, 6]
+def calendar_display_day_offsets(chunk: int = 0) -> List[int]:
+    """候補カレンダー・検索対象の週内7日（日曜始まり）。chunk は後方互換で無視。"""
+    _ = chunk
+    return [0, 1, 2, 3, 4, 5, 6]
 
 
 def calendar_chunk_for_date(week_start: date, ref: date) -> int:
-    """ref が含まれる週（week_start 日曜〜土曜）の表示チャンク番号を返す."""
-    ws = _sunday_week_start(week_start)
-    day_idx = (ref - ws).days
-    if day_idx < 0 or day_idx > 6:
-        return 0
-    if day_idx <= 3:
-        return 0
-    return 1
+    """後方互換。チャンク分割廃止のため常に 0。"""
+    _ = (week_start, ref)
+    return 0
 
 
 def _fetch_time_range_for_week_offsets(

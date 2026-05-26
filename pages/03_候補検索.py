@@ -13,7 +13,6 @@ import pandas as pd
 from config.constants import APP_TITLE, DB_UNAVAILABLE_MESSAGE
 from services.candidate_search_service import (
     apply_previous_location_overrides_to_calendars,
-    calendar_chunk_for_date,
     calendar_display_day_offsets,
     collect_missing_previous_locations,
     collect_week_busy_events,
@@ -87,41 +86,18 @@ def _has_candidate_search_results() -> bool:
     return "candidate_results" in st.session_state
 
 
-def _apply_calendar_chunk_for_reference_day(week_start: date, ref: Optional[date] = None) -> None:
-    """表示週内で ref（既定=今日）が含まれる前半/後半チャンクを選ぶ."""
-    ref_day = ref or date.today()
-    ws = sunday_week_containing(week_start)
-    st.session_state["candidate_cal_chunk"] = calendar_chunk_for_date(ws, ref_day)
-
-
 def _go_to_calendar_week(ws: date, *, trigger_research: bool) -> None:
-    """表示週を切り替え。trigger_research 時はその週・チャンクで候補検索を開始."""
+    """表示週を切り替え。trigger_research 時はその週7日分で候補検索を開始."""
     st.session_state["candidate_calendar_week_start"] = ws
-    _apply_calendar_chunk_for_reference_day(ws)
-    st.session_state.pop("_candidate_cal_chunk_week", None)
     st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
+    for _ck in list(st.session_state.keys()):
+        if isinstance(_ck, str) and _ck.startswith("calendar_week_events_"):
+            st.session_state.pop(_ck, None)
     if trigger_research:
         st.session_state["week_nav_trigger_search"] = True
         st.session_state["candidate_search_ui_busy"] = True
     else:
         st.session_state["week_calendar_browse"] = True
-    st.rerun()
-
-
-def _trigger_chunk_research(week_start: date, chunk: int) -> None:
-    """前半/後半切替と同条件で候補検索を再実行."""
-    ws = sunday_week_containing(week_start)
-    st.session_state["candidate_cal_chunk"] = max(0, min(1, int(chunk)))
-    # 描画時に「当日を含むチャンク」へ戻さない（_render_week_calendar の週ID同期を抑止）
-    st.session_state["_candidate_cal_chunk_week"] = ws.isoformat()
-    for _ck in list(st.session_state.keys()):
-        if isinstance(_ck, str) and _ck.startswith("calendar_week_events_"):
-            st.session_state.pop(_ck, None)
-    st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
-    # チャンクボタン起点の再検索では「当日を含むチャンク」への自動補正を行わない
-    st.session_state["_chunk_research_triggered"] = True
-    st.session_state["week_nav_trigger_search"] = True
-    st.session_state["candidate_search_ui_busy"] = True
     st.rerun()
 
 
@@ -156,7 +132,7 @@ def _render_calendar_table_header_html(week_dates: List[date]) -> None:
         bg = _column_bg_color(d)
         border = "border-right:1px solid #d8d8d8;" if i < n - 1 else ""
         # 列数が少ないときは文字を大きく（4日区切り・PC 向け）
-        fs = 19 if n <= 3 else (17 if n <= 4 else 15)
+        fs = 19 if n <= 3 else (17 if n <= 4 else (15 if n <= 7 else 14))
         pad = "12px 8px" if n <= 4 else "10px 5px"
         parts.append(
             f'<div class="cal-head-cell" style="text-align:center;padding:{pad};font-size:{fs}px;'
@@ -185,12 +161,15 @@ PLOTLY_CALENDAR_KEY = "candidate_week_plot"
 _CANDIDATE_BLOCK_WIDTH = 0.9
 # カレンダー表示は 1 時間刻み（検索の time_slot_minutes とは別。見やすさ優先）
 _CALENDAR_DISPLAY_SLOT_MINUTES = 60
+# 7日横スクロール時の1日列の最小幅（px）
+_CALENDAR_DAY_COL_MIN_PX = 92
+_CALENDAR_SCROLL_INNER_MIN_PX = 7 * _CALENDAR_DAY_COL_MIN_PX + 72
 
 
 def _candidate_calendar_plot_height(n_visible_days: int) -> int:
-    """表示日数に応じたチャート高さ（スマホはやや低め、PC は CSS で min-height も補強）."""
-    base = 580 if n_visible_days <= 4 else 540
-    return int(base + (7 - n_visible_days) * 52)
+    """週7日表示のチャート高さ."""
+    _ = n_visible_days
+    return 560
 
 
 def _collapse_candidates_for_hourly_calendar(
@@ -254,11 +233,6 @@ def _lane_x_bounds(xi: float, lane: int, n_lanes: int, total_width: float) -> Tu
     return x0, x1
 
 
-def _candidate_calendar_chunk_offsets(chunk: int) -> List[int]:
-    """同一週内の表示チャンク（4日+3日）。列を粗くして候補マーカーを大きくする."""
-    return calendar_display_day_offsets(chunk)
-
-
 def _missing_prev_cache_key(
     project_id: str,
     ui_capacity: int,
@@ -317,7 +291,7 @@ def _build_candidate_week_plotly_figure(
 ) -> tuple[go.Figure, List[str]]:
     """週間候補を Plotly で描画（開始〜終了時刻に合わせた矩形。クリックで候補IDを取得可能）.
 
-    visible_day_offsets: 週開始日からの日オフセット（例: [0,1,2,3] で4列のみ表示）。
+    visible_day_offsets: 週開始日からの日オフセット（0〜6 で週7日）。
     """
     week_dates = [week_start_date + timedelta(days=i) for i in range(7)]
     valid_dates = {week_dates[i].isoformat() for i in visible_day_offsets}
@@ -521,7 +495,10 @@ def _build_candidate_week_plotly_figure(
             )
         )
 
+    plot_w = int(_CALENDAR_DAY_COL_MIN_PX * n_vis + 78)
+
     fig.update_layout(
+        width=plot_w,
         height=plot_h,
         annotations=annotations,
         shapes=layout_shapes,
@@ -579,86 +556,53 @@ def _render_week_calendar(
     vehicle_id_to_name: Dict[str, str],
     footer_note: Optional[str] = None,
 ) -> None:
-    """週間候補カレンダー（Plotly）。同一週を「前半4日 / 後半3日」に分けて列幅を確保する。"""
+    """週間候補カレンダー（Plotly）。日曜〜土曜の7日を横スクロールで表示。"""
     wd: date = week_start_date
     if isinstance(wd, datetime):
         wd = wd.date()
     week_dates = [wd + timedelta(days=i) for i in range(7)]
-    wk_id = wd.isoformat()
-    if st.session_state.get("_candidate_cal_chunk_week") != wk_id:
-        st.session_state["_candidate_cal_chunk_week"] = wk_id
-        _apply_calendar_chunk_for_reference_day(wd)
-    chunk = int(st.session_state.get("candidate_cal_chunk", 0) or 0)
-    chunk = max(0, min(1, chunk))
-    offsets = _candidate_calendar_chunk_offsets(chunk)
+    offsets = calendar_display_day_offsets()
     visible_dates = [week_dates[i] for i in offsets]
+    inner_min = _CALENDAR_SCROLL_INNER_MIN_PX
 
     st.markdown(
-        """
+        f"""
 <style>
-.candidate-cal-chunk-nav [data-testid="stHorizontalBlock"] {
-  gap: 8px !important;
-  align-items: center !important;
-}
-.candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {
-  min-height: 560px;
-}
+.candidate-cal-scroll-x {{
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  width: 100%;
+  margin-bottom: 0.25rem;
+}}
+.candidate-cal-scroll-inner {{
+  min-width: {inner_min}px;
+}}
+.candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {{
+  min-height: 520px;
+}}
 .candidate-cal-plot-wrap .js-plotly-plot,
-.candidate-cal-plot-wrap .plotly-graph-div {
-  width: 100% !important;
-}
-@media (max-width: 767px) {
-  .candidate-cal-chunk-nav button {
-    min-height: 48px !important;
-    font-size: 1rem !important;
-  }
-  .candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {
-    min-height: 520px;
-  }
-}
-@media (min-width: 768px) {
-  .candidate-cal-chunk-nav button {
-    min-height: 42px !important;
-    font-size: 1rem !important;
-    padding: 0.35rem 0.75rem !important;
-  }
-  .candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {
-    min-height: 700px;
-  }
-  .candidate-cal-plot-wrap .js-plotly-plot {
-    min-height: 660px !important;
-  }
-}
+.candidate-cal-plot-wrap .plotly-graph-div {{
+  width: auto !important;
+  max-width: none !important;
+}}
+@media (min-width: 768px) {{
+  .candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {{
+    min-height: 600px;
+  }}
+}}
 </style>
 """,
         unsafe_allow_html=True,
     )
-    st.markdown('<div class="candidate-cal-chunk-nav">', unsafe_allow_html=True)
-    nav_a, nav_b, nav_c = st.columns([1.05, 2.1, 1.05])
-    with nav_a:
-        if st.button(
-            "◀ 前半（4日）",
-            key=f"cal_chunk_prev_{wk_id}",
-            disabled=chunk <= 0,
-            use_container_width=True,
-        ):
-            _trigger_chunk_research(wd, 0)
-    with nav_b:
-        d0, d1 = visible_dates[0], visible_dates[-1]
-        span = f"{d0.month}/{d0.day}〜{d1.month}/{d1.day}"
-        st.caption(
-            f"表示中: **{span}**（{'週のはじめ4日' if chunk == 0 else '週の終わり3日'}）"
-        )
-    with nav_c:
-        if st.button(
-            "後半（3日）▶",
-            key=f"cal_chunk_next_{wk_id}",
-            disabled=chunk >= 1,
-            use_container_width=True,
-        ):
-            _trigger_chunk_research(wd, 1)
-    st.markdown("</div>", unsafe_allow_html=True)
+    d0, d1 = visible_dates[0], visible_dates[-1]
+    st.caption(
+        f"表示: **{d0.month}/{d0.day}（{_YOUBI[d0.weekday()]}）〜"
+        f"{d1.month}/{d1.day}（{_YOUBI[d1.weekday()]}）** — 横にスワイプして週全体を表示"
+    )
 
+    st.markdown('<div class="candidate-cal-scroll-x">', unsafe_allow_html=True)
+    st.markdown('<div class="candidate-cal-scroll-inner">', unsafe_allow_html=True)
     _render_calendar_table_header_html(visible_dates)
     st.markdown('<div class="candidate-cal-plot-wrap">', unsafe_allow_html=True)
     fig, ordered_ids = _build_candidate_week_plotly_figure(
@@ -677,9 +621,11 @@ def _render_week_calendar(
         key=PLOTLY_CALENDAR_KEY,
         on_select="rerun",
         selection_mode="points",
-        use_container_width=True,
+        use_container_width=False,
     )
     _apply_plotly_point_selection(plot_state, ordered_ids)
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
     note = footer_note or (
         "※ 色ブロックは「空きとして採用した候補」の開始〜終了です。"
@@ -711,8 +657,6 @@ def render_page() -> None:
         st.session_state.pop("candidate_search_calendar_pending", None)
         st.session_state.pop("_last_search_calendar_bundle", None)
         _clear_candidate_search_ui_busy()
-        st.session_state.pop("candidate_cal_chunk", None)
-        st.session_state.pop("_candidate_cal_chunk_week", None)
         st.session_state.pop("candidate_dialog_id", None)
         st.session_state.pop("week_nav_trigger_search", None)
     st.session_state["_active_page_id"] = "candidate_search"
@@ -721,7 +665,7 @@ def render_page() -> None:
     _cjob_top = st.session_state.get("candidate_search_job")
     if _cjob_top:
         _step_top = int(_cjob_top.get("step", -99))
-        _n_top = len(_cjob_top.get("day_offsets") or calendar_display_day_offsets(0))
+        _n_top = len(_cjob_top.get("day_offsets") or calendar_display_day_offsets())
         if _step_top == -1:
             _busy_msg = "カレンダー取得中…"
         elif _step_top < _n_top:
@@ -761,7 +705,6 @@ def render_page() -> None:
     if "candidate_calendar_week_start" not in st.session_state:
         _ws_init = sunday_week_containing(date.today())
         st.session_state["candidate_calendar_week_start"] = _ws_init
-        st.session_state["candidate_cal_chunk"] = calendar_chunk_for_date(_ws_init, date.today())
 
     # 画面用CSS（業務向けに崩れを抑制）
     # ※ 詳細ポップアップ開閉時でも幅が変わらないよう、メインコンテナの幅を固定
@@ -1105,7 +1048,7 @@ button {
         gcal_tok = st.session_state.get("google_calendar_tokens") or {}
         vf_sess = gcal_tok.get("vehicle_fleet") if isinstance(gcal_tok, dict) else None
 
-        day_offsets_job: List[int] = list(cjob.get("day_offsets") or calendar_display_day_offsets(0))
+        day_offsets_job: List[int] = list(cjob.get("day_offsets") or calendar_display_day_offsets())
         n_search_days = len(day_offsets_job)
         job_started = cjob.get("search_started_at")
         if isinstance(job_started, str):
@@ -1312,8 +1255,6 @@ button {
         st.session_state.pop("candidate_search_calendar_pending", None)
         _clear_candidate_search_ui_busy()
         st.session_state.pop("_candidate_search_masters", None)
-        st.session_state.pop("candidate_cal_chunk", None)
-        st.session_state.pop("_candidate_cal_chunk_week", None)
         st.session_state["candidate_calendar_week_start"] = sunday_week_containing(date.today())
         st.rerun()
 
@@ -1465,12 +1406,7 @@ button {
                 # headcount=1 の既存仕様（優先フォールバック）を維持するため must_include に渡す
                 must_include_worker_ids = sorted(selected_ids_set)
 
-            # 週移動/検索ボタンでは「当日を含むチャンク」を自動選択するが、
-            # 「前半/後半」ボタン起点の再検索ではユーザー選択を優先する。
-            if not bool(st.session_state.pop("_chunk_research_triggered", False)):
-                _apply_calendar_chunk_for_reference_day(ws_target)
-            cal_chunk = int(st.session_state.get("candidate_cal_chunk", 0) or 0)
-            day_offsets = calendar_display_day_offsets(cal_chunk)
+            day_offsets = calendar_display_day_offsets()
             st.session_state.pop("_candidate_search_btn_pressed", None)
             st.session_state["candidate_search_job"] = {
                 "step": -1,
@@ -1550,11 +1486,10 @@ button {
         if not _has_candidate_search_results():
             st.caption("検索前は予定カレンダーのみ表示します。候補を見るには検索を実行してください。")
 
-        cal_chunk = int(st.session_state.get("candidate_cal_chunk", 0) or 0)
-        cal_day_offsets = calendar_display_day_offsets(cal_chunk)
+        cal_day_offsets = calendar_display_day_offsets()
         cache_key = (
             f"calendar_week_events_{ws.isoformat()}_"
-            f"{'veh' if use_vehicle_calendar else 'worker'}_c{cal_chunk}"
+            f"{'veh' if use_vehicle_calendar else 'worker'}_7d"
         )
         if cache_key not in st.session_state:
             last_meta = st.session_state.get("_last_search_calendar_bundle") or {}
@@ -1611,12 +1546,6 @@ button {
                 st.session_state[cache_key] = []
 
         week_ev = st.session_state.get(cache_key) or []
-        _visible_dates = {ws + timedelta(days=i) for i in cal_day_offsets}
-        week_ev = [
-            e
-            for e in week_ev
-            if isinstance(e.get("start_at"), datetime) and e["start_at"].date() in _visible_dates
-        ]
         with st.expander(
             "この週のカレンダー予定（職人・車両マスタの参照カレンダーIDで取得）",
             expanded=False,
@@ -1659,11 +1588,6 @@ button {
             if isinstance(c.get("start_at"), datetime)
             and not is_company_closed_day(c["start_at"].date(), cal_settings)
             and not candidate_includes_worker_off(c, workers_by_id)
-        ]
-        display_candidates = [
-            c
-            for c in display_candidates
-            if c["start_at"].date() in _visible_dates
         ]
         _render_week_calendar(
             candidates=display_candidates,
