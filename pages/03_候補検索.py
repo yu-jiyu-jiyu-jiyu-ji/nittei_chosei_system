@@ -123,32 +123,48 @@ def _column_bg_color(d: date) -> str:
     return "#ffffff"
 
 
+# 7日横スクロール: Plotly 余白・列幅（ヘッダー HTML と一致させる）
+_CALENDAR_MARGIN_LEFT = 62
+_CALENDAR_MARGIN_RIGHT = 18
+_CALENDAR_DAY_COL_PX = 92
+
+
+def _calendar_plot_width(n_days: int) -> int:
+    """Plotly 図全体の幅（左余白＋日列×N＋右余白）。ヘッダー行と一致させる."""
+    return _CALENDAR_MARGIN_LEFT + int(n_days) * _CALENDAR_DAY_COL_PX + _CALENDAR_MARGIN_RIGHT
+
+
 def _render_calendar_table_header_html(week_dates: List[date]) -> None:
     """Plotly 軸ラベルだけでは小さく見えるため、表形式の週見出し行をチャート直上に表示する."""
     n = len(week_dates)
+    plot_w = _calendar_plot_width(n)
+    grid_w = n * _CALENDAR_DAY_COL_PX
+    col_px = _CALENDAR_DAY_COL_PX
     parts: List[str] = []
     for i, d in enumerate(week_dates):
         label = _weekday_label_calendar_header(d)
         bg = _column_bg_color(d)
         border = "border-right:1px solid #d8d8d8;" if i < n - 1 else ""
-        # 列数が少ないときは文字を大きく（4日区切り・PC 向け）
         fs = 19 if n <= 3 else (17 if n <= 4 else (15 if n <= 7 else 14))
         pad = "12px 8px" if n <= 4 else "10px 5px"
         parts.append(
-            f'<div class="cal-head-cell" style="text-align:center;padding:{pad};font-size:{fs}px;'
-            f"color:#222;font-weight:600;background:{bg};{border}\">{label}</div>"
+            f'<div class="cal-head-cell" style="box-sizing:border-box;width:{col_px}px;'
+            f"min-width:{col_px}px;max-width:{col_px}px;text-align:center;padding:{pad};"
+            f"font-size:{fs}px;color:#222;font-weight:600;background:{bg};{border}\">{label}</div>"
         )
     inner = "".join(parts)
     html = (
-        '<div style="display:flex;width:100%;align-items:stretch;margin:0;padding:0;'
-        'box-sizing:border-box;">'
-        '<div style="width:56px;min-width:52px;flex-shrink:0;"></div>'
-        f'<div style="flex:1;display:grid;grid-template-columns:repeat({n},minmax(0,1fr));'
-        "border:1px solid #d8d8d8;border-bottom:none;"
-        'box-sizing:border-box;">'
+        f'<div style="display:flex;width:{plot_w}px;min-width:{plot_w}px;max-width:{plot_w}px;'
+        'align-items:stretch;margin:0;padding:0;box-sizing:border-box;">'
+        f'<div style="width:{_CALENDAR_MARGIN_LEFT}px;min-width:{_CALENDAR_MARGIN_LEFT}px;'
+        f'flex-shrink:0;box-sizing:border-box;"></div>'
+        f'<div style="width:{grid_w}px;min-width:{grid_w}px;display:grid;'
+        f"grid-template-columns:repeat({n},{col_px}px);"
+        "border:1px solid #d8d8d8;border-bottom:none;box-sizing:border-box;">"
         f"{inner}"
         "</div>"
-        '<div style="width:16px;min-width:12px;flex-shrink:0;"></div>'
+        f'<div style="width:{_CALENDAR_MARGIN_RIGHT}px;min-width:{_CALENDAR_MARGIN_RIGHT}px;'
+        'flex-shrink:0;box-sizing:border-box;"></div>'
         "</div>"
     )
     st.markdown(html, unsafe_allow_html=True)
@@ -161,9 +177,6 @@ PLOTLY_CALENDAR_KEY = "candidate_week_plot"
 _CANDIDATE_BLOCK_WIDTH = 0.9
 # カレンダー表示は 1 時間刻み（検索の time_slot_minutes とは別。見やすさ優先）
 _CALENDAR_DISPLAY_SLOT_MINUTES = 60
-# 7日横スクロール時の1日列の最小幅（px）
-_CALENDAR_DAY_COL_MIN_PX = 92
-_CALENDAR_SCROLL_INNER_MIN_PX = 7 * _CALENDAR_DAY_COL_MIN_PX + 72
 
 
 def _candidate_calendar_plot_height(n_visible_days: int) -> int:
@@ -495,7 +508,7 @@ def _build_candidate_week_plotly_figure(
             )
         )
 
-    plot_w = int(_CALENDAR_DAY_COL_MIN_PX * n_vis + 78)
+    plot_w = _calendar_plot_width(n_vis)
 
     fig.update_layout(
         width=plot_w,
@@ -503,8 +516,8 @@ def _build_candidate_week_plotly_figure(
         annotations=annotations,
         shapes=layout_shapes,
         margin=dict(
-            l=62,
-            r=18,
+            l=_CALENDAR_MARGIN_LEFT,
+            r=_CALENDAR_MARGIN_RIGHT,
             t=10 if hide_xaxis_tick_labels else 52,
             b=32,
         ),
@@ -522,7 +535,7 @@ def _build_candidate_week_plotly_figure(
             showgrid=False,
             zeroline=False,
             fixedrange=True,
-            automargin=True,
+            automargin=False,
             tickfont=dict(size=x_tickfont, color="#111"),
             showline=True,
             linecolor=grid_line,
@@ -563,7 +576,7 @@ def _render_week_calendar(
     week_dates = [wd + timedelta(days=i) for i in range(7)]
     offsets = calendar_display_day_offsets()
     visible_dates = [week_dates[i] for i in offsets]
-    inner_min = _CALENDAR_SCROLL_INNER_MIN_PX
+    plot_w = _calendar_plot_width(len(visible_dates))
 
     st.markdown(
         f"""
@@ -576,15 +589,26 @@ def _render_week_calendar(
   margin-bottom: 0.25rem;
 }}
 .candidate-cal-scroll-inner {{
-  min-width: {inner_min}px;
+  width: {plot_w}px;
+  min-width: {plot_w}px;
+  max-width: {plot_w}px;
+}}
+.candidate-cal-plot-wrap {{
+  width: {plot_w}px;
+  min-width: {plot_w}px;
+  max-width: {plot_w}px;
 }}
 .candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {{
+  width: {plot_w}px !important;
+  min-width: {plot_w}px !important;
+  max-width: {plot_w}px !important;
   min-height: 520px;
 }}
 .candidate-cal-plot-wrap .js-plotly-plot,
 .candidate-cal-plot-wrap .plotly-graph-div {{
-  width: auto !important;
-  max-width: none !important;
+  width: {plot_w}px !important;
+  min-width: {plot_w}px !important;
+  max-width: {plot_w}px !important;
 }}
 @media (min-width: 768px) {{
   .candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {{
