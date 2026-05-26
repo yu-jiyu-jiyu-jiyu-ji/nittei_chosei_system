@@ -110,8 +110,13 @@ def _go_to_calendar_week(ws: date, *, trigger_research: bool) -> None:
 
 def _trigger_chunk_research(week_start: date, chunk: int) -> None:
     """前半/後半切替と同条件で候補検索を再実行."""
+    ws = sunday_week_containing(week_start)
     st.session_state["candidate_cal_chunk"] = max(0, min(1, int(chunk)))
-    st.session_state.pop("_candidate_cal_chunk_week", None)
+    # 描画時に「当日を含むチャンク」へ戻さない（_render_week_calendar の週ID同期を抑止）
+    st.session_state["_candidate_cal_chunk_week"] = ws.isoformat()
+    for _ck in list(st.session_state.keys()):
+        if isinstance(_ck, str) and _ck.startswith("calendar_week_events_"):
+            st.session_state.pop(_ck, None)
     st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
     # チャンクボタン起点の再検索では「当日を含むチャンク」への自動補正を行わない
     st.session_state["_chunk_research_triggered"] = True
@@ -1606,6 +1611,12 @@ button {
                 st.session_state[cache_key] = []
 
         week_ev = st.session_state.get(cache_key) or []
+        _visible_dates = {ws + timedelta(days=i) for i in cal_day_offsets}
+        week_ev = [
+            e
+            for e in week_ev
+            if isinstance(e.get("start_at"), datetime) and e["start_at"].date() in _visible_dates
+        ]
         with st.expander(
             "この週のカレンダー予定（職人・車両マスタの参照カレンダーIDで取得）",
             expanded=False,
@@ -1648,6 +1659,11 @@ button {
             if isinstance(c.get("start_at"), datetime)
             and not is_company_closed_day(c["start_at"].date(), cal_settings)
             and not candidate_includes_worker_off(c, workers_by_id)
+        ]
+        display_candidates = [
+            c
+            for c in display_candidates
+            if c["start_at"].date() in _visible_dates
         ]
         _render_week_calendar(
             candidates=display_candidates,
