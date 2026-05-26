@@ -113,6 +113,8 @@ def _trigger_chunk_research(week_start: date, chunk: int) -> None:
     st.session_state["candidate_cal_chunk"] = max(0, min(1, int(chunk)))
     st.session_state.pop("_candidate_cal_chunk_week", None)
     st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
+    # チャンクボタン起点の再検索では「当日を含むチャンク」への自動補正を行わない
+    st.session_state["_chunk_research_triggered"] = True
     st.session_state["week_nav_trigger_search"] = True
     st.session_state["candidate_search_ui_busy"] = True
     st.rerun()
@@ -1458,7 +1460,10 @@ button {
                 # headcount=1 の既存仕様（優先フォールバック）を維持するため must_include に渡す
                 must_include_worker_ids = sorted(selected_ids_set)
 
-            _apply_calendar_chunk_for_reference_day(ws_target)
+            # 週移動/検索ボタンでは「当日を含むチャンク」を自動選択するが、
+            # 「前半/後半」ボタン起点の再検索ではユーザー選択を優先する。
+            if not bool(st.session_state.pop("_chunk_research_triggered", False)):
+                _apply_calendar_chunk_for_reference_day(ws_target)
             cal_chunk = int(st.session_state.get("candidate_cal_chunk", 0) or 0)
             day_offsets = calendar_display_day_offsets(cal_chunk)
             st.session_state.pop("_candidate_search_btn_pressed", None)
