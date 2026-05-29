@@ -598,7 +598,7 @@ def _build_candidate_week_plotly_figure(
             showline=True,
             linecolor=grid_line,
         ),
-        yaxis=dict(
+        "yaxis": dict(
             title="",
             range=[0, total_minutes],
             autorange="reversed",
