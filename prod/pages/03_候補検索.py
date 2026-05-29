@@ -133,18 +133,6 @@ _CALENDAR_WEEK_DAYS = 7
 _CALENDAR_INNER_WIDTH_RATIO = _CALENDAR_WEEK_DAYS / _CALENDAR_VIEWPORT_DAYS
 
 
-def _calendar_plot_width_px(viewport_px: int, n_days: int = _CALENDAR_WEEK_DAYS) -> int:
-    """表示枠幅から Plotly 全体幅（7日分）を算出。1日列 = (viewport - 左右余白) / 3。"""
-    vp = max(280, int(viewport_px))
-    day_col = max(72, (vp - _CALENDAR_MARGIN_LEFT - _CALENDAR_MARGIN_RIGHT) // _CALENDAR_VIEWPORT_DAYS)
-    return _CALENDAR_MARGIN_LEFT + day_col * int(n_days) + _CALENDAR_MARGIN_RIGHT
-
-
-def _mobile_fallback_plot_width_px() -> int:
-    """SSR 時の仮幅（描画後 JS で実幅に合わせる）。"""
-    return _calendar_plot_width_px(390)
-
-
 def _render_calendar_table_header_html(week_dates: List[date]) -> None:
     """Plotly 軸ラベルだけでは小さく見えるため、表形式の週見出し行をチャート直上に表示する."""
     n = len(week_dates)
@@ -169,8 +157,8 @@ def _render_calendar_table_header_html(week_dates: List[date]) -> None:
     st.markdown(html, unsafe_allow_html=True)
 
 
-def _inject_calendar_width_sync() -> None:
-    """表示枠幅×7/3 で内側・Plotly を同期（3日見え幅・7日分スクロール）。"""
+def _mount_candidate_calendar_scroller() -> None:
+    """Streamlit は markdown の div で plotly を包めないため、描画後に DOM を組み立てて幅を同期する."""
     ratio = _CALENDAR_INNER_WIDTH_RATIO
     margin_l = _CALENDAR_MARGIN_LEFT
     margin_r = _CALENDAR_MARGIN_RIGHT
@@ -181,15 +169,13 @@ def _inject_calendar_width_sync() -> None:
   const RATIO = {ratio};
   const ML = {margin_l};
   const MR = {margin_r};
-  const sync = () => {{
-    const doc = window.parent && window.parent.document ? window.parent.document : document;
-    const host = doc.querySelector(".candidate-cal-scroll-host:last-of-type");
+  const doc = window.parent && window.parent.document ? window.parent.document : document;
+  const PlotlyLib = (window.parent && window.parent.Plotly) || window.Plotly;
+
+  function sync(host) {{
     if (!host) return;
     const scrollX = host.querySelector(".candidate-cal-scroll-x");
     const inner = host.querySelector(".candidate-cal-scroll-inner");
-    const plotDiv = host.querySelector(".plotly-graph-div");
-    const plotWrap = host.querySelector(".candidate-cal-plot-wrap");
-    const stChart = host.querySelector('[data-testid="stPlotlyChart"]');
     if (!scrollX || !inner) return;
     const vp = scrollX.clientWidth;
     if (vp < 1) return;
@@ -197,13 +183,14 @@ def _inject_calendar_width_sync() -> None:
     inner.style.width = full + "px";
     inner.style.minWidth = full + "px";
     inner.style.maxWidth = full + "px";
-    [plotWrap, stChart, plotDiv].forEach((el) => {{
-      if (!el) return;
+    host.querySelectorAll(
+      '[data-testid="stPlotlyChart"], .plotly-graph-div, .js-plotly-plot'
+    ).forEach((el) => {{
       el.style.width = full + "px";
       el.style.minWidth = full + "px";
       el.style.maxWidth = full + "px";
     }});
-    const PlotlyLib = (window.parent && window.parent.Plotly) || window.Plotly;
+    const plotDiv = host.querySelector(".plotly-graph-div");
     if (plotDiv && PlotlyLib) {{
       try {{
         PlotlyLib.relayout(plotDiv, {{
@@ -214,14 +201,57 @@ def _inject_calendar_width_sync() -> None:
         }});
       }} catch (e) {{}}
     }}
-  }};
-  sync();
-  setTimeout(sync, 200);
-  setTimeout(sync, 700);
-  setTimeout(sync, 1500);
-  const doc = window.parent && window.parent.document ? window.parent.document : document;
+    scrollX.scrollLeft = 0;
+  }}
+
+  function mount() {{
+    if (doc.querySelector(".candidate-cal-scroll-host[data-cal-mounted='1']")) {{
+      sync(doc.querySelector(".candidate-cal-scroll-host[data-cal-mounted='1']"));
+      return;
+    }}
+    const bind = doc.getElementById("candidate-cal-bind");
+    if (!bind) return;
+    const bindBlock = bind.closest('[data-testid="stVerticalBlock"]');
+    if (!bindBlock || !bindBlock.parentElement) return;
+
+    const host = doc.createElement("div");
+    host.className = "candidate-cal-scroll-host";
+    host.dataset.calMounted = "1";
+    const scrollX = doc.createElement("div");
+    scrollX.className = "candidate-cal-scroll-x";
+    const inner = doc.createElement("div");
+    inner.className = "candidate-cal-scroll-inner";
+    scrollX.appendChild(inner);
+    host.appendChild(scrollX);
+    bindBlock.parentElement.insertBefore(host, bindBlock);
+
+    let sib = bindBlock.nextElementSibling;
+    const moved = [];
+    while (sib) {{
+      const hasHeader = !!sib.querySelector(".candidate-cal-header-row");
+      const hasPlot = !!sib.querySelector('[data-testid="stPlotlyChart"]');
+      if (hasHeader || hasPlot) {{
+        moved.push(sib);
+        if (hasPlot) break;
+      }} else if (moved.length) {{
+        break;
+      }}
+      sib = sib.nextElementSibling;
+    }}
+    moved.forEach((el) => inner.appendChild(el));
+    bindBlock.remove();
+    sync(host);
+  }}
+
+  mount();
+  setTimeout(mount, 150);
+  setTimeout(mount, 500);
+  setTimeout(mount, 1200);
   if (doc.defaultView) {{
-    doc.defaultView.addEventListener("resize", sync);
+    doc.defaultView.addEventListener("resize", () => {{
+      const host = doc.querySelector(".candidate-cal-scroll-host[data-cal-mounted='1']");
+      sync(host);
+    }});
   }}
 }})();
 </script>
@@ -640,46 +670,33 @@ def _render_week_calendar(
     week_dates = [wd + timedelta(days=i) for i in range(7)]
     offsets = calendar_display_day_offsets()
     visible_dates = [week_dates[i] for i in offsets]
-    inner_w_pct = int(round(_CALENDAR_INNER_WIDTH_RATIO * 100))
-    mobile_fallback_w = _mobile_fallback_plot_width_px()
-
     st.markdown(
-        f"""
+        """
 <style>
-.candidate-cal-scroll-host {{
+.candidate-cal-scroll-host {
   width: 100%;
   max-width: 100%;
   overflow: hidden;
   margin-bottom: 0.25rem;
   box-sizing: border-box;
-}}
-.candidate-cal-scroll-x {{
+}
+.candidate-cal-scroll-x {
   width: 100%;
   max-width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
   box-sizing: border-box;
-}}
-.candidate-cal-scroll-inner {{
-  width: {inner_w_pct}%;
-  min-width: {inner_w_pct}%;
+}
+.candidate-cal-scroll-inner {
   box-sizing: border-box;
-}}
-@media (max-width: 767px) {{
-  .candidate-cal-scroll-inner {{
-    width: calc(100% * {_CALENDAR_WEEK_DAYS} / {_CALENDAR_VIEWPORT_DAYS});
-    min-width: calc(100% * {_CALENDAR_WEEK_DAYS} / {_CALENDAR_VIEWPORT_DAYS});
-  }}
-  .candidate-cal-plot-wrap,
-  .candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {{
-    min-width: {mobile_fallback_w}px;
-  }}
-  .cal-head-cell {{
+}
+@media (max-width: 767px) {
+  .cal-head-cell {
     font-size: 14px;
     padding: 8px 4px;
-  }}
-}}
+  }
+}
 .candidate-cal-header-row {{
   display: flex;
   width: 100%;
@@ -711,23 +728,14 @@ def _render_week_calendar(
   color: #222;
   font-weight: 600;
 }}
-.candidate-cal-plot-wrap {{
-  width: 100%;
-  box-sizing: border-box;
-}}
-.candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {{
-  width: 100% !important;
+.candidate-cal-scroll-inner [data-testid="stPlotlyChart"] {
   min-height: 520px;
-}}
-.candidate-cal-plot-wrap .js-plotly-plot,
-.candidate-cal-plot-wrap .plotly-graph-div {{
-  width: 100% !important;
-}}
-@media (min-width: 768px) {{
-  .candidate-cal-plot-wrap [data-testid="stPlotlyChart"] {{
+}
+@media (min-width: 768px) {
+  .candidate-cal-scroll-inner [data-testid="stPlotlyChart"] {
     min-height: 600px;
-  }}
-}}
+  }
+}
 </style>
 """,
         unsafe_allow_html=True,
@@ -739,11 +747,8 @@ def _render_week_calendar(
         f"画面幅に{_CALENDAR_VIEWPORT_DAYS}日分表示。横にスワイプして4日目以降（日曜始まり）"
     )
 
-    st.markdown('<div class="candidate-cal-scroll-host">', unsafe_allow_html=True)
-    st.markdown('<div class="candidate-cal-scroll-x">', unsafe_allow_html=True)
-    st.markdown('<div class="candidate-cal-scroll-inner">', unsafe_allow_html=True)
+    st.markdown('<div id="candidate-cal-bind" hidden></div>', unsafe_allow_html=True)
     _render_calendar_table_header_html(visible_dates)
-    st.markdown('<div class="candidate-cal-plot-wrap">', unsafe_allow_html=True)
     fig, ordered_ids = _build_candidate_week_plotly_figure(
         candidates=candidates,
         week_start_date=wd,
@@ -754,22 +759,16 @@ def _render_week_calendar(
         worker_id_to_name=worker_id_to_name,
         vehicle_id_to_name=vehicle_id_to_name,
         hide_xaxis_tick_labels=True,
-        layout_width=mobile_fallback_w,
     )
-    # 固定幅で7日分を描画（スマホは描画後 JS で実幅に relayout。PC も同じ比率で横スクロール）
     plot_state = st.plotly_chart(
         fig,
         key=PLOTLY_CALENDAR_KEY,
         on_select="rerun",
         selection_mode="points",
-        use_container_width=False,
+        use_container_width=True,
     )
     _apply_plotly_point_selection(plot_state, ordered_ids)
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-    _inject_calendar_width_sync()
+    _mount_candidate_calendar_scroller()
     note = footer_note or (
         "※ 色ブロックは「空きとして採用した候補」の開始〜終了です。"
         "（上の「この週のカレンダー予定」で参照IDを確認できます）"
