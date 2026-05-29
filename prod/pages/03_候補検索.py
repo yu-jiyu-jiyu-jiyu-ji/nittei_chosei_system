@@ -1,6 +1,5 @@
 ﻿from __future__ import annotations
 
-import json
 from collections import defaultdict
 from contextlib import nullcontext
 from datetime import date, datetime, time, timedelta
@@ -157,76 +156,32 @@ def _build_calendar_header_html(week_dates: List[date]) -> str:
     )
 
 
-def _render_calendar_scroll_component(
-    fig: go.Figure,
-    header_html: str,
-    *,
-    plot_height: int,
-) -> Optional[str]:
-    """日付ヘッダー＋Plotly を1つの横スクロール枠に描画。クリックで候補IDを返す。"""
-    fig_dict = json.loads(fig.to_json())
-    data_js = json.dumps(fig_dict.get("data", []), ensure_ascii=False)
-    layout_js = json.dumps(fig_dict.get("layout", {}), ensure_ascii=False)
+def _inject_calendar_scroll_setup() -> None:
+    """Plotly ネイティブ表示のまま、ヘッダー＋グラフを横スクロール枠にまとめて幅を同期（DOM 削除なし）。"""
     ratio = _CALENDAR_INNER_WIDTH_RATIO
     margin_l = _CALENDAR_MARGIN_LEFT
     margin_r = _CALENDAR_MARGIN_RIGHT
-    frame_h = int(plot_height) + 72
-
-    clicked = components.html(
+    components.html(
         f"""
-<style>
-.candidate-cal-header-row {{
-  display: flex; width: 100%; align-items: stretch; box-sizing: border-box;
-}}
-.candidate-cal-y-axis-gutter {{
-  width: {margin_l}px; min-width: {margin_l}px; flex-shrink: 0;
-}}
-.candidate-cal-margin-right {{
-  width: {margin_r}px; min-width: {margin_r}px; flex-shrink: 0;
-}}
-.candidate-cal-day-grid {{
-  flex: 1; display: grid; border: 1px solid #d8d8d8; border-bottom: none; box-sizing: border-box;
-}}
-.cal-head-cell {{
-  box-sizing: border-box; text-align: center; padding: 10px 5px;
-  font-size: 15px; color: #222; font-weight: 600;
-}}
-@media (max-width: 767px) {{
-  .cal-head-cell {{ font-size: 14px; padding: 8px 4px; }}
-}}
-</style>
-<div class="candidate-cal-scroll-host" style="width:100%;max-width:100%;overflow:hidden;box-sizing:border-box;">
-  <div class="candidate-cal-scroll-x" style="width:100%;max-width:100%;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;">
-    <div class="candidate-cal-scroll-inner" id="candidate-cal-inner" style="box-sizing:border-box;">
-      {header_html}
-      <div id="candidate-cal-plot" style="width:100%;height:{plot_height}px;"></div>
-    </div>
-  </div>
-</div>
-<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@streamlit/component-lib@2.0.0/dist/index.min.js"></script>
 <script>
 (function() {{
   const RATIO = {ratio};
   const ML = {margin_l};
   const MR = {margin_r};
-  const figData = {data_js};
-  const figLayout = {layout_js};
+  const doc = window.parent && window.parent.document ? window.parent.document : document;
+  const PlotlyLib = (window.parent && window.parent.Plotly) || window.Plotly;
 
-  function syncWidth() {{
-    const scrollX = document.querySelector(".candidate-cal-scroll-x");
-    const inner = document.getElementById("candidate-cal-inner");
-    if (!scrollX || !inner) return;
+  function sync(host, scrollX, inner) {{
     const vp = scrollX.clientWidth;
     if (vp < 1) return;
     const full = Math.round(vp * RATIO);
     inner.style.width = full + "px";
     inner.style.minWidth = full + "px";
     inner.style.maxWidth = full + "px";
-    const plotEl = document.getElementById("candidate-cal-plot");
-    if (plotEl && window.Plotly) {{
+    const plotDiv = host.querySelector(".plotly-graph-div");
+    if (plotDiv && PlotlyLib) {{
       try {{
-        window.Plotly.relayout(plotEl, {{
+        PlotlyLib.relayout(plotDiv, {{
           width: full,
           autosize: false,
           "margin.l": ML,
@@ -237,43 +192,55 @@ def _render_calendar_scroll_component(
     scrollX.scrollLeft = 0;
   }}
 
-  const layout = Object.assign({{}}, figLayout, {{
-    height: {plot_height},
-    autosize: false,
-    margin: Object.assign({{}}, (figLayout.margin || {{}}), {{l: ML, r: MR, t: 10, b: 32}}),
-  }});
-
-  Plotly.newPlot("candidate-cal-plot", figData, layout, {{
-    displayModeBar: false,
-    responsive: false,
-    scrollZoom: false,
-  }}).then(function() {{
-    syncWidth();
-    if (window.Streamlit) {{
-      Streamlit.setFrameHeight({frame_h});
+  function mount() {{
+    if (doc.querySelector(".candidate-cal-scroll-host[data-cal-ready='1']")) {{
+      const host = doc.querySelector(".candidate-cal-scroll-host[data-cal-ready='1']");
+      const scrollX = host.querySelector(".candidate-cal-scroll-x");
+      const inner = host.querySelector(".candidate-cal-scroll-inner");
+      if (scrollX && inner) sync(host, scrollX, inner);
+      return;
     }}
-  }});
+    const header = doc.querySelector(".candidate-cal-header-row");
+    const plotDiv = doc.querySelector(".js-plotly-plot");
+    if (!header || !plotDiv) return;
+    const headerEc = header.closest('[data-testid="stElementContainer"]');
+    const plotEc = plotDiv.closest('[data-testid="stElementContainer"]');
+    if (!headerEc || !plotEc || headerEc.dataset.calWrapped === "1") return;
 
-  window.addEventListener("resize", syncWidth);
+    const host = doc.createElement("div");
+    host.className = "candidate-cal-scroll-host";
+    host.dataset.calReady = "1";
+    host.style.cssText = "width:100%;max-width:100%;overflow:hidden;box-sizing:border-box;";
+    const scrollX = doc.createElement("div");
+    scrollX.className = "candidate-cal-scroll-x";
+    scrollX.style.cssText = "width:100%;max-width:100%;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;";
+    const inner = doc.createElement("div");
+    inner.className = "candidate-cal-scroll-inner";
+    inner.style.boxSizing = "border-box";
+    scrollX.appendChild(inner);
+    host.appendChild(scrollX);
 
-  document.getElementById("candidate-cal-plot").on("plotly_click", function(ev) {{
-    if (!ev || !ev.points || !ev.points.length) return;
-    const cd = ev.points[0].customdata;
-    const cid = Array.isArray(cd) ? cd[0] : cd;
-    if (cid && window.Streamlit) {{
-      Streamlit.setComponentValue(String(cid));
-    }}
-  }});
+    const parent = headerEc.parentElement;
+    if (!parent) return;
+    parent.insertBefore(host, headerEc);
+    inner.appendChild(headerEc);
+    inner.appendChild(plotEc);
+    headerEc.dataset.calWrapped = "1";
+    plotEc.dataset.calWrapped = "1";
+    sync(host, scrollX, inner);
+  }}
+
+  mount();
+  setTimeout(mount, 250);
+  setTimeout(mount, 900);
+  if (doc.defaultView) {{
+    doc.defaultView.addEventListener("resize", mount);
+  }}
 }})();
 </script>
 """,
-        height=frame_h,
-        scrolling=False,
+        height=0,
     )
-    if clicked is None:
-        return None
-    cid = str(clicked).strip()
-    return cid if cid else None
 
 
 PLOTLY_CALENDAR_KEY = "candidate_week_plot"
@@ -693,9 +660,35 @@ def _render_week_calendar(
         f"画面幅に{_CALENDAR_VIEWPORT_DAYS}日分表示。横にスワイプして4日目以降（日曜始まり）"
     )
 
-    header_html = _build_calendar_header_html(visible_dates)
+    st.markdown(
+        f"""
+<style>
+.candidate-cal-header-row {{
+  display: flex; width: 100%; align-items: stretch; box-sizing: border-box;
+}}
+.candidate-cal-y-axis-gutter {{
+  width: {_CALENDAR_MARGIN_LEFT}px; min-width: {_CALENDAR_MARGIN_LEFT}px; flex-shrink: 0;
+}}
+.candidate-cal-margin-right {{
+  width: {_CALENDAR_MARGIN_RIGHT}px; min-width: {_CALENDAR_MARGIN_RIGHT}px; flex-shrink: 0;
+}}
+.candidate-cal-day-grid {{
+  flex: 1; display: grid; border: 1px solid #d8d8d8; border-bottom: none; box-sizing: border-box;
+}}
+.cal-head-cell {{
+  box-sizing: border-box; text-align: center; padding: 10px 5px;
+  font-size: 15px; color: #222; font-weight: 600;
+}}
+@media (max-width: 767px) {{
+  .cal-head-cell {{ font-size: 14px; padding: 8px 4px; }}
+}}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+    st.markdown(_build_calendar_header_html(visible_dates), unsafe_allow_html=True)
     plot_h = _candidate_calendar_plot_height(len(visible_dates))
-    fig, _ordered_ids = _build_candidate_week_plotly_figure(
+    fig, ordered_ids = _build_candidate_week_plotly_figure(
         candidates=candidates,
         week_start_date=wd,
         visible_day_offsets=offsets,
@@ -706,10 +699,15 @@ def _render_week_calendar(
         vehicle_id_to_name=vehicle_id_to_name,
         hide_xaxis_tick_labels=True,
     )
-    clicked_cid = _render_calendar_scroll_component(fig, header_html, plot_height=plot_h)
-    if clicked_cid:
-        st.session_state["candidate_dialog_id"] = clicked_cid
-        st.rerun()
+    plot_state = st.plotly_chart(
+        fig,
+        key=PLOTLY_CALENDAR_KEY,
+        on_select="rerun",
+        selection_mode="points",
+        use_container_width=True,
+    )
+    _apply_plotly_point_selection(plot_state, ordered_ids)
+    _inject_calendar_scroll_setup()
     note = footer_note or (
         "※ 色ブロックは「空きとして採用した候補」の開始〜終了です。"
         "（上の「この週のカレンダー予定」で参照IDを確認できます）"
@@ -755,14 +753,13 @@ def render_page() -> None:
             _busy_msg = f"検索中…（{_step_top + 1}/{_n_top}日）"
         else:
             _busy_msg = "検索・カレンダー表示中…"
-    elif candidate_search_busy_active() or st.session_state.get("_candidate_search_btn_pressed"):
+    elif candidate_search_busy_active():
         _busy_msg = "検索・カレンダー表示中…"
     else:
         _busy_msg = ""
     if _busy_msg:
         inject_force_busy_marker(_busy_msg)
-        with visible_spinner(_busy_msg):
-            st.caption("検索処理中です。しばらくお待ちください…")
+        st.caption("検索処理中です。しばらくお待ちください…")
 
     st.title("候補検索")
     st.caption("案件条件をもとに、予定を入れても問題ない候補日時を検索します。")
@@ -883,6 +880,7 @@ button {
     cjob_early = st.session_state.get("candidate_search_job")
     cal_early = bool(st.session_state.get("candidate_search_calendar_pending"))
     search_press = bool(st.session_state.get("_candidate_search_btn_pressed"))
+    st.session_state.pop("_candidate_search_btn_pressed", None)
     masters_cache = st.session_state.get("_candidate_search_masters")
     # 検索中以外の操作（新規登録フォームのチェックボックス等）でも毎回 Firestore を取り直さない
     reuse_masters = (
