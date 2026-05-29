@@ -159,8 +159,8 @@ def _render_calendar_table_header_html(week_dates: List[date]) -> None:
         f'<div style="width:{_CALENDAR_MARGIN_LEFT}px;min-width:{_CALENDAR_MARGIN_LEFT}px;'
         f'flex-shrink:0;box-sizing:border-box;"></div>'
         f'<div style="width:{grid_w}px;min-width:{grid_w}px;display:grid;'
-        f"grid-template-columns:repeat({n},{col_px}px);"
-        "border:1px solid #d8d8d8;border-bottom:none;box-sizing:border-box;">"
+        f'grid-template-columns:repeat({n},{col_px}px);border:1px solid #d8d8d8;'
+        f'border-bottom:none;box-sizing:border-box;">'
         f"{inner}"
         "</div>"
         f'<div style="width:{_CALENDAR_MARGIN_RIGHT}px;min-width:{_CALENDAR_MARGIN_RIGHT}px;'
