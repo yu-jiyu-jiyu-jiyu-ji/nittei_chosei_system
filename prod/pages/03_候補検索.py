@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import plotly.graph_objects as go
+import streamlit.components.v1 as components
 import streamlit as st
 import pandas as pd
 
@@ -127,11 +128,32 @@ def _column_bg_color(d: date) -> str:
 _CALENDAR_MARGIN_LEFT = 62
 _CALENDAR_MARGIN_RIGHT = 18
 _CALENDAR_DAY_COL_PX = 92
+# 一度に見せる日数（列幅は7日表示時と同じ92px。4日目以降は横スクロール）
+_CALENDAR_VIEWPORT_DAYS = 3
 
 
 def _calendar_plot_width(n_days: int) -> int:
     """Plotly 図全体の幅（左余白＋日列×N＋右余白）。ヘッダー行と一致させる."""
     return _CALENDAR_MARGIN_LEFT + int(n_days) * _CALENDAR_DAY_COL_PX + _CALENDAR_MARGIN_RIGHT
+
+
+def _calendar_viewport_width() -> int:
+    """横スクロール枠の見える幅（3日分＋左右余白）。"""
+    return _calendar_plot_width(_CALENDAR_VIEWPORT_DAYS)
+
+
+def _initial_calendar_scroll_px(week_start: date) -> int:
+    """表示週内の「今日」が見える位置へスクロール（週外なら先頭）。"""
+    today = date.today()
+    if today < week_start or today > week_start + timedelta(days=6):
+        return 0
+    today_idx = (today - week_start).days
+    full_w = _calendar_plot_width(7)
+    vp_w = _calendar_viewport_width()
+    max_scroll = max(0, full_w - vp_w)
+    # 今日を3日枠の左寄せ（はみ出す場合は最大まで）
+    target = today_idx * _CALENDAR_DAY_COL_PX
+    return int(min(max_scroll, max(0, target)))
 
 
 def _render_calendar_table_header_html(week_dates: List[date]) -> None:
@@ -569,7 +591,7 @@ def _render_week_calendar(
     vehicle_id_to_name: Dict[str, str],
     footer_note: Optional[str] = None,
 ) -> None:
-    """週間候補カレンダー（Plotly）。日曜〜土曜の7日を横スクロールで表示。"""
+    """週間候補カレンダー（Plotly）。7日分を描画し、枠内は3日幅で横スクロール。"""
     wd: date = week_start_date
     if isinstance(wd, datetime):
         wd = wd.date()
@@ -577,16 +599,25 @@ def _render_week_calendar(
     offsets = calendar_display_day_offsets()
     visible_dates = [week_dates[i] for i in offsets]
     plot_w = _calendar_plot_width(len(visible_dates))
+    vp_w = _calendar_viewport_width()
+    scroll_init = _initial_calendar_scroll_px(wd)
 
     st.markdown(
         f"""
 <style>
+.candidate-cal-scroll-host {{
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  margin-bottom: 0.25rem;
+}}
 .candidate-cal-scroll-x {{
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
-  width: 100%;
-  margin-bottom: 0.25rem;
+  width: {vp_w}px;
+  max-width: 100%;
+  margin-bottom: 0;
 }}
 .candidate-cal-scroll-inner {{
   width: {plot_w}px;
@@ -622,9 +653,11 @@ def _render_week_calendar(
     d0, d1 = visible_dates[0], visible_dates[-1]
     st.caption(
         f"表示: **{d0.month}/{d0.day}（{_YOUBI[d0.weekday()]}）〜"
-        f"{d1.month}/{d1.day}（{_YOUBI[d1.weekday()]}）** — 横にスワイプして週全体を表示"
+        f"{d1.month}/{d1.day}（{_YOUBI[d1.weekday()]}）** — "
+        f"一度に{_CALENDAR_VIEWPORT_DAYS}日分の幅。横にスワイプして4日目以降を表示"
     )
 
+    st.markdown('<div class="candidate-cal-scroll-host">', unsafe_allow_html=True)
     st.markdown('<div class="candidate-cal-scroll-x">', unsafe_allow_html=True)
     st.markdown('<div class="candidate-cal-scroll-inner">', unsafe_allow_html=True)
     _render_calendar_table_header_html(visible_dates)
@@ -651,6 +684,25 @@ def _render_week_calendar(
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    components.html(
+        f"""
+<script>
+(function() {{
+  const px = {scroll_init};
+  const run = () => {{
+    const doc = window.parent && window.parent.document ? window.parent.document : document;
+    const el = doc.querySelector(".candidate-cal-scroll-x:last-of-type");
+    if (el) el.scrollLeft = px;
+  }};
+  run();
+  setTimeout(run, 350);
+  setTimeout(run, 900);
+}})();
+</script>
+""",
+        height=0,
+    )
     note = footer_note or (
         "※ 色ブロックは「空きとして採用した候補」の開始〜終了です。"
         "（上の「この週のカレンダー予定」で参照IDを確認できます）"
