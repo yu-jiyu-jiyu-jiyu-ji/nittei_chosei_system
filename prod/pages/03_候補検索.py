@@ -269,7 +269,6 @@ def _render_calendar_scroll_component(
 """,
         height=frame_h,
         scrolling=False,
-        key="candidate_week_cal_scroll",
     )
     if clicked is None:
         return None
