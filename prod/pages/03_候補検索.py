@@ -39,6 +39,7 @@ from services.worker_service import list_workers
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
 from utils.loading_util import (
     candidate_search_busy_active,
+    format_search_progress_pct,
     inject_force_busy_marker,
     visible_spinner,
 )
@@ -58,6 +59,26 @@ def _on_candidate_search_button_click() -> None:
 
 def _clear_candidate_search_ui_busy() -> None:
     st.session_state.pop("candidate_search_ui_busy", None)
+
+
+def _inject_candidate_search_busy_if_needed() -> None:
+    """分割検索の進捗を全画面オーバーレイに反映（検索完了後は出さない）."""
+    cjob = st.session_state.get("candidate_search_job")
+    if cjob:
+        step_top = int(cjob.get("step", -99))
+        n_top = len(cjob.get("day_offsets") or calendar_display_day_offsets())
+        if step_top == -1:
+            busy_msg = "カレンダー取得中…"
+        elif step_top < n_top:
+            busy_msg = f"検索中…（{format_search_progress_pct(step_top, n_top)}）"
+        else:
+            return
+    elif candidate_search_busy_active():
+        busy_msg = "検索・カレンダー表示中…"
+    else:
+        return
+    inject_force_busy_marker(busy_msg)
+    st.caption("検索処理中です。しばらくお待ちください…")
 
 
 _YOUBI = ("月", "火", "水", "木", "金", "土", "日")
@@ -178,8 +199,7 @@ def _render_calendar_scroll_component(
         f"""
 <style>
 html, body {{
-  margin: 0; padding: 0; overflow: hidden;
-  touch-action: manipulation;
+  margin: 0; padding: 0;
 }}
 .candidate-cal-scroll-host {{
   width: 100%; max-width: 100%; overflow: hidden; box-sizing: border-box;
@@ -188,9 +208,9 @@ html, body {{
 .candidate-cal-scroll-x {{
   width: 100%; max-width: 100%;
   min-height: {cal_min_h}px;
-  overflow-x: auto; overflow-y: hidden;
+  overflow-x: auto; overflow-y: visible;
   -webkit-overflow-scrolling: touch;
-  touch-action: pan-x;
+  touch-action: pan-x pan-y;
   overscroll-behavior-x: contain;
 }}
 .candidate-cal-scroll-inner {{
@@ -198,7 +218,7 @@ html, body {{
 }}
 .candidate-cal-header-row {{
   display: flex; width: 100%; align-items: stretch; box-sizing: border-box;
-  min-height: {header_h}px; touch-action: pan-x;
+  min-height: {header_h}px;
 }}
 .candidate-cal-y-axis-gutter {{
   width: {margin_l}px; min-width: {margin_l}px; flex-shrink: 0;
@@ -215,10 +235,10 @@ html, body {{
 }}
 #candidate-cal-plot {{
   width: 100%; height: {plot_height}px; min-height: {plot_height}px;
-  touch-action: pan-x; cursor: pointer;
+  touch-action: pan-x pan-y; cursor: pointer;
 }}
 #candidate-cal-plot .plotly-graph-div {{
-  touch-action: pan-x !important;
+  touch-action: pan-x pan-y !important;
 }}
 @media (max-width: 767px) {{
   .cal-head-cell {{ font-size: 14px; padding: 8px 4px; }}
@@ -275,6 +295,27 @@ html, body {{
     return cid ? String(cid) : null;
   }}
 
+  function bindVerticalPageScroll(container) {{
+    if (!container) return;
+    let startX = 0, startY = 0;
+    container.addEventListener("touchstart", function(e) {{
+      if (!e.touches || e.touches.length !== 1) return;
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+    }}, {{passive: true}});
+    container.addEventListener("touchmove", function(e) {{
+      if (!e.touches || e.touches.length !== 1) return;
+      const dx = e.touches[0].clientX - startX;
+      const dy = e.touches[0].clientY - startY;
+      if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx) * 1.1) {{
+        try {{
+          window.parent.scrollBy(0, -dy);
+          startY = e.touches[0].clientY;
+        }} catch (err) {{}}
+      }}
+    }}, {{passive: true}});
+  }}
+
   function bindHorizontalSwipe(scrollEl, plotEl) {{
     const targets = [scrollEl, document.getElementById("candidate-cal-inner")];
     if (plotEl) targets.push(plotEl);
@@ -328,6 +369,7 @@ html, body {{
   }}).then(function(gd) {{
     syncWidth(false);
     bindHorizontalSwipe(scrollX, gd);
+    bindVerticalPageScroll(document.querySelector(".candidate-cal-scroll-host"));
     if (window.Streamlit) Streamlit.setFrameHeight({frame_h});
     gd.on("plotly_click", function(ev) {{
       if (gd.dataset && gd.dataset.calSwiped === "1") return;
@@ -837,23 +879,6 @@ def render_page() -> None:
     st.session_state["_active_page_id"] = "candidate_search"
     inject_wide_layout()
     inject_sidebar_nav()
-    _cjob_top = st.session_state.get("candidate_search_job")
-    if _cjob_top:
-        _step_top = int(_cjob_top.get("step", -99))
-        _n_top = len(_cjob_top.get("day_offsets") or calendar_display_day_offsets())
-        if _step_top == -1:
-            _busy_msg = "カレンダー取得中…"
-        elif _step_top < _n_top:
-            _busy_msg = f"検索中…（{_step_top + 1}/{_n_top}日）"
-        else:
-            _busy_msg = "検索・カレンダー表示中…"
-    elif candidate_search_busy_active():
-        _busy_msg = "検索・カレンダー表示中…"
-    else:
-        _busy_msg = ""
-    if _busy_msg:
-        inject_force_busy_marker(_busy_msg)
-        st.caption("検索処理中です。しばらくお待ちください…")
 
     st.title("候補検索")
     st.caption("案件条件をもとに、予定を入れても問題ない候補日時を検索します。")
@@ -1206,6 +1231,8 @@ button {
 
     # 分割検索: ①カレンダーAPIは表示中の4日/3日分のみ ②以降は同一データで1日ずつ計算
     cjob = st.session_state.get("candidate_search_job")
+    if candidate_search_busy_active() or st.session_state.get("candidate_search_job") is not None:
+        _inject_candidate_search_busy_if_needed()
     if cjob is not None:
         _btn_search = bool(cjob.get("from_search_btn"))
         step = int(cjob.get("step", -99))
@@ -1268,8 +1295,9 @@ button {
             st.rerun()
         elif step < n_search_days:
             d = ws_job + timedelta(days=day_offsets_job[step])
-            progress_pct = int(round(((step + 1) / float(max(n_search_days, 1))) * 100))
-            with visible_spinner(f"検索中…（{progress_pct}%）"):
+            with visible_spinner(
+                f"検索中…（{format_search_progress_pct(step, n_search_days)}）"
+            ):
                 part, warns = search_candidates(
                     project=proj_job,
                     workers=workers_for_search,
@@ -1307,7 +1335,7 @@ button {
             st.session_state.pop("candidate_search_job", None)
             st.session_state.pop("_week_nav_undo", None)
             _clear_candidate_search_ui_busy()
-            st.rerun()
+            # 余計な rerun を避け、同じ実行で結果表示へ進む（オーバーレイ残留を防ぐ）
 
     if selected_project:
         _mp_wids = sorted(str(w.get("worker_id", "")) for w in workers_for_search)

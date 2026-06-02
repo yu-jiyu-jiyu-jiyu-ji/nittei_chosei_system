@@ -31,6 +31,15 @@ def inject_force_busy_marker(title: str = "検索・カレンダー表示中…"
     )
 
 
+def format_search_progress_pct(step_index: int, total_days: int) -> str:
+    """分割検索の進捗を百分率文字列にする（例: 43%）."""
+    if total_days <= 0:
+        return "0%"
+    pct = int(round(((int(step_index) + 1) / float(total_days)) * 100))
+    pct = min(100, max(0, pct))
+    return f"{pct}%"
+
+
 def candidate_search_busy_active() -> bool:
     """候補検索フロー（分割検索〜カレンダー描画）が進行中か."""
     return bool(
