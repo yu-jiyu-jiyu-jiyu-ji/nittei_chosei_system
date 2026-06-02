@@ -40,6 +40,7 @@ from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_w
 from utils.loading_util import (
     candidate_search_busy_active,
     format_search_progress_pct,
+    inject_clear_force_busy_overlay,
     inject_force_busy_marker,
     visible_spinner,
 )
@@ -61,20 +62,28 @@ def _clear_candidate_search_ui_busy() -> None:
     st.session_state.pop("candidate_search_ui_busy", None)
 
 
+def _sanitize_stale_candidate_search_busy() -> None:
+    """ジョブ無しで busy だけ残るとオーバーレイが消えないため、開始時に整理する."""
+    if st.session_state.get("candidate_search_job") is not None:
+        return
+    if st.session_state.get("candidate_search_calendar_pending"):
+        st.session_state.pop("candidate_search_calendar_pending", None)
+    if st.session_state.get("candidate_search_ui_busy"):
+        _clear_candidate_search_ui_busy()
+        inject_clear_force_busy_overlay()
+
+
 def _inject_candidate_search_busy_if_needed() -> None:
     """分割検索の進捗を全画面オーバーレイに反映（検索完了後は出さない）."""
     cjob = st.session_state.get("candidate_search_job")
-    if cjob:
-        step_top = int(cjob.get("step", -99))
-        n_top = len(cjob.get("day_offsets") or calendar_display_day_offsets())
-        if step_top == -1:
-            busy_msg = "カレンダー取得中…"
-        elif step_top < n_top:
-            busy_msg = f"検索中…（{format_search_progress_pct(step_top, n_top)}）"
-        else:
-            return
-    elif candidate_search_busy_active():
-        busy_msg = "検索・カレンダー表示中…"
+    if not cjob:
+        return
+    step_top = int(cjob.get("step", -99))
+    n_top = len(cjob.get("day_offsets") or calendar_display_day_offsets())
+    if step_top == -1:
+        busy_msg = "カレンダー取得中…"
+    elif step_top < n_top:
+        busy_msg = f"検索中…（{format_search_progress_pct(step_top, n_top)}）"
     else:
         return
     inject_force_busy_marker(busy_msg)
@@ -897,6 +906,7 @@ def render_page() -> None:
         st.session_state.pop("candidate_dialog_id", None)
         st.session_state.pop("week_nav_trigger_search", None)
     st.session_state["_active_page_id"] = "candidate_search"
+    _sanitize_stale_candidate_search_busy()
     inject_wide_layout()
     inject_sidebar_nav()
 
@@ -1251,7 +1261,7 @@ button {
 
     # 分割検索: ①カレンダーAPIは表示中の4日/3日分のみ ②以降は同一データで1日ずつ計算
     cjob = st.session_state.get("candidate_search_job")
-    if candidate_search_busy_active() or st.session_state.get("candidate_search_job") is not None:
+    if cjob is not None:
         _inject_candidate_search_busy_if_needed()
     if cjob is not None:
         _btn_search = bool(cjob.get("from_search_btn"))
@@ -1309,6 +1319,7 @@ button {
                 st.session_state.pop("candidate_search_job", None)
                 st.session_state.pop("candidate_search_calendar_pending", None)
                 _clear_candidate_search_ui_busy()
+                inject_clear_force_busy_overlay()
                 st.rerun()
             cjob["bundle"] = bundle
             cjob["step"] = 0
@@ -1355,6 +1366,7 @@ button {
             st.session_state.pop("candidate_search_job", None)
             st.session_state.pop("_week_nav_undo", None)
             _clear_candidate_search_ui_busy()
+            inject_clear_force_busy_overlay()
             # 余計な rerun を避け、同じ実行で結果表示へ進む（オーバーレイ残留を防ぐ）
 
     if selected_project:
@@ -1479,6 +1491,7 @@ button {
         st.session_state.pop("candidate_search_calendar_pending", None)
         st.session_state.pop("_cal_last_component_click", None)
         _clear_candidate_search_ui_busy()
+        inject_clear_force_busy_overlay()
         st.session_state.pop("_candidate_search_masters", None)
         st.session_state["candidate_calendar_week_start"] = sunday_week_containing(date.today())
         st.rerun()
@@ -1577,6 +1590,7 @@ button {
     if not selected_project and required_capacity <= 0 and search_clicked:
         st.error("案件が選択されていません。検索を行う前に案件を選択するか、人数を指定してください。")
         _clear_candidate_search_ui_busy()
+        inject_clear_force_busy_overlay()
         return
 
     if week_nav_trigger and not selected_project and required_capacity <= 0:
@@ -1585,6 +1599,7 @@ button {
             st.session_state["candidate_calendar_week_start"] = prev_ws
         st.error("週を移動して再検索するには、案件を選択するか人数を指定してください。")
         _clear_candidate_search_ui_busy()
+        inject_clear_force_busy_overlay()
         return
 
     try:
@@ -1654,8 +1669,10 @@ button {
         # 想定外エラー
         st.error("候補検索中に想定外エラーが発生しました。")
         st.exception(exc)
+        st.session_state.pop("candidate_search_job", None)
         st.session_state.pop("candidate_search_calendar_pending", None)
         _clear_candidate_search_ui_busy()
+        inject_clear_force_busy_overlay()
         return
 
     worker_id_to_name = {w["worker_id"]: w["name"] for w in workers}

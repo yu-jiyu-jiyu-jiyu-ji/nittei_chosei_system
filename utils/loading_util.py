@@ -7,10 +7,12 @@ visible_spinner: 処理ブロック用（経過時間・stretch 幅）。
 from __future__ import annotations
 
 import html
+import json
 from contextlib import contextmanager
 from typing import Iterator
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 @contextmanager
@@ -28,6 +30,33 @@ def inject_force_busy_marker(title: str = "検索・カレンダー表示中…"
         f'<span class="_st_force_busy_marker" data-st-page="{page_id}" '
         f'data-busy-title="{safe_title}" aria-hidden="true" style="display:none"></span>',
         unsafe_allow_html=True,
+    )
+
+
+def inject_clear_force_busy_overlay() -> None:
+    """強制 busy マーカーと全画面オーバーレイを即時解除（検索完了・フラグ整理用）."""
+    page_id = json.dumps(str(st.session_state.get("_active_page_id") or "app"))
+    components.html(
+        f"<!-- st-clear-force-busy:{page_id} -->\n"
+        f"""
+        <script>
+        (function() {{
+            var doc = window.parent.document;
+            doc.querySelectorAll("#_st_force_busy_marker, ._st_force_busy_marker").forEach(function(el) {{
+                el.remove();
+            }});
+            var S = doc._stGlobalBusyOverlay;
+            if (S) {{
+                if (S.hideSpinTimer) {{ clearTimeout(S.hideSpinTimer); S.hideSpinTimer = null; }}
+                if (S.pendingTimer) {{ clearTimeout(S.pendingTimer); S.pendingTimer = null; }}
+                S.state = "idle";
+            }}
+            var L = doc.getElementById("_st_global_busy_layer");
+            if (L) L.classList.remove("_st_busy_on", "_st_busy_pending");
+        }})();
+        </script>
+        """,
+        height=0,
     )
 
 
