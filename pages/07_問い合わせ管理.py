@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 
 import streamlit as st
@@ -26,6 +27,23 @@ CATEGORY_LABEL = {"usage": "使い方", "system": "システム"}
 STATUS_LABEL = {"open": "未対応", "in_progress": "対応中", "closed": "完了"}
 STATUS_OPTIONS = ["open", "in_progress", "closed"]
 ADMIN_PASS_ENV = "INQUIRY_ADMIN_PASSWORD"
+_INQ_ADMIN_LOAD_TIMEOUT_SEC = 12.0
+
+
+def _load_all_inquiries_with_timeout(timeout_sec: float = _INQ_ADMIN_LOAD_TIMEOUT_SEC) -> tuple[List[Dict[str, Any]], bool]:
+    """問い合わせ一覧をタイムアウト付きで取得。失敗時は直近キャッシュを返す。"""
+    cache_key = "_inquiry_admin_items_cache"
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        fut = ex.submit(list_all_inquiries)
+        try:
+            items = fut.result(timeout=timeout_sec)
+            st.session_state[cache_key] = items
+            return items, False
+        except FuturesTimeoutError:
+            cached = st.session_state.get(cache_key)
+            if isinstance(cached, list):
+                return cached, True
+            raise TimeoutError("一覧取得がタイムアウトしました。")
 
 
 def _render_attachment_images(paths: List[str]) -> None:
@@ -106,10 +124,15 @@ def render_page() -> None:
     st.caption("すべての問い合わせを確認し、ステータス更新・返信・開発用ドラフトの生成ができます。")
 
     items: List[Dict[str, Any]] = []
+    timed_out = False
     try:
-        items = list_all_inquiries()
+        with st.spinner("問い合わせ一覧を読み込み中です…"):
+            items, timed_out = _load_all_inquiries_with_timeout()
     except FirestoreConnectionError:
         st.error(DB_UNAVAILABLE_MESSAGE)
+        st.stop()
+    except TimeoutError:
+        st.error("読み込みが長引いています。通信状態を確認して再読み込みしてください。")
         st.stop()
     except Exception as e:
         st.error(f"一覧の取得に失敗しました: {e}")
@@ -118,6 +141,8 @@ def render_page() -> None:
     if not items:
         st.info("問い合わせはまだありません。")
         st.stop()
+    if timed_out:
+        st.warning("最新データの取得がタイムアウトしたため、直近の表示データを表示しています。")
 
     admin_name = str(st.session_state.get("current_user_name") or "").strip()
 
