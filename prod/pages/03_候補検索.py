@@ -295,6 +295,15 @@ html, body {{
     return cid ? String(cid) : null;
   }}
 
+  function emitComponentClick(cid) {{
+    if (!cid || !window.Streamlit) return;
+    // 同じ候補ID連続タップでも Streamlit 側でイベント化されるよう nonce を付与する
+    window.Streamlit.setComponentValue(JSON.stringify({{
+      cid: String(cid),
+      nonce: Date.now()
+    }}));
+  }}
+
   function bindVerticalPageScroll(container) {{
     if (!container) return;
     let startX = 0, startY = 0;
@@ -327,12 +336,13 @@ html, body {{
       sl = scrollEl.scrollLeft;
       swiping = true;
       moved = false;
+      if (plotEl) plotEl.dataset.calSwiped = "0";
     }};
     const onMove = function(e) {{
       if (!swiping || !e.touches || e.touches.length !== 1) return;
       const dx = e.touches[0].clientX - sx;
       const dy = e.touches[0].clientY - sy;
-      if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 1.05) {{
+      if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.2) {{
         scrollEl.scrollLeft = sl - dx;
         moved = true;
         e.preventDefault();
@@ -374,7 +384,7 @@ html, body {{
     gd.on("plotly_click", function(ev) {{
       if (gd.dataset && gd.dataset.calSwiped === "1") return;
       const cid = pickCandidateId(ev);
-      if (cid && window.Streamlit) Streamlit.setComponentValue(cid);
+      emitComponentClick(cid);
     }});
   }});
 
@@ -387,8 +397,17 @@ html, body {{
     )
     if clicked is None:
         return None
-    cid = str(clicked).strip()
-    return cid if cid else None
+    raw = str(clicked).strip()
+    if not raw:
+        return None
+    if raw.startswith("{"):
+        try:
+            payload = json.loads(raw)
+            cid = str(payload.get("cid") or "").strip()
+            return cid or None
+        except Exception:
+            return None
+    return raw
 
 
 @st.fragment
