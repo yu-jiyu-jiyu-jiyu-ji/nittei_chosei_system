@@ -295,6 +295,15 @@ html, body {{
     return cid ? String(cid) : null;
   }}
 
+  function emitComponentClick(cid) {{
+    if (!cid || !window.Streamlit) return;
+    // 同じ候補ID連続タップでも Streamlit 側でイベント化されるよう nonce を付与する
+    window.Streamlit.setComponentValue(JSON.stringify({{
+      cid: String(cid),
+      nonce: Date.now()
+    }}));
+  }}
+
   function bindVerticalPageScroll(container) {{
     if (!container) return;
     let startX = 0, startY = 0;
@@ -327,12 +336,13 @@ html, body {{
       sl = scrollEl.scrollLeft;
       swiping = true;
       moved = false;
+      if (plotEl) plotEl.dataset.calSwiped = "0";
     }};
     const onMove = function(e) {{
       if (!swiping || !e.touches || e.touches.length !== 1) return;
       const dx = e.touches[0].clientX - sx;
       const dy = e.touches[0].clientY - sy;
-      if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 1.05) {{
+      if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.2) {{
         scrollEl.scrollLeft = sl - dx;
         moved = true;
         e.preventDefault();
@@ -374,7 +384,7 @@ html, body {{
     gd.on("plotly_click", function(ev) {{
       if (gd.dataset && gd.dataset.calSwiped === "1") return;
       const cid = pickCandidateId(ev);
-      if (cid && window.Streamlit) Streamlit.setComponentValue(cid);
+      emitComponentClick(cid);
     }});
   }});
 
@@ -387,8 +397,17 @@ html, body {{
     )
     if clicked is None:
         return None
-    cid = str(clicked).strip()
-    return cid if cid else None
+    raw = str(clicked).strip()
+    if not raw:
+        return None
+    if raw.startswith("{"):
+        try:
+            payload = json.loads(raw)
+            cid = str(payload.get("cid") or "").strip()
+            return cid or None
+        except Exception:
+            return None
+    return raw
 
 
 @st.fragment
@@ -401,7 +420,7 @@ def _calendar_scroll_fragment(
     """カレンダー領域のみ再描画し、ページ操作時の iframe 再生成を抑える。"""
     _ = render_sig
     clicked = _render_calendar_scroll_component(fig, header_html, plot_height=plot_height)
-    if clicked and clicked != st.session_state.get("_cal_last_component_click"):
+    if clicked:
         st.session_state["_cal_last_component_click"] = clicked
         st.session_state["candidate_dialog_id"] = clicked
         st.rerun()
@@ -873,6 +892,7 @@ def render_page() -> None:
         st.session_state.pop("candidate_search_job", None)
         st.session_state.pop("candidate_search_calendar_pending", None)
         st.session_state.pop("_last_search_calendar_bundle", None)
+        st.session_state.pop("_cal_last_component_click", None)
         _clear_candidate_search_ui_busy()
         st.session_state.pop("candidate_dialog_id", None)
         st.session_state.pop("week_nav_trigger_search", None)
@@ -1457,6 +1477,7 @@ button {
             del st.session_state["candidate_results"]
         st.session_state.pop("candidate_search_job", None)
         st.session_state.pop("candidate_search_calendar_pending", None)
+        st.session_state.pop("_cal_last_component_click", None)
         _clear_candidate_search_ui_busy()
         st.session_state.pop("_candidate_search_masters", None)
         st.session_state["candidate_calendar_week_start"] = sunday_week_containing(date.today())
@@ -1814,6 +1835,7 @@ button {
         target = next((c for c in filtered if c.get("candidate_id") == dcid), None)
         if target is None:
             st.session_state.pop("candidate_dialog_id", None)
+            st.session_state.pop("_cal_last_component_click", None)
         else:
             start_at_d: datetime = target["start_at"]
             end_at_d: datetime = target.get("end_at") or start_at_d
@@ -1872,6 +1894,7 @@ button {
                         st.session_state["week_nav_trigger_search"] = True
                         st.session_state.pop("candidate_results", None)
                         st.session_state.pop("candidate_dialog_id", None)
+                        st.session_state.pop("_cal_last_component_click", None)
                         st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
                         st.session_state.pop(processing_key, None)
                         st.session_state.pop(result_key, None)
