@@ -471,8 +471,6 @@ def _clear_candidate_search_busy_if_left_page() -> None:
         st.session_state.pop("candidate_search_ui_busy", None)
         st.session_state.pop("candidate_search_job", None)
         st.session_state.pop("candidate_search_calendar_pending", None)
-        st.session_state.pop("candidate_search_display_pending", None)
-
 
 def inject_wide_layout(*, skip_busy_reset: bool = False) -> None:
     """全ページで幅を統一するCSS・各種JSパッチを注入.
