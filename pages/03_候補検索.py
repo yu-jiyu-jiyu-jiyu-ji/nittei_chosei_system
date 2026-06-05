@@ -464,7 +464,6 @@ html, body {{
 """,
         height=frame_h,
         scrolling=False,
-        key="candidate_calendar_scroll_v1",
     )
     if clicked is None:
         return None
