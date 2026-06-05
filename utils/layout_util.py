@@ -311,7 +311,17 @@ def _inject_global_busy_overlay() -> None:
             }
 
             function hasSpinner() {
-                return !!(doc.querySelector("[data-testid=\\"stSpinner\\"]"));
+                var el = doc.querySelector("[data-testid=\\"stSpinner\\"]");
+                if (!el) return false;
+                var view = doc.defaultView || window;
+                var st = view.getComputedStyle(el);
+                if (!st) return true;
+                if (st.display === "none" || st.visibility === "hidden") return false;
+                var op = parseFloat(st.opacity || "1");
+                if (op <= 0.01) return false;
+                var r = el.getBoundingClientRect && el.getBoundingClientRect();
+                if (!r) return true;
+                return (r.width > 0 && r.height > 0);
             }
 
             function forceBusyActive() {
