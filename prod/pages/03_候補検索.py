@@ -73,20 +73,17 @@ def _sanitize_stale_candidate_search_busy(*, starting_search: bool = False) -> N
         inject_clear_force_busy_overlay()
 
 
-def _inject_candidate_search_busy_if_needed(*, starting_search: bool = False) -> None:
-    """分割検索ジョブ進行中のみ全画面オーバーレイを表示."""
+def _inject_candidate_search_busy_if_needed() -> None:
+    """分割検索ジョブ進行中のみ全画面オーバーレイを表示（ui_busy 単独では出さない）."""
     cjob = st.session_state.get("candidate_search_job")
-    if cjob:
-        step_top = int(cjob.get("step", -99))
-        n_top = len(cjob.get("day_offsets") or calendar_display_day_offsets())
-        if step_top == -1:
-            busy_msg = "カレンダー取得中…"
-        elif step_top < n_top:
-            busy_msg = f"検索中…（{format_search_progress_pct(step_top, n_top)}）"
-        else:
-            return
-    elif starting_search or st.session_state.get("candidate_search_ui_busy"):
-        busy_msg = "検索・カレンダー表示中…"
+    if not cjob:
+        return
+    step_top = int(cjob.get("step", -99))
+    n_top = len(cjob.get("day_offsets") or calendar_display_day_offsets())
+    if step_top == -1:
+        busy_msg = "カレンダー取得中…"
+    elif step_top < n_top:
+        busy_msg = f"検索中…（{format_search_progress_pct(step_top, n_top)}）"
     else:
         return
     inject_force_busy_marker(busy_msg)
@@ -974,13 +971,10 @@ def _render_candidate_search_page_body() -> None:
         st.session_state.pop("candidate_dialog_id", None)
         st.session_state.pop("week_nav_trigger_search", None)
     st.session_state["_active_page_id"] = "candidate_search"
-    inject_wide_layout(
-        skip_busy_reset=bool(
-            st.session_state.get("candidate_search_job")
-            or st.session_state.get("candidate_search_ui_busy")
-        )
-    )
+    inject_wide_layout()
     inject_sidebar_nav()
+    if not st.session_state.get("candidate_search_job"):
+        inject_clear_force_busy_overlay()
 
     st.title("候補検索")
     st.caption("案件条件をもとに、予定を入れても問題ない候補日時を検索します。")
@@ -1118,8 +1112,8 @@ button {
         or week_nav_trigger
     )
     _sanitize_stale_candidate_search_busy(starting_search=search_press or week_nav_trigger)
-    if show_search_phase:
-        _inject_candidate_search_busy_if_needed(starting_search=search_press or week_nav_trigger)
+    if cjob_early is not None:
+        _inject_candidate_search_busy_if_needed()
     top_spinner_msg = (
         "検索・カレンダー表示中…" if show_search_phase else "データを読み込み中…"
     )
@@ -1336,7 +1330,7 @@ button {
 
     # 分割検索: ①カレンダーAPIは表示中の4日/3日分のみ ②以降は同一データで1日ずつ計算
     cjob = st.session_state.get("candidate_search_job")
-    if cjob is not None or st.session_state.get("candidate_search_ui_busy"):
+    if cjob is not None:
         _inject_candidate_search_busy_if_needed()
     if cjob is not None:
         _btn_search = bool(cjob.get("from_search_btn"))
@@ -1441,6 +1435,7 @@ button {
             st.session_state.pop("candidate_search_job", None)
             st.session_state.pop("_week_nav_undo", None)
             _clear_candidate_search_ui_busy()
+            inject_clear_force_busy_overlay()
             st.rerun()
 
     if selected_project:

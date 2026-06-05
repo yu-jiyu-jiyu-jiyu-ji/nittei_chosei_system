@@ -189,6 +189,7 @@ def _inject_page_busy_reset(page_id: str) -> None:
                 if (S.hideSpinTimer) {{ clearTimeout(S.hideSpinTimer); S.hideSpinTimer = null; }}
                 if (S.pendingTimer) {{ clearTimeout(S.pendingTimer); S.pendingTimer = null; }}
                 S.state = "idle";
+                S._candidateForceTitle = null;
             }}
             var L = doc.getElementById("_st_global_busy_layer");
             if (L) L.classList.remove("_st_busy_on", "_st_busy_pending");
@@ -254,19 +255,18 @@ def _inject_global_busy_overlay() -> None:
             }
 
             function applyForceBusyTitle() {
-                var L = layerEl();
-                if (!L) return;
-                var t = (S._candidateForceTitle || "").trim();
-                if (!t) {
-                    var pageId = doc.body.getAttribute("data-st-active-page-id") || "";
-                    var nodes = doc.querySelectorAll("._st_force_busy_marker, #_st_force_busy_marker");
-                    for (var i = 0; i < nodes.length; i++) {
-                        if ((nodes[i].getAttribute("data-st-page") || "") === pageId) {
-                            t = nodes[i].getAttribute("data-busy-title") || "";
-                            break;
-                        }
+                var pageId = doc.body.getAttribute("data-st-active-page-id") || "";
+                var nodes = doc.querySelectorAll("._st_force_busy_marker, #_st_force_busy_marker");
+                var m = null;
+                for (var i = 0; i < nodes.length; i++) {
+                    if ((nodes[i].getAttribute("data-st-page") || "") === pageId) {
+                        m = nodes[i];
+                        break;
                     }
                 }
+                var L = layerEl();
+                if (!m || !L) return;
+                var t = m.getAttribute("data-busy-title");
                 if (!t) return;
                 var titleEl = L.querySelector("._st_busy_title");
                 var subEl = L.querySelector("._st_busy_sub");
@@ -315,7 +315,6 @@ def _inject_global_busy_overlay() -> None:
             }
 
             function forceBusyActive() {
-                if ((S._candidateForceTitle || "").trim()) return true;
                 var pageId = doc.body.getAttribute("data-st-active-page-id") || "";
                 var nodes = doc.querySelectorAll("._st_force_busy_marker, #_st_force_busy_marker");
                 for (var i = 0; i < nodes.length; i++) {
