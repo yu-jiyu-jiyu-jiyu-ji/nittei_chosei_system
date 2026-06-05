@@ -372,7 +372,6 @@ html, body {{
 
   function emitComponentClick(cid) {{
     if (!cid || !window.Streamlit) return;
-    // 同じ候補ID連続タップでも Streamlit 側でイベント化されるよう nonce を付与する
     window.Streamlit.setComponentValue(JSON.stringify({{
       cid: String(cid),
       nonce: Date.now()
@@ -483,8 +482,8 @@ html, body {{
         var dist = dx * dx + dy * dy;
         if (dist < bestDist) {{ bestDist = dist; best = i; }}
       }}
-      // ピクセル距離で判定（データ座標混在だと青枠の端を押しても反応しない）
-      if (best < 0 || bestDist > 90 * 90) return null;
+      // ピクセル距離で判定（ホバーは当たるがクリック判定が厳しすぎるのを防ぐ）
+      if (best < 0 || bestDist > 120 * 120) return null;
       var cd = trace.customdata ? trace.customdata[best] : null;
       if (!cd) return null;
       return Array.isArray(cd) ? String(cd[0]) : String(cd);
@@ -577,6 +576,9 @@ html, body {{
   }}
 
   function boot() {{
+    if (window.Streamlit) {{
+      Streamlit.setComponentReady();
+    }}
     initPlot();
   }}
 
@@ -1028,18 +1030,22 @@ def _render_week_calendar(
         hide_xaxis_tick_labels=True,
     )
     _ = _ordered_ids
-    clicked, cal_ready, _cal_nonce = _render_calendar_scroll_component(
+    clicked, cal_ready, click_nonce = _render_calendar_scroll_component(
         fig,
         header_html,
         plot_height=plot_h,
         notify_when_ready=bool(st.session_state.get("candidate_search_display_pending")),
     )
+    if _is_new_calendar_component_click(clicked, click_nonce):
+        _remember_calendar_component_click(str(clicked), click_nonce)
+        inject_clear_force_busy_overlay()
+        st.rerun()
     note = footer_note or (
         "※ 色ブロックは「空きとして採用した候補」の開始〜終了です。"
         "（上の「この週のカレンダー予定」で参照IDを確認できます）"
     )
     st.caption(note)
-    return clicked, cal_ready, _cal_nonce
+    return clicked, cal_ready, click_nonce
 
 
 def render_page() -> None:
@@ -1857,8 +1863,7 @@ button {
     worker_id_to_name = {w["worker_id"]: w["name"] for w in workers}
     vehicle_id_to_name = {v["vehicle_id"]: v["name"] for v in vehicles}
 
-    cal_clicked: Optional[str] = None
-    click_nonce: Optional[str] = None
+    cal_ready = False
     with nullcontext():
         st.subheader("候補")
         if not filtered:
@@ -2012,7 +2017,7 @@ button {
             and not is_company_closed_day(c["start_at"].date(), cal_settings)
             and not candidate_includes_worker_off(c, workers_by_id)
         ]
-        cal_clicked, cal_ready, click_nonce = _render_week_calendar(
+        _, cal_ready, _ = _render_week_calendar(
             candidates=display_candidates,
             week_start_date=st.session_state["candidate_calendar_week_start"],
             slot_minutes=slot_gran,
@@ -2024,9 +2029,6 @@ button {
         )
         if cal_ready and st.session_state.get("candidate_search_display_pending"):
             _finish_candidate_search_display_if_needed()
-    if _is_new_calendar_component_click(cal_clicked, click_nonce):
-        _remember_calendar_component_click(str(cal_clicked), click_nonce)
-        inject_clear_force_busy_overlay()
     if filtered:
         st.caption(
             "青い枠は開始時刻（1時間刻み）で並べています。枠左上の時刻が開始時刻です。"
