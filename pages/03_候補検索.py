@@ -110,6 +110,49 @@ def _finish_candidate_search_display_if_needed() -> None:
     inject_clear_force_busy_overlay()
 
 
+def _parse_calendar_component_value(
+    raw: Any,
+) -> tuple[Optional[str], bool, Optional[str]]:
+    """components.html の戻り値を (候補ID, readyイベント, nonce) に分解する."""
+    if raw is None:
+        return None, False, None
+    raw_s = str(raw).strip()
+    if not raw_s:
+        return None, False, None
+    if raw_s.startswith("{"):
+        try:
+            payload = json.loads(raw_s)
+            nonce_raw = payload.get("nonce")
+            nonce = str(nonce_raw).strip() if nonce_raw is not None else None
+            if str(payload.get("event") or "").strip() == "ready":
+                return None, True, nonce or None
+            cid = str(payload.get("cid") or "").strip() or None
+            return cid, False, nonce or None
+        except Exception:
+            return None, False, None
+    return raw_s, False, None
+
+
+def _is_new_calendar_component_click(
+    cal_clicked: Optional[str], click_nonce: Optional[str]
+) -> bool:
+    """同一候補の連続 rerun を防ぐ（nonce 優先）."""
+    if not cal_clicked:
+        return False
+    if click_nonce:
+        return click_nonce != st.session_state.get("_cal_last_component_nonce")
+    return cal_clicked != st.session_state.get("_cal_last_component_click")
+
+
+def _remember_calendar_component_click(
+    cal_clicked: str, click_nonce: Optional[str]
+) -> None:
+    st.session_state["candidate_dialog_id"] = cal_clicked
+    st.session_state["_cal_last_component_click"] = cal_clicked
+    if click_nonce:
+        st.session_state["_cal_last_component_nonce"] = click_nonce
+
+
 _YOUBI = ("月", "火", "水", "木", "金", "土", "日")
 
 
@@ -213,7 +256,7 @@ def _render_calendar_scroll_component(
     *,
     plot_height: int,
     notify_when_ready: bool = False,
-) -> tuple[Optional[str], bool]:
+) -> tuple[Optional[str], bool, Optional[str]]:
     """日付＋Plotly を1つの横スクロール枠に描画（3日幅・7日分は枠内スクロール）。"""
     fig_dict = json.loads(fig.to_json())
     data_js = json.dumps(fig_dict.get("data", []), ensure_ascii=False)
@@ -534,21 +577,7 @@ html, body {{
         height=frame_h,
         scrolling=False,
     )
-    if clicked is None:
-        return None, False
-    raw = str(clicked).strip()
-    if not raw:
-        return None, False
-    if raw.startswith("{"):
-        try:
-            payload = json.loads(raw)
-            if str(payload.get("event") or "").strip() == "ready":
-                return None, True
-            cid = str(payload.get("cid") or "").strip()
-            return (cid or None), False
-        except Exception:
-            return None, False
-    return raw, False
+    return _parse_calendar_component_value(clicked)
 
 
 PLOTLY_CALENDAR_KEY = "candidate_week_plot"
@@ -957,7 +986,7 @@ def _render_week_calendar(
     worker_id_to_name: Dict[str, str],
     vehicle_id_to_name: Dict[str, str],
     footer_note: Optional[str] = None,
-) -> tuple[Optional[str], bool]:
+) -> tuple[Optional[str], bool, Optional[str]]:
     """週間候補カレンダー（Plotly）。7日分を描画し、表示枠は3日幅・横スクロールは枠内のみ。"""
     wd: date = week_start_date
     if isinstance(wd, datetime):
@@ -984,7 +1013,7 @@ def _render_week_calendar(
         hide_xaxis_tick_labels=True,
     )
     _ = _ordered_ids
-    clicked, cal_ready = _render_calendar_scroll_component(
+    clicked, cal_ready, _cal_nonce = _render_calendar_scroll_component(
         fig,
         header_html,
         plot_height=plot_h,
@@ -995,7 +1024,7 @@ def _render_week_calendar(
         "（上の「この週のカレンダー予定」で参照IDを確認できます）"
     )
     st.caption(note)
-    return clicked, cal_ready
+    return clicked, cal_ready, _cal_nonce
 
 
 def render_page() -> None:
@@ -1026,6 +1055,7 @@ def _render_candidate_search_page_body() -> None:
         st.session_state.pop("candidate_search_display_pending", None)
         st.session_state.pop("_last_search_calendar_bundle", None)
         st.session_state.pop("_cal_last_component_click", None)
+        st.session_state.pop("_cal_last_component_nonce", None)
         _clear_candidate_search_ui_busy()
         st.session_state.pop("candidate_dialog_id", None)
         st.session_state.pop("week_nav_trigger_search", None)
@@ -1623,6 +1653,7 @@ button {
         st.session_state.pop("candidate_search_calendar_pending", None)
         st.session_state.pop("candidate_search_display_pending", None)
         st.session_state.pop("_cal_last_component_click", None)
+        st.session_state.pop("_cal_last_component_nonce", None)
         _clear_candidate_search_ui_busy()
         inject_clear_force_busy_overlay()
         st.session_state.pop("_candidate_search_masters", None)
@@ -1812,6 +1843,7 @@ button {
     vehicle_id_to_name = {v["vehicle_id"]: v["name"] for v in vehicles}
 
     cal_clicked: Optional[str] = None
+    click_nonce: Optional[str] = None
     with nullcontext():
         st.subheader("候補")
         if not filtered:
@@ -1965,7 +1997,7 @@ button {
             and not is_company_closed_day(c["start_at"].date(), cal_settings)
             and not candidate_includes_worker_off(c, workers_by_id)
         ]
-        cal_clicked, cal_ready = _render_week_calendar(
+        cal_clicked, cal_ready, click_nonce = _render_week_calendar(
             candidates=display_candidates,
             week_start_date=st.session_state["candidate_calendar_week_start"],
             slot_minutes=slot_gran,
@@ -1977,9 +2009,9 @@ button {
         )
         if cal_ready and st.session_state.get("candidate_search_display_pending"):
             _finish_candidate_search_display_if_needed()
-    if cal_clicked:
-        st.session_state["candidate_dialog_id"] = cal_clicked
-        st.session_state["_cal_last_component_click"] = cal_clicked
+    if _is_new_calendar_component_click(cal_clicked, click_nonce):
+        _remember_calendar_component_click(str(cal_clicked), click_nonce)
+        inject_clear_force_busy_overlay()
         st.rerun()
     if filtered:
         st.caption(
@@ -1993,6 +2025,7 @@ button {
         if target is None:
             st.session_state.pop("candidate_dialog_id", None)
             st.session_state.pop("_cal_last_component_click", None)
+            st.session_state.pop("_cal_last_component_nonce", None)
         else:
             start_at_d: datetime = target["start_at"]
             end_at_d: datetime = target.get("end_at") or start_at_d
@@ -2068,6 +2101,7 @@ button {
                         st.session_state.pop("candidate_results", None)
                         st.session_state.pop("candidate_dialog_id", None)
                         st.session_state.pop("_cal_last_component_click", None)
+                        st.session_state.pop("_cal_last_component_nonce", None)
                         st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
                         st.session_state.pop(processing_key, None)
                         st.session_state.pop(result_key, None)
