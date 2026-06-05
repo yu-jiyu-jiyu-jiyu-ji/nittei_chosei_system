@@ -584,18 +584,20 @@ def remove_project_schedule_from_google(
 
 def commit_candidate_to_calendars(
     *,
-    project: Dict[str, Any],
+    project: Optional[Dict[str, Any]] = None,
     candidate: Dict[str, Any],
     workers: List[Dict[str, Any]],
     vehicles: List[Dict[str, Any]],
     session_tokens: Optional[Dict[str, Any]],
     settings: Optional[Dict[str, Any]],
     vehicle_fleet_session: Optional[Dict[str, Any]],
+    event_title: Optional[str] = None,
 ) -> Tuple[bool, List[str], bool, List[Dict[str, Any]]]:
     """候補の時間帯で、割当職人・車両の各カレンダーに予定を1件ずつ追加する。
 
-    戻り値は (すべて成功したか, メッセージ行, 案件に予定日時を保存してよいか, 今回登録したイベント参照)。
-    再確定時は案件に保存された google_calendar_event_refs を先に削除する。
+    戻り値は (すべて成功したか, メッセージ行, 1件以上カレンダー登録できたか, 今回登録したイベント参照)。
+    案件ありの再確定時は案件に保存された google_calendar_event_refs を先に削除する。
+    案件なしのときは event_title を Google カレンダーのタイトル（入力そのまま）に使う。
     """
     worker_by_id = {str(w.get("worker_id")): w for w in workers}
     vehicle_by_id = {str(v.get("vehicle_id")): v for v in vehicles}
@@ -620,18 +622,28 @@ def commit_candidate_to_calendars(
     if end_at.tzinfo is not None:
         end_at = end_at.astimezone(TZ).replace(tzinfo=None)
 
-    pname = str(project.get("project_name") or "案件").strip() or "案件"
-    addr = str(project.get("address") or "").strip()
-    customer = str(project.get("customer_name") or "").strip()
-    summary = f"[現場] {pname}"
-    desc_parts = [f"案件: {pname}"]
-    if customer:
-        desc_parts.append(f"顧客: {customer}")
-    if addr:
-        desc_parts.append(f"住所: {addr}")
-    note = str(project.get("note") or "").strip()
-    if note:
-        desc_parts.append(f"備考: {note}")
+    if project:
+        pname = str(project.get("project_name") or "案件").strip() or "案件"
+        addr = str(project.get("address") or "").strip()
+        customer = str(project.get("customer_name") or "").strip()
+        summary = f"[現場] {pname}"
+        desc_parts = [f"案件: {pname}"]
+        if customer:
+            desc_parts.append(f"顧客: {customer}")
+        if addr:
+            desc_parts.append(f"住所: {addr}")
+        note = str(project.get("note") or "").strip()
+        if note:
+            desc_parts.append(f"備考: {note}")
+    else:
+        summary = str(event_title or "").strip()
+        if not summary:
+            return False, ["予定タイトルが空です。"], False, []
+        addr = ""
+        desc_parts = [f"予定: {summary}"]
+    cid_note = str(candidate.get("candidate_id") or "").strip()
+    if cid_note:
+        desc_parts.append(f"候補ID: {cid_note}")
     base_description = "\n".join(desc_parts)
     description = _description_with_candidate_extras(base_description, candidate)
 
@@ -726,7 +738,7 @@ def commit_candidate_to_calendars(
         return False, messages, False, []
 
     # 全件登録できたときだけ、案件に紐づく「前回の」Google 予定を削除（部分失敗時に既存だけ消えるのを防ぐ）
-    if ok_all:
+    if ok_all and project:
         del_msgs, _ = _delete_stored_calendar_events(
             project=project,
             worker_by_id=worker_by_id,
@@ -811,7 +823,7 @@ def commit_candidate_to_calendars(
                 target_day=start_at,
                 messages=messages,
             )
-    elif project.get("google_calendar_event_refs"):
+    elif project and project.get("google_calendar_event_refs"):
         messages.append(
             "※ 登録がすべて成功しなかったため、Google 上の「以前の予定」は自動削除していません。"
             "日付変更の重複がある場合はカレンダー側で手動削除してください。"
