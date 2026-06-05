@@ -50,9 +50,39 @@ def inject_clear_force_busy_overlay() -> None:
                 if (S.hideSpinTimer) {{ clearTimeout(S.hideSpinTimer); S.hideSpinTimer = null; }}
                 if (S.pendingTimer) {{ clearTimeout(S.pendingTimer); S.pendingTimer = null; }}
                 S.state = "idle";
+                S._candidateForceTitle = null;
             }}
             var L = doc.getElementById("_st_global_busy_layer");
             if (L) L.classList.remove("_st_busy_on", "_st_busy_pending");
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+
+
+def inject_sync_busy_overlay(title: str) -> None:
+    """マーカーに依存せず親 document の全画面レイヤーを直接表示する."""
+    safe_title = json.dumps(str(title or "読み込み中…"))
+    page_id = json.dumps(str(st.session_state.get("_active_page_id") or ""))
+    components.html(
+        f"<!-- st-sync-busy:{page_id} -->\n"
+        f"""
+        <script>
+        (function() {{
+            var doc = window.parent.document;
+            var S = doc._stGlobalBusyOverlay || (doc._stGlobalBusyOverlay = {{}});
+            var L = doc.getElementById("_st_global_busy_layer");
+            if (!L) return;
+            var t = {safe_title};
+            S.state = "force";
+            S._candidateForceTitle = t;
+            var titleEl = L.querySelector("._st_busy_title");
+            var subEl = L.querySelector("._st_busy_sub");
+            if (titleEl) titleEl.textContent = t;
+            if (subEl) subEl.textContent = "しばらくお待ちください（画面の操作は一時的に無効です）";
+            L.classList.add("_st_busy_on");
+            L.classList.remove("_st_busy_pending");
         }})();
         </script>
         """,

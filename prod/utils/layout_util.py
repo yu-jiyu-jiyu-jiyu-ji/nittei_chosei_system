@@ -254,18 +254,19 @@ def _inject_global_busy_overlay() -> None:
             }
 
             function applyForceBusyTitle() {
-                var pageId = doc.body.getAttribute("data-st-active-page-id") || "";
-                var nodes = doc.querySelectorAll("._st_force_busy_marker, #_st_force_busy_marker");
-                var m = null;
-                for (var i = 0; i < nodes.length; i++) {
-                    if ((nodes[i].getAttribute("data-st-page") || "") === pageId) {
-                        m = nodes[i];
-                        break;
+                var L = layerEl();
+                if (!L) return;
+                var t = (S._candidateForceTitle || "").trim();
+                if (!t) {
+                    var pageId = doc.body.getAttribute("data-st-active-page-id") || "";
+                    var nodes = doc.querySelectorAll("._st_force_busy_marker, #_st_force_busy_marker");
+                    for (var i = 0; i < nodes.length; i++) {
+                        if ((nodes[i].getAttribute("data-st-page") || "") === pageId) {
+                            t = nodes[i].getAttribute("data-busy-title") || "";
+                            break;
+                        }
                     }
                 }
-                var L = layerEl();
-                if (!m || !L) return;
-                var t = m.getAttribute("data-busy-title");
                 if (!t) return;
                 var titleEl = L.querySelector("._st_busy_title");
                 var subEl = L.querySelector("._st_busy_sub");
@@ -314,6 +315,7 @@ def _inject_global_busy_overlay() -> None:
             }
 
             function forceBusyActive() {
+                if ((S._candidateForceTitle || "").trim()) return true;
                 var pageId = doc.body.getAttribute("data-st-active-page-id") || "";
                 var nodes = doc.querySelectorAll("._st_force_busy_marker, #_st_force_busy_marker");
                 for (var i = 0; i < nodes.length; i++) {
@@ -472,16 +474,18 @@ def _clear_candidate_search_busy_if_left_page() -> None:
         st.session_state.pop("candidate_search_display_pending", None)
 
 
-def inject_wide_layout() -> None:
+def inject_wide_layout(*, skip_busy_reset: bool = False) -> None:
     """全ページで幅を統一するCSS・各種JSパッチを注入.
 
     app・各ページで呼び出し、レイアウト幅の差を解消する。
     全画面の読み込みレイヤー（stSpinner 連動・再実行トリガー）を注入する。
-    メニューから遷移した直後は _sidebar_collapse により折りたたみボタンを JS でクリックする。
+    メニューから遷移した直後は _sidebar_collapse により折りたたみボタンを JS でクリックする.
+    skip_busy_reset: 候補検索の分割検索・カレンダー描画中は True（毎 rerun の解除を防ぐ）.
     """
     _clear_candidate_search_busy_if_left_page()
     page_id = str(st.session_state.get("_active_page_id") or "app")
-    _inject_page_busy_reset(page_id)
+    if not skip_busy_reset:
+        _inject_page_busy_reset(page_id)
     should_collapse = st.session_state.pop("_sidebar_collapse", False)
 
     base_css = """

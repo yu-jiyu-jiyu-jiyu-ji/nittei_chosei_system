@@ -42,6 +42,7 @@ from utils.loading_util import (
     format_search_progress_pct,
     inject_clear_force_busy_overlay,
     inject_force_busy_marker,
+    inject_sync_busy_overlay,
     visible_spinner,
 )
 from utils.project_register_ui import (
@@ -77,25 +78,31 @@ def _sanitize_stale_candidate_search_busy(*, starting_search: bool = False) -> N
         inject_clear_force_busy_overlay()
 
 
-def _inject_candidate_search_busy_if_needed(*, starting_search: bool = False) -> None:
-    """分割検索の進捗を全画面オーバーレイに反映（検索完了後は出さない）."""
+def _candidate_search_busy_message(*, starting_search: bool = False) -> Optional[str]:
+    """全画面オーバーレイ用メッセージ。表示不要なら None."""
+    if st.session_state.get("candidate_search_display_pending"):
+        return "カレンダー表示中…"
     cjob = st.session_state.get("candidate_search_job")
     if cjob:
         step_top = int(cjob.get("step", -99))
         n_top = len(cjob.get("day_offsets") or calendar_display_day_offsets())
         if step_top == -1:
-            busy_msg = "カレンダー取得中…"
-        elif step_top < n_top:
-            busy_msg = f"検索中…（{format_search_progress_pct(step_top, n_top)}）"
-        else:
-            return
-    elif st.session_state.get("candidate_search_display_pending"):
-        busy_msg = "カレンダー表示中…"
-    elif starting_search or st.session_state.get("candidate_search_ui_busy"):
-        busy_msg = "検索・カレンダー表示中…"
-    else:
+            return "カレンダー取得中…"
+        if step_top < n_top:
+            return f"検索中…（{format_search_progress_pct(step_top, n_top)}）"
+        return "カレンダー表示中…"
+    if starting_search or st.session_state.get("candidate_search_ui_busy"):
+        return "検索・カレンダー表示中…"
+    return None
+
+
+def _inject_candidate_search_busy_if_needed(*, starting_search: bool = False) -> None:
+    """分割検索〜カレンダー描画まで全画面オーバーレイを表示."""
+    busy_msg = _candidate_search_busy_message(starting_search=starting_search)
+    if not busy_msg:
         return
     inject_force_busy_marker(busy_msg)
+    inject_sync_busy_overlay(busy_msg)
 
 
 def _begin_candidate_search_display_phase() -> None:
@@ -988,8 +995,12 @@ def _render_candidate_search_page_body() -> None:
         st.session_state.pop("candidate_dialog_id", None)
         st.session_state.pop("week_nav_trigger_search", None)
     st.session_state["_active_page_id"] = "candidate_search"
-    inject_wide_layout()
+    inject_wide_layout(skip_busy_reset=candidate_search_busy_active())
     inject_sidebar_nav()
+    if candidate_search_busy_active():
+        _busy_boot = _candidate_search_busy_message()
+        if _busy_boot:
+            inject_sync_busy_overlay(_busy_boot)
 
     st.title("候補検索")
     st.caption("案件条件をもとに、予定を入れても問題ない候補日時を検索します。")
@@ -1454,6 +1465,7 @@ button {
             st.session_state.pop("candidate_search_job", None)
             st.session_state.pop("_week_nav_undo", None)
             _begin_candidate_search_display_phase()
+            _inject_candidate_search_busy_if_needed()
 
     if selected_project:
         _mp_wids = sorted(str(w.get("worker_id", "")) for w in workers_for_search)
@@ -1919,16 +1931,24 @@ button {
             and not is_company_closed_day(c["start_at"].date(), cal_settings)
             and not candidate_includes_worker_off(c, workers_by_id)
         ]
-        cal_clicked = _render_week_calendar(
-            candidates=display_candidates,
-            week_start_date=st.session_state["candidate_calendar_week_start"],
-            slot_minutes=slot_gran,
-            day_start_hour=dsh,
-            day_end_hour=deh,
-            worker_id_to_name=worker_id_to_name,
-            vehicle_id_to_name=vehicle_id_to_name,
-            footer_note=footer_note,
+        if st.session_state.get("candidate_search_display_pending"):
+            _inject_candidate_search_busy_if_needed()
+        _cal_spinner = (
+            visible_spinner("カレンダー表示中…")
+            if st.session_state.get("candidate_search_display_pending")
+            else nullcontext()
         )
+        with _cal_spinner:
+            cal_clicked = _render_week_calendar(
+                candidates=display_candidates,
+                week_start_date=st.session_state["candidate_calendar_week_start"],
+                slot_minutes=slot_gran,
+                day_start_hour=dsh,
+                day_end_hour=deh,
+                worker_id_to_name=worker_id_to_name,
+                vehicle_id_to_name=vehicle_id_to_name,
+                footer_note=footer_note,
+            )
     if cal_clicked:
         st.session_state["candidate_dialog_id"] = cal_clicked
         st.session_state["_cal_last_component_click"] = cal_clicked
