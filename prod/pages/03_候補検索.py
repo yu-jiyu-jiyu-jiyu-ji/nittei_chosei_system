@@ -62,9 +62,9 @@ def _clear_candidate_search_ui_busy() -> None:
     st.session_state.pop("candidate_search_ui_busy", None)
 
 
-def _sanitize_stale_candidate_search_busy() -> None:
-    """ジョブ無しで busy だけ残るとオーバーレイが消えないため、開始時に整理する."""
-    if st.session_state.get("candidate_search_job") is not None:
+def _sanitize_stale_candidate_search_busy(*, starting_search: bool = False) -> None:
+    """ジョブ無しで busy だけ残るとオーバーレイが消えない。検索開始直前は ui_busy を消さない."""
+    if starting_search or st.session_state.get("candidate_search_job") is not None:
         return
     if st.session_state.get("candidate_search_calendar_pending"):
         st.session_state.pop("candidate_search_calendar_pending", None)
@@ -73,21 +73,23 @@ def _sanitize_stale_candidate_search_busy() -> None:
         inject_clear_force_busy_overlay()
 
 
-def _inject_candidate_search_busy_if_needed() -> None:
+def _inject_candidate_search_busy_if_needed(*, starting_search: bool = False) -> None:
     """分割検索の進捗を全画面オーバーレイに反映（検索完了後は出さない）."""
     cjob = st.session_state.get("candidate_search_job")
-    if not cjob:
-        return
-    step_top = int(cjob.get("step", -99))
-    n_top = len(cjob.get("day_offsets") or calendar_display_day_offsets())
-    if step_top == -1:
-        busy_msg = "カレンダー取得中…"
-    elif step_top < n_top:
-        busy_msg = f"検索中…（{format_search_progress_pct(step_top, n_top)}）"
+    if cjob:
+        step_top = int(cjob.get("step", -99))
+        n_top = len(cjob.get("day_offsets") or calendar_display_day_offsets())
+        if step_top == -1:
+            busy_msg = "カレンダー取得中…"
+        elif step_top < n_top:
+            busy_msg = f"検索中…（{format_search_progress_pct(step_top, n_top)}）"
+        else:
+            return
+    elif starting_search or st.session_state.get("candidate_search_ui_busy"):
+        busy_msg = "検索・カレンダー表示中…"
     else:
         return
     inject_force_busy_marker(busy_msg)
-    st.caption("検索処理中です。しばらくお待ちください…")
 
 
 _YOUBI = ("月", "火", "水", "木", "金", "土", "日")
@@ -359,7 +361,7 @@ html, body {{
     }};
     const onEnd = function() {{
       swiping = false;
-      if (plotEl) plotEl.dataset.calSwiped = moved ? "1" : "0";
+      if (plotEl) plotEl.dataset.calSwiped = (moved && Math.abs(sl - scrollEl.scrollLeft) > 8) ? "1" : "0";
     }};
     targets.forEach(function(t) {{
       if (!t) return;
@@ -370,39 +372,99 @@ html, body {{
     }});
   }}
 
-  const layout = Object.assign({{}}, figLayout, {{
-    height: {plot_height},
-    autosize: false,
-    hovermode: "closest",
-    margin: Object.assign({{}}, figLayout.margin || {{}}, {{l: ML, r: MR, t: 10, b: 32}}),
-  }});
+  function nearestCandidateFromTouch(gd, clientX, clientY) {{
+    try {{
+      var trace = (gd.data || [])[0];
+      if (!trace || !trace.x || !trace.x.length) return null;
+      var box = gd.getBoundingClientRect();
+      var lx = clientX - box.left;
+      var ly = clientY - box.top;
+      var fl = gd._fullLayout;
+      if (!fl || !fl.xaxis || !fl.yaxis || !fl._size) return null;
+      var xd = fl.xaxis.p2d(lx - fl._size.l);
+      var yd = fl.yaxis.p2d(ly - fl._size.t);
+      var best = -1;
+      var bestDist = Infinity;
+      for (var i = 0; i < trace.x.length; i++) {{
+        var dx = Number(trace.x[i]) - xd;
+        var dy = Number(trace.y[i]) - yd;
+        var dist = dx * dx + dy * dy;
+        if (dist < bestDist) {{ bestDist = dist; best = i; }}
+      }}
+      if (best < 0 || bestDist > 0.55) return null;
+      var cd = trace.customdata ? trace.customdata[best] : null;
+      if (!cd) return null;
+      return Array.isArray(cd) ? String(cd[0]) : String(cd);
+    }} catch (e) {{
+      return null;
+    }}
+  }}
 
-  const plotEl = document.getElementById("candidate-cal-plot");
-  const scrollX = document.getElementById("candidate-cal-scroll-x");
-
-  Plotly.newPlot(plotEl, figData, layout, {{
-    displayModeBar: false,
-    responsive: false,
-    scrollZoom: false,
-    doubleClick: false,
-  }}).then(function(gd) {{
-    syncWidth(false);
-    bindHorizontalSwipe(scrollX, gd);
-    bindVerticalPageScroll(document.querySelector(".candidate-cal-scroll-host"));
-    if (window.Streamlit) Streamlit.setFrameHeight({frame_h});
-    gd.on("plotly_click", function(ev) {{
+  function bindMobileTap(gd) {{
+    var tapStart = null;
+    gd.addEventListener("touchstart", function(e) {{
+      if (!e.touches || e.touches.length !== 1) return;
+      tapStart = {{ x: e.touches[0].clientX, y: e.touches[0].clientY }};
+    }}, {{ passive: true }});
+    gd.addEventListener("touchend", function(e) {{
       if (gd.dataset && gd.dataset.calSwiped === "1") return;
-      const cid = pickCandidateId(ev);
-      emitComponentClick(cid);
-    }});
-  }});
+      if (!tapStart || !e.changedTouches || e.changedTouches.length !== 1) return;
+      var t = e.changedTouches[0];
+      var dx = t.clientX - tapStart.x;
+      var dy = t.clientY - tapStart.y;
+      tapStart = null;
+      if (Math.abs(dx) > 18 || Math.abs(dy) > 18) return;
+      var cid = nearestCandidateFromTouch(gd, t.clientX, t.clientY);
+      if (cid) emitComponentClick(cid);
+    }}, {{ passive: true }});
+  }}
 
-  window.addEventListener("resize", function() {{ syncWidth(true); }});
+  function initPlot() {{
+    const layout = Object.assign({{}}, figLayout, {{
+      height: {plot_height},
+      autosize: false,
+      hovermode: ("ontouchstart" in window) ? false : "closest",
+      margin: Object.assign({{}}, figLayout.margin || {{}}, {{l: ML, r: MR, t: 10, b: 32}}),
+    }});
+
+    const plotEl = document.getElementById("candidate-cal-plot");
+    const scrollX = document.getElementById("candidate-cal-scroll-x");
+
+    Plotly.newPlot(plotEl, figData, layout, {{
+      displayModeBar: false,
+      responsive: false,
+      scrollZoom: false,
+      doubleClick: false,
+    }}).then(function(gd) {{
+      syncWidth(false);
+      bindHorizontalSwipe(scrollX, gd);
+      bindVerticalPageScroll(document.querySelector(".candidate-cal-scroll-host"));
+      bindMobileTap(gd);
+      if (window.Streamlit) {{
+        Streamlit.setFrameHeight({frame_h});
+        Streamlit.setComponentReady();
+      }}
+      gd.on("plotly_click", function(ev) {{
+        if (gd.dataset && gd.dataset.calSwiped === "1") return;
+        const cid = pickCandidateId(ev);
+        emitComponentClick(cid);
+      }});
+    }});
+
+    window.addEventListener("resize", function() {{ syncWidth(true); }});
+  }}
+
+  if (window.Streamlit) {{
+    initPlot();
+  }} else {{
+    window.addEventListener("load", initPlot);
+  }}
 }})();
 </script>
 """,
         height=frame_h,
         scrolling=False,
+        key="candidate_calendar_scroll_v1",
     )
     if clicked is None:
         return None
@@ -417,22 +479,6 @@ html, body {{
         except Exception:
             return None
     return raw
-
-
-@st.fragment
-def _calendar_scroll_fragment(
-    render_sig: str,
-    fig: go.Figure,
-    header_html: str,
-    plot_height: int,
-) -> None:
-    """カレンダー領域のみ再描画し、ページ操作時の iframe 再生成を抑える。"""
-    _ = render_sig
-    clicked = _render_calendar_scroll_component(fig, header_html, plot_height=plot_height)
-    if clicked:
-        st.session_state["_cal_last_component_click"] = clicked
-        st.session_state["candidate_dialog_id"] = clicked
-        st.rerun()
 
 
 PLOTLY_CALENDAR_KEY = "candidate_week_plot"
@@ -749,11 +795,11 @@ def _build_candidate_week_plotly_figure(
         hit_sizes.append(
             float(
                 max(
-                    40.0,
+                    55.0,
                     min(
-                        110.0,
+                        120.0,
                         (block_h / float(total_minutes)) * float(plot_h) * 0.96,
-                        lane_w_px * 1.15,
+                        lane_w_px * 1.25,
                     ),
                 )
             )
@@ -841,7 +887,7 @@ def _render_week_calendar(
     worker_id_to_name: Dict[str, str],
     vehicle_id_to_name: Dict[str, str],
     footer_note: Optional[str] = None,
-) -> None:
+) -> Optional[str]:
     """週間候補カレンダー（Plotly）。7日分を描画し、表示枠は3日幅・横スクロールは枠内のみ。"""
     wd: date = week_start_date
     if isinstance(wd, datetime):
@@ -870,13 +916,13 @@ def _render_week_calendar(
         hide_xaxis_tick_labels=True,
     )
     _ = _ordered_ids
-    render_sig = f"{wd.isoformat()}:{len(candidates)}"
-    _calendar_scroll_fragment(render_sig, fig, header_html, plot_h)
+    clicked = _render_calendar_scroll_component(fig, header_html, plot_height=plot_h)
     note = footer_note or (
         "※ 色ブロックは「空きとして採用した候補」の開始〜終了です。"
         "（上の「この週のカレンダー予定」で参照IDを確認できます）"
     )
     st.caption(note)
+    return clicked
 
 
 def render_page() -> None:
@@ -906,7 +952,6 @@ def render_page() -> None:
         st.session_state.pop("candidate_dialog_id", None)
         st.session_state.pop("week_nav_trigger_search", None)
     st.session_state["_active_page_id"] = "candidate_search"
-    _sanitize_stale_candidate_search_busy()
     inject_wide_layout()
     inject_sidebar_nav()
 
@@ -1045,6 +1090,9 @@ button {
         or search_press
         or week_nav_trigger
     )
+    _sanitize_stale_candidate_search_busy(starting_search=search_press or week_nav_trigger)
+    if show_search_phase:
+        _inject_candidate_search_busy_if_needed(starting_search=search_press or week_nav_trigger)
     top_spinner_msg = (
         "検索・カレンダー表示中…" if show_search_phase else "データを読み込み中…"
     )
@@ -1261,7 +1309,7 @@ button {
 
     # 分割検索: ①カレンダーAPIは表示中の4日/3日分のみ ②以降は同一データで1日ずつ計算
     cjob = st.session_state.get("candidate_search_job")
-    if cjob is not None:
+    if cjob is not None or st.session_state.get("candidate_search_ui_busy"):
         _inject_candidate_search_busy_if_needed()
     if cjob is not None:
         _btn_search = bool(cjob.get("from_search_btn"))
@@ -1367,7 +1415,6 @@ button {
             st.session_state.pop("_week_nav_undo", None)
             _clear_candidate_search_ui_busy()
             inject_clear_force_busy_overlay()
-            # 余計な rerun を避け、同じ実行で結果表示へ進む（オーバーレイ残留を防ぐ）
 
     if selected_project:
         _mp_wids = sorted(str(w.get("worker_id", "")) for w in workers_for_search)
@@ -1678,6 +1725,7 @@ button {
     worker_id_to_name = {w["worker_id"]: w["name"] for w in workers}
     vehicle_id_to_name = {v["vehicle_id"]: v["name"] for v in vehicles}
 
+    cal_clicked: Optional[str] = None
     with nullcontext():
         st.subheader("候補")
         if not filtered:
@@ -1831,7 +1879,7 @@ button {
             and not is_company_closed_day(c["start_at"].date(), cal_settings)
             and not candidate_includes_worker_off(c, workers_by_id)
         ]
-        _render_week_calendar(
+        cal_clicked = _render_week_calendar(
             candidates=display_candidates,
             week_start_date=st.session_state["candidate_calendar_week_start"],
             slot_minutes=slot_gran,
@@ -1841,6 +1889,10 @@ button {
             vehicle_id_to_name=vehicle_id_to_name,
             footer_note=footer_note,
         )
+    if cal_clicked:
+        st.session_state["candidate_dialog_id"] = cal_clicked
+        st.session_state["_cal_last_component_click"] = cal_clicked
+        st.rerun()
     if filtered:
         st.caption(
             "青い枠は開始時刻（1時間刻み）で並べています。枠左上の時刻が開始時刻です。"
