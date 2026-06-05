@@ -47,6 +47,7 @@ def _clear_candidate_search_state_for_new_project(project: Optional[Dict[str, An
         "candidate_results",
         "candidate_search_job",
         "candidate_search_calendar_pending",
+        "candidate_search_display_pending",
         "candidate_cal_chunk",
         "_candidate_cal_chunk_week",
         "candidate_dialog_id",

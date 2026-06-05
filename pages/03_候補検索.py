@@ -64,7 +64,11 @@ def _clear_candidate_search_ui_busy() -> None:
 
 def _sanitize_stale_candidate_search_busy(*, starting_search: bool = False) -> None:
     """ジョブ無しで busy だけ残るとオーバーレイが消えない。検索開始直前は ui_busy を消さない."""
-    if starting_search or st.session_state.get("candidate_search_job") is not None:
+    if (
+        starting_search
+        or st.session_state.get("candidate_search_job") is not None
+        or st.session_state.get("candidate_search_display_pending")
+    ):
         return
     if st.session_state.get("candidate_search_calendar_pending"):
         st.session_state.pop("candidate_search_calendar_pending", None)
@@ -74,7 +78,10 @@ def _sanitize_stale_candidate_search_busy(*, starting_search: bool = False) -> N
 
 
 def _inject_candidate_search_busy_if_needed() -> None:
-    """分割検索ジョブ進行中のみ全画面オーバーレイを表示（ui_busy 単独では出さない）."""
+    """分割検索〜カレンダー描画完了まで全画面オーバーレイを表示."""
+    if st.session_state.get("candidate_search_display_pending"):
+        inject_force_busy_marker("カレンダー表示中…")
+        return
     cjob = st.session_state.get("candidate_search_job")
     if not cjob:
         return
@@ -87,6 +94,20 @@ def _inject_candidate_search_busy_if_needed() -> None:
     else:
         return
     inject_force_busy_marker(busy_msg)
+
+
+def _begin_candidate_search_display_phase() -> None:
+    """分割検索完了後、Plotly カレンダー描画までオーバーレイを維持する."""
+    st.session_state["candidate_search_display_pending"] = True
+    st.session_state["candidate_search_ui_busy"] = True
+
+
+def _finish_candidate_search_display_if_needed() -> None:
+    """カレンダー表示完了後にオーバーレイを解除（未設定なら何もしない）."""
+    if not st.session_state.pop("candidate_search_display_pending", None):
+        return
+    _clear_candidate_search_ui_busy()
+    inject_clear_force_busy_overlay()
 
 
 _YOUBI = ("月", "火", "水", "木", "金", "土", "日")
@@ -191,7 +212,8 @@ def _render_calendar_scroll_component(
     header_html: str,
     *,
     plot_height: int,
-) -> Optional[str]:
+    notify_when_ready: bool = False,
+) -> tuple[Optional[str], bool]:
     """日付＋Plotly を1つの横スクロール枠に描画（3日幅・7日分は枠内スクロール）。"""
     fig_dict = json.loads(fig.to_json())
     data_js = json.dumps(fig_dict.get("data", []), ensure_ascii=False)
@@ -202,6 +224,7 @@ def _render_calendar_scroll_component(
     header_h = 52
     frame_h = int(plot_height) + header_h + 24
     cal_min_h = int(plot_height) + header_h
+    notify_ready_js = "true" if notify_when_ready else "false"
 
     clicked = components.html(
         f"""
@@ -267,6 +290,7 @@ html, body {{
   const RATIO = {ratio};
   const ML = {margin_l};
   const MR = {margin_r};
+  const SHOULD_NOTIFY_READY = {notify_ready_js};
   const figData = {data_js};
   const figLayout = {layout_js};
 
@@ -310,6 +334,34 @@ html, body {{
       cid: String(cid),
       nonce: Date.now()
     }}));
+  }}
+
+  function releaseParentBusyOverlay() {{
+    try {{
+      var pdoc = window.parent.document;
+      pdoc.querySelectorAll("#_st_force_busy_marker, ._st_force_busy_marker").forEach(function(el) {{
+        el.remove();
+      }});
+      var S = pdoc._stGlobalBusyOverlay;
+      if (S) {{
+        if (S.hideSpinTimer) {{ clearTimeout(S.hideSpinTimer); S.hideSpinTimer = null; }}
+        if (S.pendingTimer) {{ clearTimeout(S.pendingTimer); S.pendingTimer = null; }}
+        S.state = "idle";
+      }}
+      var L = pdoc.getElementById("_st_global_busy_layer");
+      if (L) L.classList.remove("_st_busy_on", "_st_busy_pending");
+    }} catch (err) {{}}
+  }}
+
+  function notifyCalendarReady() {{
+    if (!SHOULD_NOTIFY_READY) return;
+    releaseParentBusyOverlay();
+    if (window.Streamlit) {{
+      Streamlit.setComponentValue(JSON.stringify({{
+        event: "ready",
+        nonce: Date.now()
+      }}));
+    }}
   }}
 
   function bindVerticalPageScroll(container) {{
@@ -424,9 +476,8 @@ html, body {{
     if (!plotEl || !scrollX || typeof Plotly === "undefined") {{
       if (_plotInitTries < 40) {{
         setTimeout(initPlot, 120);
-      }} else if (window.Streamlit) {{
-        Streamlit.setFrameHeight({frame_h});
-        Streamlit.setComponentReady();
+      }} else {{
+        notifyCalendarReady();
       }}
       return;
     }}
@@ -451,6 +502,7 @@ html, body {{
         Streamlit.setFrameHeight({frame_h});
         Streamlit.setComponentReady();
       }}
+      notifyCalendarReady();
       gd.on("plotly_click", function(ev) {{
         if (gd.dataset && gd.dataset.calSwiped === "1") return;
         const cid = pickCandidateId(ev);
@@ -461,6 +513,7 @@ html, body {{
         Streamlit.setFrameHeight({frame_h});
         Streamlit.setComponentReady();
       }}
+      notifyCalendarReady();
     }});
 
     window.addEventListener("resize", function() {{ syncWidth(true); }});
@@ -482,18 +535,20 @@ html, body {{
         scrolling=False,
     )
     if clicked is None:
-        return None
+        return None, False
     raw = str(clicked).strip()
     if not raw:
-        return None
+        return None, False
     if raw.startswith("{"):
         try:
             payload = json.loads(raw)
+            if str(payload.get("event") or "").strip() == "ready":
+                return None, True
             cid = str(payload.get("cid") or "").strip()
-            return cid or None
+            return (cid or None), False
         except Exception:
-            return None
-    return raw
+            return None, False
+    return raw, False
 
 
 PLOTLY_CALENDAR_KEY = "candidate_week_plot"
@@ -902,7 +957,7 @@ def _render_week_calendar(
     worker_id_to_name: Dict[str, str],
     vehicle_id_to_name: Dict[str, str],
     footer_note: Optional[str] = None,
-) -> Optional[str]:
+) -> tuple[Optional[str], bool]:
     """週間候補カレンダー（Plotly）。7日分を描画し、表示枠は3日幅・横スクロールは枠内のみ。"""
     wd: date = week_start_date
     if isinstance(wd, datetime):
@@ -913,9 +968,7 @@ def _render_week_calendar(
     d0, d1 = visible_dates[0], visible_dates[-1]
     st.caption(
         f"表示: **{d0.month}/{d0.day}（{_YOUBI[d0.weekday()]}）〜"
-        f"{d1.month}/{d1.day}（{_YOUBI[d1.weekday()]}）** — "
-        f"画面幅に{_CALENDAR_VIEWPORT_DAYS}日分表示。横にスワイプして4日目以降（日曜始まり）"
-    )
+        f"{d1.month}/{d1.day}（{_YOUBI[d1.weekday()]}）** — "    )
 
     header_html = _build_calendar_header_html(visible_dates)
     plot_h = _candidate_calendar_plot_height(len(visible_dates))
@@ -931,13 +984,18 @@ def _render_week_calendar(
         hide_xaxis_tick_labels=True,
     )
     _ = _ordered_ids
-    clicked = _render_calendar_scroll_component(fig, header_html, plot_height=plot_h)
+    clicked, cal_ready = _render_calendar_scroll_component(
+        fig,
+        header_html,
+        plot_height=plot_h,
+        notify_when_ready=bool(st.session_state.get("candidate_search_display_pending")),
+    )
     note = footer_note or (
         "※ 色ブロックは「空きとして採用した候補」の開始〜終了です。"
         "（上の「この週のカレンダー予定」で参照IDを確認できます）"
     )
     st.caption(note)
-    return clicked
+    return clicked, cal_ready
 
 
 def render_page() -> None:
@@ -965,15 +1023,19 @@ def _render_candidate_search_page_body() -> None:
         st.session_state.pop("candidate_results", None)
         st.session_state.pop("candidate_search_job", None)
         st.session_state.pop("candidate_search_calendar_pending", None)
+        st.session_state.pop("candidate_search_display_pending", None)
         st.session_state.pop("_last_search_calendar_bundle", None)
         st.session_state.pop("_cal_last_component_click", None)
         _clear_candidate_search_ui_busy()
         st.session_state.pop("candidate_dialog_id", None)
         st.session_state.pop("week_nav_trigger_search", None)
     st.session_state["_active_page_id"] = "candidate_search"
-    inject_wide_layout()
+    display_pending = bool(st.session_state.get("candidate_search_display_pending"))
+    inject_wide_layout(
+        skip_busy_reset=bool(st.session_state.get("candidate_search_job") or display_pending)
+    )
     inject_sidebar_nav()
-    if not st.session_state.get("candidate_search_job"):
+    if not st.session_state.get("candidate_search_job") and not display_pending:
         inject_clear_force_busy_overlay()
 
     st.title("候補検索")
@@ -1107,12 +1169,13 @@ button {
     show_search_phase = bool(
         cjob_early
         or cal_early
+        or display_pending
         or candidate_search_busy_active()
         or search_press
         or week_nav_trigger
     )
     _sanitize_stale_candidate_search_busy(starting_search=search_press or week_nav_trigger)
-    if cjob_early is not None:
+    if cjob_early is not None or display_pending:
         _inject_candidate_search_busy_if_needed()
     top_spinner_msg = (
         "検索・カレンダー表示中…" if show_search_phase else "データを読み込み中…"
@@ -1330,7 +1393,7 @@ button {
 
     # 分割検索: ①カレンダーAPIは表示中の4日/3日分のみ ②以降は同一データで1日ずつ計算
     cjob = st.session_state.get("candidate_search_job")
-    if cjob is not None:
+    if cjob is not None or st.session_state.get("candidate_search_display_pending"):
         _inject_candidate_search_busy_if_needed()
     if cjob is not None:
         _btn_search = bool(cjob.get("from_search_btn"))
@@ -1434,8 +1497,7 @@ button {
             st.session_state.pop("candidate_search_calendar_pending", None)
             st.session_state.pop("candidate_search_job", None)
             st.session_state.pop("_week_nav_undo", None)
-            _clear_candidate_search_ui_busy()
-            inject_clear_force_busy_overlay()
+            _begin_candidate_search_display_phase()
             st.rerun()
 
     if selected_project:
@@ -1559,6 +1621,7 @@ button {
             del st.session_state["candidate_results"]
         st.session_state.pop("candidate_search_job", None)
         st.session_state.pop("candidate_search_calendar_pending", None)
+        st.session_state.pop("candidate_search_display_pending", None)
         st.session_state.pop("_cal_last_component_click", None)
         _clear_candidate_search_ui_busy()
         inject_clear_force_busy_overlay()
@@ -1902,7 +1965,7 @@ button {
             and not is_company_closed_day(c["start_at"].date(), cal_settings)
             and not candidate_includes_worker_off(c, workers_by_id)
         ]
-        cal_clicked = _render_week_calendar(
+        cal_clicked, cal_ready = _render_week_calendar(
             candidates=display_candidates,
             week_start_date=st.session_state["candidate_calendar_week_start"],
             slot_minutes=slot_gran,
@@ -1912,6 +1975,8 @@ button {
             vehicle_id_to_name=vehicle_id_to_name,
             footer_note=footer_note,
         )
+        if cal_ready and st.session_state.get("candidate_search_display_pending"):
+            _finish_candidate_search_display_if_needed()
     if cal_clicked:
         st.session_state["candidate_dialog_id"] = cal_clicked
         st.session_state["_cal_last_component_click"] = cal_clicked
