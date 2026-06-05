@@ -464,7 +464,7 @@ html, body {{
     }});
   }}
 
-  function nearestCandidateFromTouch(gd, clientX, clientY) {{
+  function nearestCandidateFromPointer(gd, clientX, clientY) {{
     try {{
       var trace = (gd.data || [])[0];
       if (!trace || !trace.x || !trace.x.length) return null;
@@ -473,17 +473,18 @@ html, body {{
       var ly = clientY - box.top;
       var fl = gd._fullLayout;
       if (!fl || !fl.xaxis || !fl.yaxis || !fl._size) return null;
-      var xd = fl.xaxis.p2d(lx - fl._size.l);
-      var yd = fl.yaxis.p2d(ly - fl._size.t);
       var best = -1;
       var bestDist = Infinity;
       for (var i = 0; i < trace.x.length; i++) {{
-        var dx = Number(trace.x[i]) - xd;
-        var dy = Number(trace.y[i]) - yd;
+        var px = fl.xaxis.l2p(Number(trace.x[i])) + fl._size.l;
+        var py = fl.yaxis.l2p(Number(trace.y[i])) + fl._size.t;
+        var dx = lx - px;
+        var dy = ly - py;
         var dist = dx * dx + dy * dy;
         if (dist < bestDist) {{ bestDist = dist; best = i; }}
       }}
-      if (best < 0 || bestDist > 0.55) return null;
+      // ピクセル距離で判定（データ座標混在だと青枠の端を押しても反応しない）
+      if (best < 0 || bestDist > 90 * 90) return null;
       var cd = trace.customdata ? trace.customdata[best] : null;
       if (!cd) return null;
       return Array.isArray(cd) ? String(cd[0]) : String(cd);
@@ -506,9 +507,21 @@ html, body {{
       var dy = t.clientY - tapStart.y;
       tapStart = null;
       if (Math.abs(dx) > 18 || Math.abs(dy) > 18) return;
-      var cid = nearestCandidateFromTouch(gd, t.clientX, t.clientY);
+      var cid = nearestCandidateFromPointer(gd, t.clientX, t.clientY);
       if (cid) emitComponentClick(cid);
     }}, {{ passive: true }});
+  }}
+
+  function bindPointerClick(gd) {{
+    gd.addEventListener("click", function(e) {{
+      if (gd.dataset && gd.dataset.calSwiped === "1") return;
+      var cid = nearestCandidateFromPointer(gd, e.clientX, e.clientY);
+      if (cid) {{
+        e.preventDefault();
+        e.stopPropagation();
+        emitComponentClick(cid);
+      }}
+    }});
   }}
 
   var _plotInitTries = 0;
@@ -541,6 +554,7 @@ html, body {{
       bindHorizontalSwipe(scrollX, gd);
       bindVerticalPageScroll(document.querySelector(".candidate-cal-scroll-host"));
       bindMobileTap(gd);
+      bindPointerClick(gd);
       if (window.Streamlit) {{
         Streamlit.setFrameHeight({frame_h});
         Streamlit.setComponentReady();
@@ -549,7 +563,7 @@ html, body {{
       gd.on("plotly_click", function(ev) {{
         if (gd.dataset && gd.dataset.calSwiped === "1") return;
         const cid = pickCandidateId(ev);
-        emitComponentClick(cid);
+        if (cid) emitComponentClick(cid);
       }});
     }}).catch(function() {{
       if (window.Streamlit) {{
@@ -886,6 +900,7 @@ def _build_candidate_week_plotly_figure(
                 "xanchor": "center",
                 "yanchor": "top",
                 "font": {"size": label_px, "color": "#022"},
+                "captureevents": False,
             }
         )
         hit_x.append(x_center)
@@ -2012,7 +2027,6 @@ button {
     if _is_new_calendar_component_click(cal_clicked, click_nonce):
         _remember_calendar_component_click(str(cal_clicked), click_nonce)
         inject_clear_force_busy_overlay()
-        st.rerun()
     if filtered:
         st.caption(
             "青い枠は開始時刻（1時間刻み）で並べています。枠左上の時刻が開始時刻です。"
