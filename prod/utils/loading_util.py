@@ -75,4 +75,5 @@ def candidate_search_busy_active() -> bool:
         st.session_state.get("candidate_search_ui_busy")
         or st.session_state.get("candidate_search_job")
         or st.session_state.get("candidate_search_calendar_pending")
+        or st.session_state.get("candidate_search_display_pending")
     )

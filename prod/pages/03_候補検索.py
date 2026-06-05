@@ -64,7 +64,11 @@ def _clear_candidate_search_ui_busy() -> None:
 
 def _sanitize_stale_candidate_search_busy(*, starting_search: bool = False) -> None:
     """ジョブ無しで busy だけ残るとオーバーレイが消えない。検索開始直前は ui_busy を消さない."""
-    if starting_search or st.session_state.get("candidate_search_job") is not None:
+    if (
+        starting_search
+        or st.session_state.get("candidate_search_job") is not None
+        or st.session_state.get("candidate_search_display_pending")
+    ):
         return
     if st.session_state.get("candidate_search_calendar_pending"):
         st.session_state.pop("candidate_search_calendar_pending", None)
@@ -85,11 +89,27 @@ def _inject_candidate_search_busy_if_needed(*, starting_search: bool = False) ->
             busy_msg = f"検索中…（{format_search_progress_pct(step_top, n_top)}）"
         else:
             return
+    elif st.session_state.get("candidate_search_display_pending"):
+        busy_msg = "カレンダー表示中…"
     elif starting_search or st.session_state.get("candidate_search_ui_busy"):
         busy_msg = "検索・カレンダー表示中…"
     else:
         return
     inject_force_busy_marker(busy_msg)
+
+
+def _begin_candidate_search_display_phase() -> None:
+    """分割検索完了後、Plotly カレンダー描画までオーバーレイを維持する."""
+    st.session_state["candidate_search_display_pending"] = True
+    st.session_state["candidate_search_ui_busy"] = True
+
+
+def _finish_candidate_search_display_if_needed() -> None:
+    """カレンダー表示完了後にオーバーレイを解除（未設定なら何もしない）."""
+    if not st.session_state.pop("candidate_search_display_pending", None):
+        return
+    _clear_candidate_search_ui_busy()
+    inject_clear_force_busy_overlay()
 
 
 _YOUBI = ("月", "火", "水", "木", "金", "土", "日")
@@ -419,16 +439,21 @@ html, body {{
     }}, {{ passive: true }});
   }}
 
+  var _plotInitTries = 0;
   function initPlot() {{
+    _plotInitTries += 1;
+    const plotEl = document.getElementById("candidate-cal-plot");
+    const scrollX = document.getElementById("candidate-cal-scroll-x");
+    if (!plotEl || !scrollX || typeof Plotly === "undefined") {{
+      if (_plotInitTries < 40) setTimeout(initPlot, 120);
+      return;
+    }}
     const layout = Object.assign({{}}, figLayout, {{
       height: {plot_height},
       autosize: false,
       hovermode: ("ontouchstart" in window) ? false : "closest",
       margin: Object.assign({{}}, figLayout.margin || {{}}, {{l: ML, r: MR, t: 10, b: 32}}),
     }});
-
-    const plotEl = document.getElementById("candidate-cal-plot");
-    const scrollX = document.getElementById("candidate-cal-scroll-x");
 
     Plotly.newPlot(plotEl, figData, layout, {{
       displayModeBar: false,
@@ -440,24 +465,28 @@ html, body {{
       bindHorizontalSwipe(scrollX, gd);
       bindVerticalPageScroll(document.querySelector(".candidate-cal-scroll-host"));
       bindMobileTap(gd);
-      if (window.Streamlit) {{
-        Streamlit.setFrameHeight({frame_h});
-        Streamlit.setComponentReady();
-      }}
+      if (window.Streamlit) Streamlit.setFrameHeight({frame_h});
       gd.on("plotly_click", function(ev) {{
         if (gd.dataset && gd.dataset.calSwiped === "1") return;
         const cid = pickCandidateId(ev);
         emitComponentClick(cid);
       }});
+    }}).catch(function() {{
+      if (window.Streamlit) Streamlit.setFrameHeight({frame_h});
     }});
 
     window.addEventListener("resize", function() {{ syncWidth(true); }});
   }}
 
-  if (window.Streamlit) {{
+  function boot() {{
+    if (window.Streamlit) Streamlit.setComponentReady();
     initPlot();
+  }}
+
+  if (document.readyState === "loading") {{
+    window.addEventListener("load", boot);
   }} else {{
-    window.addEventListener("load", initPlot);
+    boot();
   }}
 }})();
 </script>
@@ -926,6 +955,13 @@ def _render_week_calendar(
 
 def render_page() -> None:
     """候補検索画面."""
+    try:
+        _render_candidate_search_page_body()
+    finally:
+        _finish_candidate_search_display_if_needed()
+
+
+def _render_candidate_search_page_body() -> None:
     st.set_page_config(
         page_title=f"{APP_TITLE} - 候補検索",
         layout="wide",
@@ -945,6 +981,7 @@ def render_page() -> None:
         st.session_state.pop("candidate_results", None)
         st.session_state.pop("candidate_search_job", None)
         st.session_state.pop("candidate_search_calendar_pending", None)
+        st.session_state.pop("candidate_search_display_pending", None)
         st.session_state.pop("_last_search_calendar_bundle", None)
         st.session_state.pop("_cal_last_component_click", None)
         _clear_candidate_search_ui_busy()
@@ -1308,7 +1345,11 @@ button {
 
     # 分割検索: ①カレンダーAPIは表示中の4日/3日分のみ ②以降は同一データで1日ずつ計算
     cjob = st.session_state.get("candidate_search_job")
-    if cjob is not None or st.session_state.get("candidate_search_ui_busy"):
+    if (
+        cjob is not None
+        or st.session_state.get("candidate_search_ui_busy")
+        or st.session_state.get("candidate_search_display_pending")
+    ):
         _inject_candidate_search_busy_if_needed()
     if cjob is not None:
         _btn_search = bool(cjob.get("from_search_btn"))
@@ -1412,8 +1453,7 @@ button {
             st.session_state.pop("candidate_search_calendar_pending", None)
             st.session_state.pop("candidate_search_job", None)
             st.session_state.pop("_week_nav_undo", None)
-            _clear_candidate_search_ui_busy()
-            inject_clear_force_busy_overlay()
+            _begin_candidate_search_display_phase()
 
     if selected_project:
         _mp_wids = sorted(str(w.get("worker_id", "")) for w in workers_for_search)
@@ -1424,14 +1464,15 @@ button {
             date.today(),
         )
         if _mp_key not in st.session_state:
-            st.session_state[_mp_key] = collect_missing_previous_locations(
-                project=selected_project,
-                workers=workers_for_search,
-                ui_capacity=required_capacity,
-                session_tokens=st.session_state.get("google_calendar_tokens"),
-                location_overrides=loc_ov,
-                search_date=date.today(),
-            )
+            with visible_spinner("前現場情報を確認中…"):
+                st.session_state[_mp_key] = collect_missing_previous_locations(
+                    project=selected_project,
+                    workers=workers_for_search,
+                    ui_capacity=required_capacity,
+                    session_tokens=st.session_state.get("google_calendar_tokens"),
+                    location_overrides=loc_ov,
+                    search_date=date.today(),
+                )
         missing_prev = st.session_state.get(_mp_key) or []
         if missing_prev:
             with st.expander("前現場の住所がカレンダーにない予定（暫定住所）", expanded=False):
