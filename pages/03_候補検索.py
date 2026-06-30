@@ -1059,7 +1059,7 @@ def _build_candidate_week_plotly_figure(
     x_tickfont = 17 if n_vis <= 3 else (16 if n_vis <= 4 else 14)
     y_tickfont = 13
     text_px = 15 if n_vis <= 3 else (14 if n_vis <= 4 else 12)
-    plot_h = _candidate_calendar_plot_height(n_vis)
+    plot_h = _candidate_calendar_plot_height(day_start_hour, day_end_hour)
 
     for blk in candidate_blocks:
         xi = float(blk["xi"])
