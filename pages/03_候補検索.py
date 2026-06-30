@@ -1486,30 +1486,48 @@ button {
                 projects = [p for p in _all_projects if str(p.get("status") or "") != "completed"]
             except FirestoreConnectionError:
                 st.error(DB_UNAVAILABLE_MESSAGE)
+                st.session_state.pop("candidate_search_display_pending", None)
+                _clear_candidate_search_ui_busy()
+                inject_clear_force_busy_overlay()
                 return
             except Exception as exc:
                 st.error("案件一覧の取得中に想定外エラーが発生しました。")
                 st.exception(exc)
+                st.session_state.pop("candidate_search_display_pending", None)
+                _clear_candidate_search_ui_busy()
+                inject_clear_force_busy_overlay()
                 return
 
             try:
                 workers = list_workers()
             except FirestoreConnectionError:
                 st.error(DB_UNAVAILABLE_MESSAGE)
+                st.session_state.pop("candidate_search_display_pending", None)
+                _clear_candidate_search_ui_busy()
+                inject_clear_force_busy_overlay()
                 return
             except Exception as exc:
                 st.error("職人一覧の取得中に想定外エラーが発生しました。")
                 st.exception(exc)
+                st.session_state.pop("candidate_search_display_pending", None)
+                _clear_candidate_search_ui_busy()
+                inject_clear_force_busy_overlay()
                 return
 
             try:
                 vehicles = list_vehicles()
             except FirestoreConnectionError:
                 st.error(DB_UNAVAILABLE_MESSAGE)
+                st.session_state.pop("candidate_search_display_pending", None)
+                _clear_candidate_search_ui_busy()
+                inject_clear_force_busy_overlay()
                 return
             except Exception as exc:
                 st.error("車両一覧の取得中に想定外エラーが発生しました。")
                 st.exception(exc)
+                st.session_state.pop("candidate_search_display_pending", None)
+                _clear_candidate_search_ui_busy()
+                inject_clear_force_busy_overlay()
                 return
         st.session_state["_candidate_search_masters"] = {
             "projects": projects,
@@ -1742,6 +1760,7 @@ button {
                 )
                 st.session_state.pop("candidate_search_job", None)
                 st.session_state.pop("candidate_search_calendar_pending", None)
+                st.session_state.pop("candidate_search_display_pending", None)
                 _clear_candidate_search_ui_busy()
                 inject_clear_force_busy_overlay()
                 st.rerun()
@@ -1789,8 +1808,9 @@ button {
             st.session_state.pop("candidate_search_calendar_pending", None)
             st.session_state.pop("candidate_search_job", None)
             st.session_state.pop("_week_nav_undo", None)
+            st.session_state.pop("candidate_search_display_pending", None)
             _reset_candidate_dialog_session(clear_plotly=True)
-            _begin_candidate_search_display_phase()
+            _clear_candidate_search_ui_busy()
             st.rerun()
 
     if selected_project:
@@ -2099,6 +2119,7 @@ button {
         st.exception(exc)
         st.session_state.pop("candidate_search_job", None)
         st.session_state.pop("candidate_search_calendar_pending", None)
+        st.session_state.pop("candidate_search_display_pending", None)
         _clear_candidate_search_ui_busy()
         inject_clear_force_busy_overlay()
         return
@@ -2467,6 +2488,9 @@ button {
                     st.rerun()
 
             _show_candidate_detail()
+
+    if st.session_state.get("candidate_search_display_pending"):
+        _finish_candidate_search_display_if_needed()
 
 if __name__ == "__main__":
     render_page()
