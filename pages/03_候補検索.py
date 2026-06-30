@@ -594,6 +594,93 @@ html, body {{
     return _parse_calendar_component_value(clicked)
 
 
+def _inject_calendar_scroll_setup() -> None:
+    """Plotly ネイティブ表示のまま、ヘッダー＋グラフを横スクロール枠にまとめる（DOM 削除なし）。"""
+    ratio = _CALENDAR_INNER_WIDTH_RATIO
+    margin_l = _CALENDAR_MARGIN_LEFT
+    margin_r = _CALENDAR_MARGIN_RIGHT
+    components.html(
+        f"""
+<script>
+(function() {{
+  const RATIO = {ratio};
+  const ML = {margin_l};
+  const MR = {margin_r};
+  const doc = window.parent && window.parent.document ? window.parent.document : document;
+  const PlotlyLib = (window.parent && window.parent.Plotly) || window.Plotly;
+
+  function sync(host, scrollX, inner) {{
+    const vp = scrollX.clientWidth;
+    if (vp < 1) return;
+    const full = Math.round(vp * RATIO);
+    inner.style.width = full + "px";
+    inner.style.minWidth = full + "px";
+    inner.style.maxWidth = full + "px";
+    const plotDiv = host.querySelector(".plotly-graph-div");
+    if (plotDiv && PlotlyLib) {{
+      try {{
+        PlotlyLib.relayout(plotDiv, {{
+          width: full,
+          autosize: false,
+          "margin.l": ML,
+          "margin.r": MR,
+        }});
+      }} catch (e) {{}}
+    }}
+    scrollX.scrollLeft = 0;
+  }}
+
+  function mount() {{
+    if (doc.querySelector(".candidate-cal-scroll-host[data-cal-ready='1']")) {{
+      const host = doc.querySelector(".candidate-cal-scroll-host[data-cal-ready='1']");
+      const scrollX = host.querySelector(".candidate-cal-scroll-x");
+      const inner = host.querySelector(".candidate-cal-scroll-inner");
+      if (scrollX && inner) sync(host, scrollX, inner);
+      return;
+    }}
+    const header = doc.querySelector(".candidate-cal-header-row");
+    const plotDiv = doc.querySelector(".js-plotly-plot");
+    if (!header || !plotDiv) return;
+    const headerEc = header.closest('[data-testid="stElementContainer"]');
+    const plotEc = plotDiv.closest('[data-testid="stElementContainer"]');
+    if (!headerEc || !plotEc || headerEc.dataset.calWrapped === "1") return;
+
+    const host = doc.createElement("div");
+    host.className = "candidate-cal-scroll-host";
+    host.dataset.calReady = "1";
+    host.style.cssText = "width:100%;max-width:100%;overflow:hidden;box-sizing:border-box;";
+    const scrollX = doc.createElement("div");
+    scrollX.className = "candidate-cal-scroll-x";
+    scrollX.style.cssText = "width:100%;max-width:100%;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;";
+    const inner = doc.createElement("div");
+    inner.className = "candidate-cal-scroll-inner";
+    inner.style.boxSizing = "border-box";
+    scrollX.appendChild(inner);
+    host.appendChild(scrollX);
+
+    const parent = headerEc.parentElement;
+    if (!parent) return;
+    parent.insertBefore(host, headerEc);
+    inner.appendChild(headerEc);
+    inner.appendChild(plotEc);
+    headerEc.dataset.calWrapped = "1";
+    plotEc.dataset.calWrapped = "1";
+    sync(host, scrollX, inner);
+  }}
+
+  mount();
+  setTimeout(mount, 250);
+  setTimeout(mount, 900);
+  if (doc.defaultView) {{
+    doc.defaultView.addEventListener("resize", mount);
+  }}
+}})();
+</script>
+""",
+        height=0,
+    )
+
+
 PLOTLY_CALENDAR_KEY = "candidate_week_plot"
 
 
@@ -1001,8 +1088,8 @@ def _render_week_calendar(
     worker_id_to_name: Dict[str, str],
     vehicle_id_to_name: Dict[str, str],
     footer_note: Optional[str] = None,
-) -> tuple[Optional[str], bool, Optional[str]]:
-    """週間候補カレンダー（Plotly）。7日分を描画し、表示枠は3日幅・横スクロールは枠内のみ。"""
+) -> None:
+    """週間候補カレンダー（Plotly）。クリックで予約確定ダイアログ（st.dialog）を開く。"""
     wd: date = week_start_date
     if isinstance(wd, datetime):
         wd = wd.date()
@@ -1012,11 +1099,43 @@ def _render_week_calendar(
     d0, d1 = visible_dates[0], visible_dates[-1]
     st.caption(
         f"表示: **{d0.month}/{d0.day}（{_YOUBI[d0.weekday()]}）〜"
-        f"{d1.month}/{d1.day}（{_YOUBI[d1.weekday()]}）** — "    )
+        f"{d1.month}/{d1.day}（{_YOUBI[d1.weekday()]}）** — "
+        f"画面幅は{_CALENDAR_VIEWPORT_DAYS}日分。横スワイプで4日目以降（日曜始まり）"
+    )
+    st.caption(
+        "**青枠をクリック／タップ**すると予約確定のポップアップ（「決定」ボタン付き）が開きます。"
+        "マウスを乗せただけの吹き出しは参考表示です。"
+    )
 
-    header_html = _build_calendar_header_html(visible_dates)
+    st.markdown(
+        """
+<style>
+.candidate-cal-header-row {
+  display: flex; width: 100%; align-items: stretch; box-sizing: border-box;
+}
+.candidate-cal-y-axis-gutter {
+  width: 62px; min-width: 62px; flex-shrink: 0;
+}
+.candidate-cal-margin-right {
+  width: 18px; min-width: 18px; flex-shrink: 0;
+}
+.candidate-cal-day-grid {
+  flex: 1; display: grid; border: 1px solid #d8d8d8; border-bottom: none; box-sizing: border-box;
+}
+.cal-head-cell {
+  box-sizing: border-box; text-align: center; padding: 10px 5px;
+  font-size: 15px; color: #222; font-weight: 600;
+}
+@media (max-width: 767px) {
+  .cal-head-cell { font-size: 14px; padding: 8px 4px; }
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+    st.markdown(_build_calendar_header_html(visible_dates), unsafe_allow_html=True)
     plot_h = _candidate_calendar_plot_height(len(visible_dates))
-    fig, _ordered_ids = _build_candidate_week_plotly_figure(
+    fig, ordered_ids = _build_candidate_week_plotly_figure(
         candidates=candidates,
         week_start_date=wd,
         visible_day_offsets=offsets,
@@ -1027,17 +1146,16 @@ def _render_week_calendar(
         vehicle_id_to_name=vehicle_id_to_name,
         hide_xaxis_tick_labels=True,
     )
-    _ = _ordered_ids
-    clicked, cal_ready, click_nonce = _render_calendar_scroll_component(
+    plot_state = st.plotly_chart(
         fig,
-        header_html,
-        plot_height=plot_h,
-        notify_when_ready=bool(st.session_state.get("candidate_search_display_pending")),
+        key=PLOTLY_CALENDAR_KEY,
+        on_select="rerun",
+        selection_mode="points",
+        use_container_width=True,
+        height=plot_h,
     )
-    if _is_new_calendar_component_click(clicked, click_nonce):
-        _remember_calendar_component_click(str(clicked), click_nonce)
-        inject_clear_force_busy_overlay()
-        # setComponentValue で既に rerun される。ここで st.rerun() するとダイアログが開く前に2重実行される
+    _apply_plotly_point_selection(plot_state, ordered_ids)
+    _inject_calendar_scroll_setup()
     if st.session_state.get("candidate_search_display_pending"):
         _finish_candidate_search_display_if_needed()
     note = footer_note or (
@@ -1045,7 +1163,6 @@ def _render_week_calendar(
         "（上の「この週のカレンダー予定」で参照IDを確認できます）"
     )
     st.caption(note)
-    return clicked, cal_ready, click_nonce
 
 
 def render_page() -> None:
@@ -2027,7 +2144,7 @@ button {
             and not is_company_closed_day(c["start_at"].date(), cal_settings)
             and not candidate_includes_worker_off(c, workers_by_id)
         ]
-        _, cal_ready, _ = _render_week_calendar(
+        _render_week_calendar(
             candidates=display_candidates,
             week_start_date=st.session_state["candidate_calendar_week_start"],
             slot_minutes=slot_gran,
@@ -2037,11 +2154,10 @@ button {
             vehicle_id_to_name=vehicle_id_to_name,
             footer_note=footer_note,
         )
-        _ = cal_ready
     if filtered:
         st.caption(
-            "青い枠は開始時刻（1時間刻み）で並べています。枠左上の時刻が開始時刻です。"
-            "クリックで詳細（終了・職人など）を確認できます。検索の刻み幅は共通設定の値のままです。"
+            "青い枠をクリック／タップすると予約確定ポップアップが開きます。"
+            "枠左上の時刻が開始時刻です。検索の刻み幅は共通設定の値のままです。"
         )
 
     dcid = st.session_state.get("candidate_dialog_id")
@@ -2070,7 +2186,7 @@ button {
                 vehicle_id_to_name.get(vid, vid) for vid in target.get("vehicle_ids", [])
             )
 
-            @st.dialog("候補の詳細")
+            @st.dialog("予約確定")
             def _show_candidate_detail() -> None:
                 result_key = f"dialog_decide_result_{dcid}"
                 title_key = f"dialog_event_title_{dcid}"
