@@ -594,14 +594,13 @@ html, body {{
     return _parse_calendar_component_value(clicked)
 
 
-def _inject_calendar_interaction_bridge() -> tuple[Optional[str], Optional[str]]:
-    """横スクロール・縦ページスクロール・タップのみで予約ダイアログを開く。"""
+def _inject_calendar_scroll_setup() -> None:
+    """横スクロールとスマホ縦ページスクロール（タップは plotly_chart の選択で処理）。"""
     ratio = _CALENDAR_INNER_WIDTH_RATIO
     margin_l = _CALENDAR_MARGIN_LEFT
     margin_r = _CALENDAR_MARGIN_RIGHT
-    raw = components.html(
+    components.html(
         f"""
-<script src="https://cdn.jsdelivr.net/npm/@streamlit/component-lib@2.0.0/dist/index.min.js"></script>
 <script>
 (function() {{
   const RATIO = {ratio};
@@ -609,14 +608,6 @@ def _inject_calendar_interaction_bridge() -> tuple[Optional[str], Optional[str]]
   const MR = {margin_r};
   const doc = window.parent && window.parent.document ? window.parent.document : document;
   const PlotlyLib = (window.parent && window.parent.Plotly) || window.Plotly;
-
-  function emitTap(cid) {{
-    if (!cid || !window.Streamlit) return;
-    window.Streamlit.setComponentValue(JSON.stringify({{
-      cid: String(cid),
-      nonce: Date.now()
-    }}));
-  }}
 
   function scrollPageBy(dy) {{
     const candidates = [
@@ -636,55 +627,19 @@ def _inject_calendar_interaction_bridge() -> tuple[Optional[str], Optional[str]]
     if (doc.defaultView) doc.defaultView.scrollBy(0, dy);
   }}
 
-  function nearestCandidateFromPointer(gd, clientX, clientY) {{
+  function clearPlotlySelection(plotDiv) {{
+    if (!plotDiv || !PlotlyLib) return;
     try {{
-      var trace = (gd.data || [])[0];
-      if (!trace || !trace.x || !trace.x.length) return null;
-      var box = gd.getBoundingClientRect();
-      var lx = clientX - box.left;
-      var ly = clientY - box.top;
-      var fl = gd._fullLayout;
-      if (!fl || !fl.xaxis || !fl.yaxis || !fl._size) return null;
-      var best = -1;
-      var bestDist = Infinity;
-      for (var i = 0; i < trace.x.length; i++) {{
-        var px = fl.xaxis.l2p(Number(trace.x[i])) + fl._size.l;
-        var py = fl.yaxis.l2p(Number(trace.y[i])) + fl._size.t;
-        var dx = lx - px;
-        var dy = ly - py;
-        var dist = dx * dx + dy * dy;
-        if (dist < bestDist) {{ bestDist = dist; best = i; }}
+      if (PlotlyLib.Fx && PlotlyLib.Fx.clearSelection) {{
+        PlotlyLib.Fx.clearSelection(plotDiv);
       }}
-      if (best < 0 || bestDist > 120 * 120) return null;
-      var cd = trace.customdata ? trace.customdata[best] : null;
-      if (!cd) return null;
-      return Array.isArray(cd) ? String(cd[0]) : String(cd);
-    }} catch (e) {{
-      return null;
-    }}
+    }} catch (e) {{}}
   }}
 
-  function ensureOverlay(plotDiv) {{
-    if (!plotDiv) return null;
-    var plotEc = plotDiv.closest('[data-testid="stElementContainer"]');
-    if (!plotEc) return null;
-    plotEc.style.position = "relative";
-    plotDiv.style.pointerEvents = "none";
-    var overlay = plotEc.querySelector(".candidate-cal-touch-overlay");
-    if (!overlay) {{
-      overlay = doc.createElement("div");
-      overlay.className = "candidate-cal-touch-overlay";
-      overlay.setAttribute("aria-hidden", "true");
-      overlay.style.cssText = "position:absolute;inset:0;z-index:6;touch-action:none;cursor:pointer;background:transparent;";
-      plotEc.appendChild(overlay);
-    }}
-    return overlay;
-  }}
-
-  function bindCalendarTouch(host, scrollX, plotDiv, overlay) {{
-    if (!overlay || overlay.dataset.calTouchBound === "1") return;
-    overlay.dataset.calTouchBound = "1";
-    const targets = [overlay, host, scrollX].filter(Boolean);
+  function bindCalendarTouch(host, scrollX, plotDiv) {{
+    if (!host || host.dataset.calTouchBound === "1") return;
+    host.dataset.calTouchBound = "1";
+    const targets = [host, scrollX, plotDiv].filter(Boolean);
     let sx = 0, sy = 0, sl = 0, mode = "";
     const onStart = function(e) {{
       if (!e.touches || e.touches.length !== 1) return;
@@ -714,28 +669,10 @@ def _inject_calendar_interaction_bridge() -> tuple[Optional[str], Optional[str]]
         e.stopPropagation();
       }}
     }};
-    const onEnd = function(e) {{
-      if (mode === "h" || mode === "v") {{
-        mode = "";
-        return;
-      }}
-      if (!e.changedTouches || e.changedTouches.length !== 1) {{
-        mode = "";
-        return;
-      }}
-      const t = e.changedTouches[0];
-      const dx = t.clientX - sx;
-      const dy = t.clientY - sy;
-      if (Math.abs(dx) <= 14 && Math.abs(dy) <= 14) {{
-        const cid = nearestCandidateFromPointer(plotDiv, t.clientX, t.clientY);
-        if (cid) emitTap(cid);
-      }}
+    const onEnd = function() {{
+      if (mode === "h") clearPlotlySelection(plotDiv);
       mode = "";
     }};
-    overlay.addEventListener("click", function(e) {{
-      const cid = nearestCandidateFromPointer(plotDiv, e.clientX, e.clientY);
-      if (cid) emitTap(cid);
-    }});
     targets.forEach(function(t) {{
       t.addEventListener("touchstart", onStart, {{capture: true, passive: true}});
       t.addEventListener("touchmove", onMove, {{capture: true, passive: false}});
@@ -762,11 +699,7 @@ def _inject_calendar_interaction_bridge() -> tuple[Optional[str], Optional[str]]
         }});
       }} catch (e) {{}}
     }}
-    if (doc.defaultView && doc.defaultView.innerWidth < 768 && host) {{
-      host.style.maxHeight = "46vh";
-    }}
-    const overlay = ensureOverlay(plotDiv);
-    bindCalendarTouch(host, scrollX, plotDiv, overlay);
+    bindCalendarTouch(host, scrollX, plotDiv);
   }}
 
   function mount() {{
@@ -807,7 +740,6 @@ def _inject_calendar_interaction_bridge() -> tuple[Optional[str], Optional[str]]
     sync(host, scrollX, inner);
   }}
 
-  if (window.Streamlit) window.Streamlit.setComponentReady();
   mount();
   setTimeout(mount, 250);
   setTimeout(mount, 900);
@@ -818,8 +750,6 @@ def _inject_calendar_interaction_bridge() -> tuple[Optional[str], Optional[str]]
 """,
         height=0,
     )
-    clicked, _, nonce = _parse_calendar_component_value(raw)
-    return clicked, nonce
 
 
 PLOTLY_CALENDAR_KEY = "candidate_week_plot"
@@ -862,10 +792,10 @@ _CANDIDATE_BLOCK_WIDTH = 0.9
 _CALENDAR_DISPLAY_SLOT_MINUTES = 60
 
 
-def _candidate_calendar_plot_height(n_visible_days: int) -> int:
-    """週7日表示のチャート高さ."""
-    _ = n_visible_days
-    return 480
+def _candidate_calendar_plot_height(day_start_hour: int, day_end_hour: int) -> int:
+    """就業時間の幅に合わせたチャート高さ（設定した開始〜終了が収まるようにする）。"""
+    hours = max(4, int(day_end_hour) - int(day_start_hour) + 1)
+    return min(960, max(560, hours * 54 + 72))
 
 
 def _collapse_candidates_for_hourly_calendar(
@@ -976,9 +906,8 @@ def _apply_plotly_point_selection(plot_state: Any, ordered_ids: List[str]) -> No
     if sig == st.session_state.get("_cal_plotly_selection_sig"):
         return
     st.session_state["_cal_plotly_selection_sig"] = sig
-    prev_dcid = st.session_state.get("candidate_dialog_id")
-    if prev_dcid and str(prev_dcid) != str(cid):
-        _purge_candidate_dialog_widget_keys(str(prev_dcid))
+    st.session_state["_cal_last_component_nonce"] = sig
+    _purge_candidate_dialog_widget_keys()
     st.session_state["candidate_dialog_id"] = cid
 
 
@@ -1311,10 +1240,6 @@ def _render_week_calendar(
 .candidate-cal-scroll-x {
   touch-action: pan-x pan-y !important;
 }
-.candidate-cal-scroll-host .plotly-graph-div,
-.candidate-cal-scroll-host .js-plotly-plot {
-  touch-action: none !important;
-}
 @media (max-width: 767px) {
   .cal-head-cell { font-size: 14px; padding: 8px 4px; }
 }
@@ -1323,7 +1248,7 @@ def _render_week_calendar(
         unsafe_allow_html=True,
     )
     st.markdown(_build_calendar_header_html(visible_dates), unsafe_allow_html=True)
-    plot_h = _candidate_calendar_plot_height(len(visible_dates))
+    plot_h = _candidate_calendar_plot_height(day_start_hour, day_end_hour)
     fig, ordered_ids = _build_candidate_week_plotly_figure(
         candidates=candidates,
         week_start_date=wd,
@@ -1335,19 +1260,16 @@ def _render_week_calendar(
         vehicle_id_to_name=vehicle_id_to_name,
         hide_xaxis_tick_labels=True,
     )
-    _ = ordered_ids
-    st.plotly_chart(
+    plot_state = st.plotly_chart(
         fig,
         key=PLOTLY_CALENDAR_KEY,
-        on_select="ignore",
+        on_select="rerun",
         selection_mode="points",
         use_container_width=True,
         height=plot_h,
     )
-    tapped, tap_nonce = _inject_calendar_interaction_bridge()
-    if _is_new_calendar_component_click(tapped, tap_nonce):
-        _remember_calendar_component_click(str(tapped), tap_nonce)
-        inject_clear_force_busy_overlay()
+    _apply_plotly_point_selection(plot_state, ordered_ids)
+    _inject_calendar_scroll_setup()
     if st.session_state.get("candidate_search_display_pending"):
         _finish_candidate_search_display_if_needed()
     note = footer_note or (
@@ -2355,7 +2277,10 @@ button {
         )
 
     dcid = st.session_state.get("candidate_dialog_id")
-    tap_nonce = st.session_state.get("_cal_last_component_nonce")
+    tap_nonce = (
+        st.session_state.get("_cal_last_component_nonce")
+        or st.session_state.get("_cal_plotly_selection_sig")
+    )
     if dcid and filtered and tap_nonce:
         if st.session_state.get("candidate_search_display_pending"):
             _finish_candidate_search_display_if_needed()
