@@ -151,6 +151,9 @@ def _remember_calendar_component_click(
     st.session_state["_cal_last_component_click"] = cal_clicked
     if click_nonce:
         st.session_state["_cal_last_component_nonce"] = click_nonce
+    # クリック直後の rerun では busy オーバーレイがダイアログを覆うため解除する
+    st.session_state.pop("candidate_search_display_pending", None)
+    _clear_candidate_search_ui_busy()
 
 
 _YOUBI = ("月", "火", "水", "木", "金", "土", "日")
@@ -1082,11 +1085,21 @@ def _render_candidate_search_page_body() -> None:
         st.session_state.pop("week_nav_trigger_search", None)
     st.session_state["_active_page_id"] = "candidate_search"
     display_pending = bool(st.session_state.get("candidate_search_display_pending"))
+    dialog_pending = bool(st.session_state.get("candidate_dialog_id"))
+    if dialog_pending:
+        st.session_state.pop("candidate_search_display_pending", None)
+        display_pending = False
+        _clear_candidate_search_ui_busy()
     inject_wide_layout(
-        skip_busy_reset=bool(st.session_state.get("candidate_search_job") or display_pending)
+        skip_busy_reset=bool(
+            st.session_state.get("candidate_search_job")
+            or (display_pending and not dialog_pending)
+        )
     )
     inject_sidebar_nav()
-    if not st.session_state.get("candidate_search_job") and not display_pending:
+    if dialog_pending or (
+        not st.session_state.get("candidate_search_job") and not display_pending
+    ):
         inject_clear_force_busy_overlay()
 
     st.title("候補検索")
@@ -2037,7 +2050,16 @@ button {
 
     dcid = st.session_state.get("candidate_dialog_id")
     if dcid and filtered:
-        target = next((c for c in filtered if c.get("candidate_id") == dcid), None)
+        if st.session_state.get("candidate_search_display_pending"):
+            _finish_candidate_search_display_if_needed()
+        else:
+            _clear_candidate_search_ui_busy()
+            inject_clear_force_busy_overlay()
+        dcid_s = str(dcid)
+        target = next(
+            (c for c in filtered if str(c.get("candidate_id")) == dcid_s),
+            None,
+        )
         if target is None:
             st.session_state.pop("candidate_dialog_id", None)
             st.session_state.pop("_cal_last_component_click", None)

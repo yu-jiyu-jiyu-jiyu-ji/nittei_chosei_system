@@ -1,3 +1,0 @@
-# 自動生成のマルチページナビを非表示（app / 重複メニューを避け、カスタムサイドバーのみ使用）
-[client]
-showSidebarNavigation = false
