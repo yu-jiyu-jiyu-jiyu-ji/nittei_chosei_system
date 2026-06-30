@@ -147,11 +147,11 @@ def _is_new_calendar_component_click(
 def _remember_calendar_component_click(
     cal_clicked: str, click_nonce: Optional[str]
 ) -> None:
+    _purge_candidate_dialog_widget_keys()
     st.session_state["candidate_dialog_id"] = cal_clicked
     st.session_state["_cal_last_component_click"] = cal_clicked
     if click_nonce:
         st.session_state["_cal_last_component_nonce"] = click_nonce
-    # クリック直後の rerun では busy オーバーレイがダイアログを覆うため解除する
     st.session_state.pop("candidate_search_display_pending", None)
     _clear_candidate_search_ui_busy()
 
@@ -594,13 +594,14 @@ html, body {{
     return _parse_calendar_component_value(clicked)
 
 
-def _inject_calendar_scroll_setup() -> None:
-    """Plotly 表示のまま横スクロール＋スマホ縦スクロールを有効化（予約ダイアログは plotly_chart 側）。"""
+def _inject_calendar_interaction_bridge() -> tuple[Optional[str], Optional[str]]:
+    """横スクロール・縦ページスクロール・タップのみで予約ダイアログを開く。"""
     ratio = _CALENDAR_INNER_WIDTH_RATIO
     margin_l = _CALENDAR_MARGIN_LEFT
     margin_r = _CALENDAR_MARGIN_RIGHT
-    components.html(
+    raw = components.html(
         f"""
+<script src="https://cdn.jsdelivr.net/npm/@streamlit/component-lib@2.0.0/dist/index.min.js"></script>
 <script>
 (function() {{
   const RATIO = {ratio};
@@ -609,23 +610,81 @@ def _inject_calendar_scroll_setup() -> None:
   const doc = window.parent && window.parent.document ? window.parent.document : document;
   const PlotlyLib = (window.parent && window.parent.Plotly) || window.Plotly;
 
-  function getScrollEl() {{
-    const app = doc.querySelector('[data-testid="stAppViewContainer"]');
-    if (app && app.scrollHeight > app.clientHeight + 4) return app;
-    const main = doc.querySelector("section.main");
-    if (main && main.scrollHeight > main.clientHeight + 4) return main;
-    return doc.scrollingElement || doc.documentElement || doc.body;
+  function emitTap(cid) {{
+    if (!cid || !window.Streamlit) return;
+    window.Streamlit.setComponentValue(JSON.stringify({{
+      cid: String(cid),
+      nonce: Date.now()
+    }}));
   }}
 
   function scrollPageBy(dy) {{
-    const el = getScrollEl();
-    if (el) el.scrollTop += dy;
+    const candidates = [
+      doc.querySelector('[data-testid="stAppViewContainer"]'),
+      doc.querySelector("section.main"),
+      doc.scrollingElement,
+      doc.documentElement,
+      doc.body,
+    ];
+    for (let i = 0; i < candidates.length; i++) {{
+      const el = candidates[i];
+      if (el && el.scrollHeight > el.clientHeight + 4) {{
+        el.scrollTop += dy;
+        return;
+      }}
+    }}
+    if (doc.defaultView) doc.defaultView.scrollBy(0, dy);
   }}
 
-  function bindCalendarTouch(host, scrollX, plotDiv) {{
-    if (!host || host.dataset.calTouchBound === "1") return;
-    host.dataset.calTouchBound = "1";
-    const targets = [host, scrollX, plotDiv].filter(Boolean);
+  function nearestCandidateFromPointer(gd, clientX, clientY) {{
+    try {{
+      var trace = (gd.data || [])[0];
+      if (!trace || !trace.x || !trace.x.length) return null;
+      var box = gd.getBoundingClientRect();
+      var lx = clientX - box.left;
+      var ly = clientY - box.top;
+      var fl = gd._fullLayout;
+      if (!fl || !fl.xaxis || !fl.yaxis || !fl._size) return null;
+      var best = -1;
+      var bestDist = Infinity;
+      for (var i = 0; i < trace.x.length; i++) {{
+        var px = fl.xaxis.l2p(Number(trace.x[i])) + fl._size.l;
+        var py = fl.yaxis.l2p(Number(trace.y[i])) + fl._size.t;
+        var dx = lx - px;
+        var dy = ly - py;
+        var dist = dx * dx + dy * dy;
+        if (dist < bestDist) {{ bestDist = dist; best = i; }}
+      }}
+      if (best < 0 || bestDist > 120 * 120) return null;
+      var cd = trace.customdata ? trace.customdata[best] : null;
+      if (!cd) return null;
+      return Array.isArray(cd) ? String(cd[0]) : String(cd);
+    }} catch (e) {{
+      return null;
+    }}
+  }}
+
+  function ensureOverlay(plotDiv) {{
+    if (!plotDiv) return null;
+    var plotEc = plotDiv.closest('[data-testid="stElementContainer"]');
+    if (!plotEc) return null;
+    plotEc.style.position = "relative";
+    plotDiv.style.pointerEvents = "none";
+    var overlay = plotEc.querySelector(".candidate-cal-touch-overlay");
+    if (!overlay) {{
+      overlay = doc.createElement("div");
+      overlay.className = "candidate-cal-touch-overlay";
+      overlay.setAttribute("aria-hidden", "true");
+      overlay.style.cssText = "position:absolute;inset:0;z-index:6;touch-action:none;cursor:pointer;background:transparent;";
+      plotEc.appendChild(overlay);
+    }}
+    return overlay;
+  }}
+
+  function bindCalendarTouch(host, scrollX, plotDiv, overlay) {{
+    if (!overlay || overlay.dataset.calTouchBound === "1") return;
+    overlay.dataset.calTouchBound = "1";
+    const targets = [overlay, host, scrollX].filter(Boolean);
     let sx = 0, sy = 0, sl = 0, mode = "";
     const onStart = function(e) {{
       if (!e.touches || e.touches.length !== 1) return;
@@ -633,7 +692,6 @@ def _inject_calendar_scroll_setup() -> None:
       sy = e.touches[0].clientY;
       sl = scrollX ? scrollX.scrollLeft : 0;
       mode = "";
-      if (plotDiv) plotDiv.dataset.calSwiped = "0";
     }};
     const onMove = function(e) {{
       if (!e.touches || e.touches.length !== 1) return;
@@ -645,7 +703,6 @@ def _inject_calendar_scroll_setup() -> None:
       }}
       if (mode === "h" && scrollX) {{
         scrollX.scrollLeft = sl - dx;
-        if (plotDiv) plotDiv.dataset.calSwiped = "1";
         e.preventDefault();
         e.stopPropagation();
         return;
@@ -657,30 +714,34 @@ def _inject_calendar_scroll_setup() -> None:
         e.stopPropagation();
       }}
     }};
-    const onEnd = function() {{ mode = ""; }};
+    const onEnd = function(e) {{
+      if (mode === "h" || mode === "v") {{
+        mode = "";
+        return;
+      }}
+      if (!e.changedTouches || e.changedTouches.length !== 1) {{
+        mode = "";
+        return;
+      }}
+      const t = e.changedTouches[0];
+      const dx = t.clientX - sx;
+      const dy = t.clientY - sy;
+      if (Math.abs(dx) <= 14 && Math.abs(dy) <= 14) {{
+        const cid = nearestCandidateFromPointer(plotDiv, t.clientX, t.clientY);
+        if (cid) emitTap(cid);
+      }}
+      mode = "";
+    }};
+    overlay.addEventListener("click", function(e) {{
+      const cid = nearestCandidateFromPointer(plotDiv, e.clientX, e.clientY);
+      if (cid) emitTap(cid);
+    }});
     targets.forEach(function(t) {{
       t.addEventListener("touchstart", onStart, {{capture: true, passive: true}});
       t.addEventListener("touchmove", onMove, {{capture: true, passive: false}});
       t.addEventListener("touchend", onEnd, {{capture: true, passive: true}});
       t.addEventListener("touchcancel", onEnd, {{capture: true, passive: true}});
     }});
-  }}
-
-  function applyTouchStyles(host, scrollX, plotDiv) {{
-    if (!host) return;
-    host.style.touchAction = "pan-x pan-y";
-    if (scrollX) {{
-      scrollX.style.touchAction = "pan-x pan-y";
-      scrollX.style.webkitOverflowScrolling = "touch";
-      scrollX.style.overscrollBehaviorX = "contain";
-    }}
-    if (plotDiv) {{
-      plotDiv.style.touchAction = "none";
-      plotDiv.style.cursor = "pointer";
-    }}
-    if (doc.defaultView && doc.defaultView.innerWidth < 768 && host) {{
-      host.style.maxHeight = "52vh";
-    }}
   }}
 
   function sync(host, scrollX, inner) {{
@@ -701,8 +762,11 @@ def _inject_calendar_scroll_setup() -> None:
         }});
       }} catch (e) {{}}
     }}
-    applyTouchStyles(host, scrollX, plotDiv);
-    bindCalendarTouch(host, scrollX, plotDiv);
+    if (doc.defaultView && doc.defaultView.innerWidth < 768 && host) {{
+      host.style.maxHeight = "46vh";
+    }}
+    const overlay = ensureOverlay(plotDiv);
+    bindCalendarTouch(host, scrollX, plotDiv, overlay);
   }}
 
   function mount() {{
@@ -723,10 +787,10 @@ def _inject_calendar_scroll_setup() -> None:
     const host = doc.createElement("div");
     host.className = "candidate-cal-scroll-host";
     host.dataset.calReady = "1";
-    host.style.cssText = "width:100%;max-width:100%;overflow:hidden;box-sizing:border-box;touch-action:pan-x pan-y;";
+    host.style.cssText = "width:100%;max-width:100%;overflow:hidden;box-sizing:border-box;";
     const scrollX = doc.createElement("div");
     scrollX.className = "candidate-cal-scroll-x";
-    scrollX.style.cssText = "width:100%;max-width:100%;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y;overscroll-behavior-x:contain;";
+    scrollX.style.cssText = "width:100%;max-width:100%;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;";
     const inner = doc.createElement("div");
     inner.className = "candidate-cal-scroll-inner";
     inner.style.boxSizing = "border-box";
@@ -743,18 +807,19 @@ def _inject_calendar_scroll_setup() -> None:
     sync(host, scrollX, inner);
   }}
 
+  if (window.Streamlit) window.Streamlit.setComponentReady();
   mount();
   setTimeout(mount, 250);
   setTimeout(mount, 900);
   setTimeout(mount, 1800);
-  if (doc.defaultView) {{
-    doc.defaultView.addEventListener("resize", mount);
-  }}
+  if (doc.defaultView) doc.defaultView.addEventListener("resize", mount);
 }})();
 </script>
 """,
         height=0,
     )
+    clicked, _, nonce = _parse_calendar_component_value(raw)
+    return clicked, nonce
 
 
 PLOTLY_CALENDAR_KEY = "candidate_week_plot"
@@ -765,24 +830,28 @@ def _reset_plotly_calendar_widget_state() -> None:
     st.session_state.pop("_cal_plotly_selection_sig", None)
 
 
-def _purge_candidate_dialog_widget_keys(dcid: Optional[str]) -> None:
-    if not dcid:
-        return
-    for key in (
-        f"dialog_decide_result_{dcid}",
-        f"dialog_event_title_{dcid}",
-        f"dialog_decide_processing_{dcid}",
-    ):
-        st.session_state.pop(key, None)
+def _purge_candidate_dialog_widget_keys(dcid: Optional[str] = None) -> None:
+    """ダイアログ用ウィジェットキーを削除（dcid 指定時はその候補のみ、未指定は全件）。"""
+    for key in list(st.session_state.keys()):
+        if not isinstance(key, str):
+            continue
+        if not (
+            key.startswith("dialog_decide_result_")
+            or key.startswith("dialog_event_title_")
+            or key.startswith("dialog_decide_processing_")
+        ):
+            continue
+        if dcid is None or str(dcid) in key:
+            st.session_state.pop(key, None)
 
 
 def _reset_candidate_dialog_session(*, clear_plotly: bool = False) -> None:
     """予約ダイアログを閉じる／検索し直すときの状態クリア（再検索はしない）。"""
-    dcid = st.session_state.pop("candidate_dialog_id", None)
+    st.session_state.pop("candidate_dialog_id", None)
     st.session_state.pop("_cal_plotly_selection_sig", None)
-    _purge_candidate_dialog_widget_keys(
-        str(dcid) if dcid is not None else None
-    )
+    st.session_state.pop("_cal_last_component_click", None)
+    st.session_state.pop("_cal_last_component_nonce", None)
+    _purge_candidate_dialog_widget_keys()
     if clear_plotly:
         _reset_plotly_calendar_widget_state()
 
@@ -1266,16 +1335,19 @@ def _render_week_calendar(
         vehicle_id_to_name=vehicle_id_to_name,
         hide_xaxis_tick_labels=True,
     )
-    plot_state = st.plotly_chart(
+    _ = ordered_ids
+    st.plotly_chart(
         fig,
         key=PLOTLY_CALENDAR_KEY,
-        on_select="rerun",
+        on_select="ignore",
         selection_mode="points",
         use_container_width=True,
         height=plot_h,
     )
-    _apply_plotly_point_selection(plot_state, ordered_ids)
-    _inject_calendar_scroll_setup()
+    tapped, tap_nonce = _inject_calendar_interaction_bridge()
+    if _is_new_calendar_component_click(tapped, tap_nonce):
+        _remember_calendar_component_click(str(tapped), tap_nonce)
+        inject_clear_force_busy_overlay()
     if st.session_state.get("candidate_search_display_pending"):
         _finish_candidate_search_display_if_needed()
     note = footer_note or (
@@ -2283,8 +2355,8 @@ button {
         )
 
     dcid = st.session_state.get("candidate_dialog_id")
-    sel_sig = st.session_state.get("_cal_plotly_selection_sig")
-    if dcid and filtered and sel_sig and str(sel_sig).startswith(f"{dcid}|"):
+    tap_nonce = st.session_state.get("_cal_last_component_nonce")
+    if dcid and filtered and tap_nonce:
         if st.session_state.get("candidate_search_display_pending"):
             _finish_candidate_search_display_if_needed()
         else:
@@ -2311,8 +2383,9 @@ button {
 
             @st.dialog("予約確定")
             def _show_candidate_detail() -> None:
-                result_key = f"dialog_decide_result_{dcid}"
-                title_key = f"dialog_event_title_{dcid}"
+                wid = f"{dcid}_{tap_nonce}"
+                result_key = f"dialog_decide_result_{wid}"
+                title_key = f"dialog_event_title_{wid}"
                 st.write(f"**候補ID**: {target.get('candidate_id')}")
                 st.write(f"**日付**: {_format_date_jp(start_at_d.date())}")
                 st.write(
@@ -2340,7 +2413,7 @@ button {
                 mex = target.get("material_extra_minutes")
                 if mex is not None and float(mex) > 0:
                     st.caption(f"資材ルールによる追加拘束の目安: 約{float(mex):.0f}分")
-                processing_key = f"dialog_decide_processing_{dcid}"
+                processing_key = f"dialog_decide_processing_{wid}"
                 processing = bool(st.session_state.get(processing_key, False))
                 if not selected_project:
                     st.text_input(
@@ -2368,14 +2441,14 @@ button {
                     st.error("登録に失敗しました。内容を確認して「閉じる」を押してください。")
                 col_close, col_decide = st.columns(2)
                 with col_close:
-                    if st.button("閉じる", key=f"dialog_close_{dcid}", disabled=processing):
-                        _reset_candidate_dialog_session(clear_plotly=True)
+                    if st.button("閉じる", key=f"dialog_close_{wid}", disabled=processing):
+                        _reset_candidate_dialog_session(clear_plotly=False)
                         st.rerun()
                 with col_decide:
                     if st.button(
                         "決定",
                         type="primary",
-                        key=f"dialog_decide_{dcid}",
+                        key=f"dialog_decide_{wid}",
                         disabled=processing or decide_result in ("success", "partial"),
                     ):
                         st.session_state[processing_key] = True
