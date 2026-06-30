@@ -609,71 +609,60 @@ def _inject_calendar_scroll_setup() -> None:
   const doc = window.parent && window.parent.document ? window.parent.document : document;
   const PlotlyLib = (window.parent && window.parent.Plotly) || window.Plotly;
 
-  function scrollPageBy(dy) {{
+  function getScrollEl() {{
     const app = doc.querySelector('[data-testid="stAppViewContainer"]');
-    if (app) {{
-      app.scrollTop += dy;
-      return;
-    }}
+    if (app && app.scrollHeight > app.clientHeight + 4) return app;
     const main = doc.querySelector("section.main");
-    if (main) {{
-      main.scrollTop += dy;
-      return;
-    }}
-    if (doc.defaultView) doc.defaultView.scrollBy(0, dy);
+    if (main && main.scrollHeight > main.clientHeight + 4) return main;
+    return doc.scrollingElement || doc.documentElement || doc.body;
   }}
 
-  function bindVerticalPageScroll(container) {{
-    if (!container || container.dataset.calVertBound === "1") return;
-    container.dataset.calVertBound = "1";
-    let startX = 0, startY = 0;
-    container.addEventListener("touchstart", function(e) {{
-      if (!e.touches || e.touches.length !== 1) return;
-      startX = e.touches[0].clientX;
-      startY = e.touches[0].clientY;
-    }}, {{passive: true}});
-    container.addEventListener("touchmove", function(e) {{
-      if (!e.touches || e.touches.length !== 1) return;
-      const dx = e.touches[0].clientX - startX;
-      const dy = e.touches[0].clientY - startY;
-      if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx) * 1.1) {{
-        scrollPageBy(-dy);
-        startY = e.touches[0].clientY;
-      }}
-    }}, {{passive: true}});
+  function scrollPageBy(dy) {{
+    const el = getScrollEl();
+    if (el) el.scrollTop += dy;
   }}
 
-  function bindHorizontalSwipe(scrollEl, plotEl) {{
-    if (!scrollEl || scrollEl.dataset.calHorizBound === "1") return;
-    scrollEl.dataset.calHorizBound = "1";
-    const targets = [scrollEl];
-    if (plotEl) targets.push(plotEl);
-    let sx = 0, sy = 0, sl = 0, swiping = false;
+  function bindCalendarTouch(host, scrollX, plotDiv) {{
+    if (!host || host.dataset.calTouchBound === "1") return;
+    host.dataset.calTouchBound = "1";
+    const targets = [host, scrollX, plotDiv].filter(Boolean);
+    let sx = 0, sy = 0, sl = 0, mode = "";
     const onStart = function(e) {{
       if (!e.touches || e.touches.length !== 1) return;
       sx = e.touches[0].clientX;
       sy = e.touches[0].clientY;
-      sl = scrollEl.scrollLeft;
-      swiping = true;
-      if (plotEl) plotEl.dataset.calSwiped = "0";
+      sl = scrollX ? scrollX.scrollLeft : 0;
+      mode = "";
+      if (plotDiv) plotDiv.dataset.calSwiped = "0";
     }};
     const onMove = function(e) {{
-      if (!swiping || !e.touches || e.touches.length !== 1) return;
+      if (!e.touches || e.touches.length !== 1) return;
       const dx = e.touches[0].clientX - sx;
       const dy = e.touches[0].clientY - sy;
-      if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.2) {{
-        scrollEl.scrollLeft = sl - dx;
-        if (plotEl) plotEl.dataset.calSwiped = "1";
+      if (!mode) {{
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        mode = Math.abs(dx) > Math.abs(dy) * 1.15 ? "h" : "v";
+      }}
+      if (mode === "h" && scrollX) {{
+        scrollX.scrollLeft = sl - dx;
+        if (plotDiv) plotDiv.dataset.calSwiped = "1";
         e.preventDefault();
+        e.stopPropagation();
+        return;
+      }}
+      if (mode === "v") {{
+        scrollPageBy(-dy);
+        sy = e.touches[0].clientY;
+        e.preventDefault();
+        e.stopPropagation();
       }}
     }};
-    const onEnd = function() {{ swiping = false; }};
+    const onEnd = function() {{ mode = ""; }};
     targets.forEach(function(t) {{
-      if (!t) return;
-      t.addEventListener("touchstart", onStart, {{passive: true}});
-      t.addEventListener("touchmove", onMove, {{passive: false}});
-      t.addEventListener("touchend", onEnd, {{passive: true}});
-      t.addEventListener("touchcancel", onEnd, {{passive: true}});
+      t.addEventListener("touchstart", onStart, {{capture: true, passive: true}});
+      t.addEventListener("touchmove", onMove, {{capture: true, passive: false}});
+      t.addEventListener("touchend", onEnd, {{capture: true, passive: true}});
+      t.addEventListener("touchcancel", onEnd, {{capture: true, passive: true}});
     }});
   }}
 
@@ -686,8 +675,11 @@ def _inject_calendar_scroll_setup() -> None:
       scrollX.style.overscrollBehaviorX = "contain";
     }}
     if (plotDiv) {{
-      plotDiv.style.touchAction = "pan-x pan-y";
+      plotDiv.style.touchAction = "none";
       plotDiv.style.cursor = "pointer";
+    }}
+    if (doc.defaultView && doc.defaultView.innerWidth < 768 && host) {{
+      host.style.maxHeight = "52vh";
     }}
   }}
 
@@ -710,8 +702,7 @@ def _inject_calendar_scroll_setup() -> None:
       }} catch (e) {{}}
     }}
     applyTouchStyles(host, scrollX, plotDiv);
-    bindVerticalPageScroll(host);
-    bindHorizontalSwipe(scrollX, plotDiv);
+    bindCalendarTouch(host, scrollX, plotDiv);
   }}
 
   function mount() {{
@@ -769,6 +760,33 @@ def _inject_calendar_scroll_setup() -> None:
 PLOTLY_CALENDAR_KEY = "candidate_week_plot"
 
 
+def _reset_plotly_calendar_widget_state() -> None:
+    st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
+    st.session_state.pop("_cal_plotly_selection_sig", None)
+
+
+def _purge_candidate_dialog_widget_keys(dcid: Optional[str]) -> None:
+    if not dcid:
+        return
+    for key in (
+        f"dialog_decide_result_{dcid}",
+        f"dialog_event_title_{dcid}",
+        f"dialog_decide_processing_{dcid}",
+    ):
+        st.session_state.pop(key, None)
+
+
+def _reset_candidate_dialog_session(*, clear_plotly: bool = False) -> None:
+    """予約ダイアログを閉じる／検索し直すときの状態クリア（再検索はしない）。"""
+    dcid = st.session_state.pop("candidate_dialog_id", None)
+    st.session_state.pop("_cal_plotly_selection_sig", None)
+    _purge_candidate_dialog_widget_keys(
+        str(dcid) if dcid is not None else None
+    )
+    if clear_plotly:
+        _reset_plotly_calendar_widget_state()
+
+
 # 日付列内の候補ブロック幅（x 軸データ座標。1.0 ≒ 列幅いっぱい）
 _CANDIDATE_BLOCK_WIDTH = 0.9
 # カレンダー表示は 1 時間刻み（検索の time_slot_minutes とは別。見やすさ優先）
@@ -778,7 +796,7 @@ _CALENDAR_DISPLAY_SLOT_MINUTES = 60
 def _candidate_calendar_plot_height(n_visible_days: int) -> int:
     """週7日表示のチャート高さ."""
     _ = n_visible_days
-    return 560
+    return 480
 
 
 def _collapse_candidates_for_hourly_calendar(
@@ -878,12 +896,21 @@ def _apply_plotly_point_selection(plot_state: Any, ordered_ids: List[str]) -> No
         cid = str(cd[0])
     elif isinstance(cd, str):
         cid = cd
-    if not cid and p0.get("point_index") is not None:
-        idx = int(p0["point_index"])
+    point_index = p0.get("point_index")
+    if not cid and point_index is not None:
+        idx = int(point_index)
         if 0 <= idx < len(ordered_ids):
             cid = ordered_ids[idx]
-    if cid:
-        st.session_state["candidate_dialog_id"] = cid
+    if not cid:
+        return
+    sig = f"{cid}|{point_index}"
+    if sig == st.session_state.get("_cal_plotly_selection_sig"):
+        return
+    st.session_state["_cal_plotly_selection_sig"] = sig
+    prev_dcid = st.session_state.get("candidate_dialog_id")
+    if prev_dcid and str(prev_dcid) != str(cid):
+        _purge_candidate_dialog_widget_keys(str(prev_dcid))
+    st.session_state["candidate_dialog_id"] = cid
 
 
 def _build_candidate_week_plotly_figure(
@@ -1212,10 +1239,12 @@ def _render_week_calendar(
   font-size: 15px; color: #222; font-weight: 600;
 }
 .candidate-cal-scroll-host,
-.candidate-cal-scroll-x,
+.candidate-cal-scroll-x {
+  touch-action: pan-x pan-y !important;
+}
 .candidate-cal-scroll-host .plotly-graph-div,
 .candidate-cal-scroll-host .js-plotly-plot {
-  touch-action: pan-x pan-y !important;
+  touch-action: none !important;
 }
 @media (max-width: 767px) {
   .cal-head-cell { font-size: 14px; padding: 8px 4px; }
@@ -1766,6 +1795,7 @@ button {
             st.session_state.pop("candidate_search_calendar_pending", None)
             st.session_state.pop("candidate_search_job", None)
             st.session_state.pop("_week_nav_undo", None)
+            _reset_candidate_dialog_session(clear_plotly=True)
             _begin_candidate_search_display_phase()
             st.rerun()
 
@@ -2011,6 +2041,7 @@ button {
         if run_search:
             st.session_state["candidate_search_ui_busy"] = True
             st.session_state.pop("candidate_results", None)
+            _reset_candidate_dialog_session(clear_plotly=True)
             st.session_state.pop("candidate_search_warnings_flash", None)
             for _mk in list(st.session_state.keys()):
                 if isinstance(_mk, str) and _mk.startswith("_missing_prev_"):
@@ -2252,7 +2283,8 @@ button {
         )
 
     dcid = st.session_state.get("candidate_dialog_id")
-    if dcid and filtered:
+    sel_sig = st.session_state.get("_cal_plotly_selection_sig")
+    if dcid and filtered and sel_sig and str(sel_sig).startswith(f"{dcid}|"):
         if st.session_state.get("candidate_search_display_pending"):
             _finish_candidate_search_display_if_needed()
         else:
@@ -2337,16 +2369,7 @@ button {
                 col_close, col_decide = st.columns(2)
                 with col_close:
                     if st.button("閉じる", key=f"dialog_close_{dcid}", disabled=processing):
-                        # 閉じる押下で画面をリロード
-                        st.session_state["week_nav_trigger_search"] = True
-                        st.session_state.pop("candidate_results", None)
-                        st.session_state.pop("candidate_dialog_id", None)
-                        st.session_state.pop("_cal_last_component_click", None)
-                        st.session_state.pop("_cal_last_component_nonce", None)
-                        st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
-                        st.session_state.pop(processing_key, None)
-                        st.session_state.pop(result_key, None)
-                        st.session_state.pop(title_key, None)
+                        _reset_candidate_dialog_session(clear_plotly=True)
                         st.rerun()
                 with col_decide:
                     if st.button(
