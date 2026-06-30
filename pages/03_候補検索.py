@@ -401,12 +401,7 @@ html, body {{
   function notifyCalendarReady() {{
     if (!SHOULD_NOTIFY_READY) return;
     releaseParentBusyOverlay();
-    if (window.Streamlit) {{
-      Streamlit.setComponentValue(JSON.stringify({{
-        event: "ready",
-        nonce: Date.now()
-      }}));
-    }}
+    // setComponentValue は呼ばない（ready で rerun すると直後に開いたダイアログが閉じる）
   }}
 
   function bindVerticalPageScroll(container) {{
@@ -1042,7 +1037,9 @@ def _render_week_calendar(
     if _is_new_calendar_component_click(clicked, click_nonce):
         _remember_calendar_component_click(str(clicked), click_nonce)
         inject_clear_force_busy_overlay()
-        st.rerun()
+        # setComponentValue で既に rerun される。ここで st.rerun() するとダイアログが開く前に2重実行される
+    if st.session_state.get("candidate_search_display_pending"):
+        _finish_candidate_search_display_if_needed()
     note = footer_note or (
         "※ 色ブロックは「空きとして採用した候補」の開始〜終了です。"
         "（上の「この週のカレンダー予定」で参照IDを確認できます）"
@@ -2040,8 +2037,7 @@ button {
             vehicle_id_to_name=vehicle_id_to_name,
             footer_note=footer_note,
         )
-        if cal_ready and st.session_state.get("candidate_search_display_pending"):
-            _finish_candidate_search_display_if_needed()
+        _ = cal_ready
     if filtered:
         st.caption(
             "青い枠は開始時刻（1時間刻み）で並べています。枠左上の時刻が開始時刻です。"
