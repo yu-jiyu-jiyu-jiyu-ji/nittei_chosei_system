@@ -595,7 +595,7 @@ html, body {{
 
 
 def _inject_calendar_scroll_setup() -> None:
-    """Plotly ネイティブ表示のまま、ヘッダー＋グラフを横スクロール枠にまとめる（DOM 削除なし）。"""
+    """Plotly 表示のまま横スクロール＋スマホ縦スクロールを有効化（予約ダイアログは plotly_chart 側）。"""
     ratio = _CALENDAR_INNER_WIDTH_RATIO
     margin_l = _CALENDAR_MARGIN_LEFT
     margin_r = _CALENDAR_MARGIN_RIGHT
@@ -609,6 +609,88 @@ def _inject_calendar_scroll_setup() -> None:
   const doc = window.parent && window.parent.document ? window.parent.document : document;
   const PlotlyLib = (window.parent && window.parent.Plotly) || window.Plotly;
 
+  function scrollPageBy(dy) {{
+    const app = doc.querySelector('[data-testid="stAppViewContainer"]');
+    if (app) {{
+      app.scrollTop += dy;
+      return;
+    }}
+    const main = doc.querySelector("section.main");
+    if (main) {{
+      main.scrollTop += dy;
+      return;
+    }}
+    if (doc.defaultView) doc.defaultView.scrollBy(0, dy);
+  }}
+
+  function bindVerticalPageScroll(container) {{
+    if (!container || container.dataset.calVertBound === "1") return;
+    container.dataset.calVertBound = "1";
+    let startX = 0, startY = 0;
+    container.addEventListener("touchstart", function(e) {{
+      if (!e.touches || e.touches.length !== 1) return;
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+    }}, {{passive: true}});
+    container.addEventListener("touchmove", function(e) {{
+      if (!e.touches || e.touches.length !== 1) return;
+      const dx = e.touches[0].clientX - startX;
+      const dy = e.touches[0].clientY - startY;
+      if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx) * 1.1) {{
+        scrollPageBy(-dy);
+        startY = e.touches[0].clientY;
+      }}
+    }}, {{passive: true}});
+  }}
+
+  function bindHorizontalSwipe(scrollEl, plotEl) {{
+    if (!scrollEl || scrollEl.dataset.calHorizBound === "1") return;
+    scrollEl.dataset.calHorizBound = "1";
+    const targets = [scrollEl];
+    if (plotEl) targets.push(plotEl);
+    let sx = 0, sy = 0, sl = 0, swiping = false;
+    const onStart = function(e) {{
+      if (!e.touches || e.touches.length !== 1) return;
+      sx = e.touches[0].clientX;
+      sy = e.touches[0].clientY;
+      sl = scrollEl.scrollLeft;
+      swiping = true;
+      if (plotEl) plotEl.dataset.calSwiped = "0";
+    }};
+    const onMove = function(e) {{
+      if (!swiping || !e.touches || e.touches.length !== 1) return;
+      const dx = e.touches[0].clientX - sx;
+      const dy = e.touches[0].clientY - sy;
+      if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.2) {{
+        scrollEl.scrollLeft = sl - dx;
+        if (plotEl) plotEl.dataset.calSwiped = "1";
+        e.preventDefault();
+      }}
+    }};
+    const onEnd = function() {{ swiping = false; }};
+    targets.forEach(function(t) {{
+      if (!t) return;
+      t.addEventListener("touchstart", onStart, {{passive: true}});
+      t.addEventListener("touchmove", onMove, {{passive: false}});
+      t.addEventListener("touchend", onEnd, {{passive: true}});
+      t.addEventListener("touchcancel", onEnd, {{passive: true}});
+    }});
+  }}
+
+  function applyTouchStyles(host, scrollX, plotDiv) {{
+    if (!host) return;
+    host.style.touchAction = "pan-x pan-y";
+    if (scrollX) {{
+      scrollX.style.touchAction = "pan-x pan-y";
+      scrollX.style.webkitOverflowScrolling = "touch";
+      scrollX.style.overscrollBehaviorX = "contain";
+    }}
+    if (plotDiv) {{
+      plotDiv.style.touchAction = "pan-x pan-y";
+      plotDiv.style.cursor = "pointer";
+    }}
+  }}
+
   function sync(host, scrollX, inner) {{
     const vp = scrollX.clientWidth;
     if (vp < 1) return;
@@ -616,7 +698,7 @@ def _inject_calendar_scroll_setup() -> None:
     inner.style.width = full + "px";
     inner.style.minWidth = full + "px";
     inner.style.maxWidth = full + "px";
-    const plotDiv = host.querySelector(".plotly-graph-div");
+    const plotDiv = host.querySelector(".plotly-graph-div") || host.querySelector(".js-plotly-plot");
     if (plotDiv && PlotlyLib) {{
       try {{
         PlotlyLib.relayout(plotDiv, {{
@@ -627,15 +709,17 @@ def _inject_calendar_scroll_setup() -> None:
         }});
       }} catch (e) {{}}
     }}
-    scrollX.scrollLeft = 0;
+    applyTouchStyles(host, scrollX, plotDiv);
+    bindVerticalPageScroll(host);
+    bindHorizontalSwipe(scrollX, plotDiv);
   }}
 
   function mount() {{
-    if (doc.querySelector(".candidate-cal-scroll-host[data-cal-ready='1']")) {{
-      const host = doc.querySelector(".candidate-cal-scroll-host[data-cal-ready='1']");
-      const scrollX = host.querySelector(".candidate-cal-scroll-x");
-      const inner = host.querySelector(".candidate-cal-scroll-inner");
-      if (scrollX && inner) sync(host, scrollX, inner);
+    const existing = doc.querySelector(".candidate-cal-scroll-host[data-cal-ready='1']");
+    if (existing) {{
+      const scrollX = existing.querySelector(".candidate-cal-scroll-x");
+      const inner = existing.querySelector(".candidate-cal-scroll-inner");
+      if (scrollX && inner) sync(existing, scrollX, inner);
       return;
     }}
     const header = doc.querySelector(".candidate-cal-header-row");
@@ -648,10 +732,10 @@ def _inject_calendar_scroll_setup() -> None:
     const host = doc.createElement("div");
     host.className = "candidate-cal-scroll-host";
     host.dataset.calReady = "1";
-    host.style.cssText = "width:100%;max-width:100%;overflow:hidden;box-sizing:border-box;";
+    host.style.cssText = "width:100%;max-width:100%;overflow:hidden;box-sizing:border-box;touch-action:pan-x pan-y;";
     const scrollX = doc.createElement("div");
     scrollX.className = "candidate-cal-scroll-x";
-    scrollX.style.cssText = "width:100%;max-width:100%;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;";
+    scrollX.style.cssText = "width:100%;max-width:100%;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y;overscroll-behavior-x:contain;";
     const inner = doc.createElement("div");
     inner.className = "candidate-cal-scroll-inner";
     inner.style.boxSizing = "border-box";
@@ -671,6 +755,7 @@ def _inject_calendar_scroll_setup() -> None:
   mount();
   setTimeout(mount, 250);
   setTimeout(mount, 900);
+  setTimeout(mount, 1800);
   if (doc.defaultView) {{
     doc.defaultView.addEventListener("resize", mount);
   }}
@@ -1125,6 +1210,12 @@ def _render_week_calendar(
 .cal-head-cell {
   box-sizing: border-box; text-align: center; padding: 10px 5px;
   font-size: 15px; color: #222; font-weight: 600;
+}
+.candidate-cal-scroll-host,
+.candidate-cal-scroll-x,
+.candidate-cal-scroll-host .plotly-graph-div,
+.candidate-cal-scroll-host .js-plotly-plot {
+  touch-action: pan-x pan-y !important;
 }
 @media (max-width: 767px) {
   .cal-head-cell { font-size: 14px; padding: 8px 4px; }
