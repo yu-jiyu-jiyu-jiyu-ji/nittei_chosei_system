@@ -2491,6 +2491,12 @@ button {
 
     if st.session_state.get("candidate_search_display_pending"):
         _finish_candidate_search_display_if_needed()
+    elif (
+        not st.session_state.get("candidate_search_job")
+        and st.session_state.get("candidate_search_ui_busy")
+    ):
+        _clear_candidate_search_ui_busy()
+        inject_clear_force_busy_overlay()
 
 if __name__ == "__main__":
     render_page()
