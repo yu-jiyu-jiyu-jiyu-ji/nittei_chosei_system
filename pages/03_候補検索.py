@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import time
 from collections import defaultdict
 from contextlib import nullcontext
 from datetime import date, datetime, time, timedelta
@@ -594,13 +595,14 @@ html, body {{
     return _parse_calendar_component_value(clicked)
 
 
-def _inject_calendar_scroll_setup() -> None:
-    """横スクロールとスマホ縦ページスクロール（タップは plotly_chart の選択で処理）。"""
+def _inject_calendar_scroll_setup() -> Any:
+    """横スクロールとスマホ縦スクロール（タップは plotly_chart の選択で処理）。"""
     ratio = _CALENDAR_INNER_WIDTH_RATIO
     margin_l = _CALENDAR_MARGIN_LEFT
     margin_r = _CALENDAR_MARGIN_RIGHT
-    components.html(
+    return components.html(
         f"""
+<script src="https://cdn.jsdelivr.net/npm/@streamlit/component-lib@2.0.0/dist/index.min.js"></script>
 <script>
 (function() {{
   const RATIO = {ratio};
@@ -658,9 +660,45 @@ def _inject_calendar_scroll_setup() -> None:
     }} catch (e) {{}}
   }}
 
+  function setPlotlyInteractive(plotDiv, enabled) {{
+    if (!plotDiv) return;
+    plotDiv.style.pointerEvents = enabled ? "" : "none";
+  }}
+
+  function emitGestureSuppress() {{
+    try {{
+      if (window.Streamlit && window.Streamlit.setComponentValue) {{
+        window.Streamlit.setComponentValue(JSON.stringify({{
+          event: "gesture",
+          at: Date.now()
+        }}));
+      }}
+    }} catch (e) {{}}
+  }}
+
+  function markScrollGesture(host, plotDiv) {{
+    if (!host) return;
+    host.dataset.calSuppressTap = "1";
+    setPlotlyInteractive(plotDiv, false);
+    clearPlotlySelection(plotDiv);
+  }}
+
+  function bindPlotlyGestureGuard(host, plotDiv) {{
+    if (!plotDiv || plotDiv.dataset.calGestureGuard === "1") return;
+    plotDiv.dataset.calGestureGuard = "1";
+    const blockIfScrolling = function() {{
+      if (host && host.dataset.calSuppressTap === "1") {{
+        clearPlotlySelection(plotDiv);
+      }}
+    }};
+    plotDiv.on("plotly_click", blockIfScrolling);
+    plotDiv.on("plotly_selected", blockIfScrolling);
+  }}
+
   function bindCalendarTouch(host, scrollX, plotDiv) {{
     if (!host || host.dataset.calTouchBound === "1") return;
     host.dataset.calTouchBound = "1";
+    bindPlotlyGestureGuard(host, plotDiv);
     const targets = [host, scrollX, plotDiv].filter(Boolean);
     let sx = 0, sy = 0, sl = 0, mode = "";
     const onStart = function(e) {{
@@ -669,6 +707,8 @@ def _inject_calendar_scroll_setup() -> None:
       sy = e.touches[0].clientY;
       sl = scrollX ? scrollX.scrollLeft : 0;
       mode = "";
+      host.dataset.calSuppressTap = "0";
+      setPlotlyInteractive(plotDiv, true);
     }};
     const onMove = function(e) {{
       if (!e.touches || e.touches.length !== 1) return;
@@ -677,6 +717,7 @@ def _inject_calendar_scroll_setup() -> None:
       if (!mode) {{
         if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
         mode = Math.abs(dx) > Math.abs(dy) * 1.15 ? "h" : "v";
+        markScrollGesture(host, plotDiv);
       }}
       if (mode === "h" && scrollX) {{
         scrollX.scrollLeft = sl - dx;
@@ -699,7 +740,16 @@ def _inject_calendar_scroll_setup() -> None:
       }}
     }};
     const onEnd = function() {{
-      if (mode === "h") clearPlotlySelection(plotDiv);
+      if (host.dataset.calSuppressTap === "1") {{
+        clearPlotlySelection(plotDiv);
+        emitGestureSuppress();
+        setTimeout(function() {{
+          host.dataset.calSuppressTap = "0";
+          setPlotlyInteractive(plotDiv, true);
+        }}, 420);
+      }} else if (mode === "h" || mode === "v") {{
+        clearPlotlySelection(plotDiv);
+      }}
       mode = "";
     }};
     targets.forEach(function(t) {{
@@ -787,10 +837,37 @@ def _inject_calendar_scroll_setup() -> None:
 </script>
 """,
         height=0,
+        key=_CALENDAR_GESTURE_BRIDGE_KEY,
     )
 
 
 PLOTLY_CALENDAR_KEY = "candidate_week_plot"
+_CALENDAR_GESTURE_BRIDGE_KEY = "candidate_cal_gesture_bridge"
+_CALENDAR_GESTURE_SUPPRESS_MS = 800
+
+
+def _record_calendar_gesture_suppress(raw: Any) -> None:
+    """components.html からのスワイプ通知で、直後の誤タップ選択を無視する."""
+    if raw is None:
+        return
+    raw_s = str(raw).strip()
+    if not raw_s.startswith("{"):
+        return
+    try:
+        payload = json.loads(raw_s)
+    except Exception:
+        return
+    if str(payload.get("event") or "").strip() != "gesture":
+        return
+    at_ms = int(payload.get("at") or 0)
+    if at_ms <= 0:
+        at_ms = int(time.time() * 1000)
+    st.session_state["_cal_gesture_suppress_until_ms"] = at_ms + _CALENDAR_GESTURE_SUPPRESS_MS
+
+
+def _is_calendar_selection_suppressed() -> bool:
+    until_ms = int(st.session_state.get("_cal_gesture_suppress_until_ms") or 0)
+    return int(time.time() * 1000) < until_ms
 
 
 def _reset_plotly_calendar_widget_state() -> None:
@@ -909,6 +986,8 @@ def _missing_prev_cache_key(
 
 def _apply_plotly_point_selection(plot_state: Any, ordered_ids: List[str]) -> None:
     """Plotly のクリック選択から候補IDを取り、ダイアログ用セッションに入れる."""
+    if _is_calendar_selection_suppressed():
+        return
     if plot_state is None or not ordered_ids:
         return
     try:
@@ -1328,8 +1407,9 @@ def _render_week_calendar(
         use_container_width=True,
         height=plot_h,
     )
+    gesture_raw = _inject_calendar_scroll_setup()
+    _record_calendar_gesture_suppress(gesture_raw)
     _apply_plotly_point_selection(plot_state, ordered_ids)
-    _inject_calendar_scroll_setup()
     if st.session_state.get("candidate_search_display_pending"):
         _finish_candidate_search_display_if_needed()
     note = footer_note or (
