@@ -609,6 +609,28 @@ def _inject_calendar_scroll_setup() -> None:
   const doc = window.parent && window.parent.document ? window.parent.document : document;
   const PlotlyLib = (window.parent && window.parent.Plotly) || window.Plotly;
 
+  function isMobile() {{
+    try {{
+      return doc.defaultView && doc.defaultView.matchMedia("(max-width: 767px)").matches;
+    }} catch (e) {{
+      return false;
+    }}
+  }}
+
+  function applyMobileCalendarLayout(host, scrollX) {{
+    if (!host || !scrollX) return;
+    if (!isMobile()) {{
+      host.style.maxHeight = "";
+      scrollX.style.maxHeight = "";
+      scrollX.style.overflowY = "visible";
+      return;
+    }}
+    host.style.maxHeight = "52vh";
+    scrollX.style.maxHeight = "calc(52vh - 52px)";
+    scrollX.style.overflowY = "auto";
+    scrollX.style.webkitOverflowScrolling = "touch";
+  }}
+
   function scrollPageBy(dy) {{
     const candidates = [
       doc.querySelector('[data-testid="stAppViewContainer"]'),
@@ -663,6 +685,13 @@ def _inject_calendar_scroll_setup() -> None:
         return;
       }}
       if (mode === "v") {{
+        if (scrollX && isMobile() && scrollX.scrollHeight > scrollX.clientHeight + 4) {{
+          scrollX.scrollTop -= dy;
+          sy = e.touches[0].clientY;
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }}
         scrollPageBy(-dy);
         sy = e.touches[0].clientY;
         e.preventDefault();
@@ -700,6 +729,7 @@ def _inject_calendar_scroll_setup() -> None:
       }} catch (e) {{}}
     }}
     bindCalendarTouch(host, scrollX, plotDiv);
+    applyMobileCalendarLayout(host, scrollX);
   }}
 
   function mount() {{
@@ -738,13 +768,21 @@ def _inject_calendar_scroll_setup() -> None:
     headerEc.dataset.calWrapped = "1";
     plotEc.dataset.calWrapped = "1";
     sync(host, scrollX, inner);
+    applyMobileCalendarLayout(host, scrollX);
   }}
 
   mount();
   setTimeout(mount, 250);
   setTimeout(mount, 900);
   setTimeout(mount, 1800);
-  if (doc.defaultView) doc.defaultView.addEventListener("resize", mount);
+  if (doc.defaultView) {{
+    doc.defaultView.addEventListener("resize", mount);
+    doc.defaultView.addEventListener("resize", function() {{
+      const host = doc.querySelector(".candidate-cal-scroll-host[data-cal-ready='1']");
+      const scrollX = host && host.querySelector(".candidate-cal-scroll-x");
+      if (host && scrollX) applyMobileCalendarLayout(host, scrollX);
+    }});
+  }}
 }})();
 </script>
 """,
@@ -778,11 +816,11 @@ def _purge_candidate_dialog_widget_keys(dcid: Optional[str] = None) -> None:
 def _reset_candidate_dialog_session(*, clear_plotly: bool = False) -> None:
     """予約ダイアログを閉じる／検索し直すときの状態クリア（再検索はしない）。"""
     st.session_state.pop("candidate_dialog_id", None)
-    st.session_state.pop("_cal_plotly_selection_sig", None)
-    st.session_state.pop("_cal_last_component_click", None)
-    st.session_state.pop("_cal_last_component_nonce", None)
     _purge_candidate_dialog_widget_keys()
     if clear_plotly:
+        st.session_state.pop("_cal_plotly_selection_sig", None)
+        st.session_state.pop("_cal_last_component_click", None)
+        st.session_state.pop("_cal_last_component_nonce", None)
         _reset_plotly_calendar_widget_state()
 
 
@@ -1216,10 +1254,23 @@ def _render_week_calendar(
         "**青枠をクリック／タップ**すると予約確定のポップアップ（「決定」ボタン付き）が開きます。"
         "マウスを乗せただけの吹き出しは参考表示です。"
     )
+    st.markdown(
+        '<p class="candidate-cal-mobile-hint">'
+        "スマホ: カレンダー内を<strong>縦スワイプ</strong>で時間帯をスクロール。"
+        "横スワイプで他の日付へ移動できます。"
+        "</p>",
+        unsafe_allow_html=True,
+    )
 
     st.markdown(
         """
 <style>
+.candidate-cal-mobile-hint {
+  display: none;
+  margin: 0.25rem 0 0.5rem;
+  font-size: 0.9rem;
+  color: #444;
+}
 .candidate-cal-header-row {
   display: flex; width: 100%; align-items: stretch; box-sizing: border-box;
 }
@@ -1241,7 +1292,16 @@ def _render_week_calendar(
   touch-action: pan-x pan-y !important;
 }
 @media (max-width: 767px) {
+  .candidate-cal-mobile-hint { display: block; }
   .cal-head-cell { font-size: 14px; padding: 8px 4px; }
+  .candidate-cal-scroll-host {
+    max-height: 52vh;
+  }
+  .candidate-cal-scroll-x {
+    max-height: calc(52vh - 52px);
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 </style>
 """,
