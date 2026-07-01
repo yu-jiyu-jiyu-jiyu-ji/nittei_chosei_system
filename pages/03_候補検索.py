@@ -837,12 +837,10 @@ def _inject_calendar_scroll_setup() -> Any:
 </script>
 """,
         height=0,
-        key=_CALENDAR_GESTURE_BRIDGE_KEY,
     )
 
 
 PLOTLY_CALENDAR_KEY = "candidate_week_plot"
-_CALENDAR_GESTURE_BRIDGE_KEY = "candidate_cal_gesture_bridge"
 _CALENDAR_GESTURE_SUPPRESS_MS = 800
 
 
