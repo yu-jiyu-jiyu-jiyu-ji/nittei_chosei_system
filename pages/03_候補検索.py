@@ -2119,6 +2119,7 @@ button {
         st.session_state.pop("candidate_search_display_pending", None)
         st.session_state.pop("_cal_last_component_click", None)
         st.session_state.pop("_cal_last_component_nonce", None)
+        st.session_state.pop("_combo_search_resync", None)
         _clear_candidate_search_ui_busy()
         inject_clear_force_busy_overlay()
         st.session_state.pop("_candidate_search_masters", None)
