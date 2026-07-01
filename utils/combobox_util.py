@@ -17,19 +17,51 @@ def filter_options(options: List[str], query: str) -> List[str]:
     return [o for o in options if q in o.casefold()]
 
 
-def _parse_combo_component_value(raw: object, *, fallback: str = "") -> str:
+def _parse_combo_component_value(raw: object, *, fallback: str = "") -> tuple[str, str]:
+    """(確定値, 入力中ドラフト) を返す."""
     if raw is None:
-        return fallback
+        return fallback, ""
     raw_s = str(raw).strip()
     if not raw_s:
-        return ""
+        return "", ""
     if not raw_s.startswith("{"):
-        return raw_s
+        return raw_s, raw_s
     try:
         payload = json.loads(raw_s)
     except Exception:
-        return fallback
-    return str(payload.get("value") or "")
+        return fallback, ""
+    value = str(payload.get("value") or "")
+    draft = str(payload.get("draft") or value or "")
+    return value, draft
+
+
+def resolve_combo_selection(select_key: str, options: List[str]) -> str:
+    """確定値・ドラフトから案件名を解決して session_state に反映する."""
+    current = str(st.session_state.get(select_key) or "").strip()
+    if current in options:
+        return current
+
+    draft = str(st.session_state.get(f"{select_key}_draft") or "").strip()
+    if not draft:
+        return ""
+
+    for opt in options:
+        if opt == draft:
+            st.session_state[select_key] = opt
+            return opt
+
+    draft_cf = draft.casefold()
+    exact_ci = [opt for opt in options if opt.casefold() == draft_cf]
+    if len(exact_ci) == 1:
+        st.session_state[select_key] = exact_ci[0]
+        return exact_ci[0]
+
+    partial = [opt for opt in options if draft_cf in opt.casefold()]
+    if len(partial) == 1:
+        st.session_state[select_key] = partial[0]
+        return partial[0]
+
+    return ""
 
 
 def render_searchable_selectbox(
@@ -156,20 +188,79 @@ def render_searchable_selectbox(
     (doc.head || doc.documentElement).appendChild(style);
   }}
 
-  function emit(value) {{
+  function emit(value, draft) {{
     try {{
       if (window.Streamlit && window.Streamlit.setComponentValue) {{
-        window.Streamlit.setComponentValue(JSON.stringify({{ value: value || "" }}));
+        window.Streamlit.setComponentValue(JSON.stringify({{
+          value: value || "",
+          draft: (draft != null ? draft : value) || ""
+        }}));
       }}
     }} catch (e) {{}}
+  }}
+
+  function optionsFromDom() {{
+    const wrap = doc.querySelector(".candidate-combo-wrap");
+    if (wrap && wrap.dataset.options) {{
+      try {{
+        return JSON.parse(wrap.dataset.options || "[]");
+      }} catch (e) {{}}
+    }}
+    return OPTIONS;
+  }}
+
+  function resolveCommittedFromInput(q) {{
+    const text = (q || "").trim();
+    if (!text) return "";
+    const opts = optionsFromDom();
+    if (opts.indexOf(text) >= 0) return text;
+    const lower = text.toLowerCase();
+    const exact = opts.filter(function(o) {{ return String(o).toLowerCase() === lower; }});
+    if (exact.length === 1) return exact[0];
+    const partial = opts.filter(function(o) {{ return String(o).toLowerCase().indexOf(lower) >= 0; }});
+    if (partial.length === 1) return partial[0];
+    return "";
+  }}
+
+  function syncComboBeforeAction() {{
+    const wrap = doc.querySelector(".candidate-combo-wrap");
+    const input = doc.querySelector(".candidate-combo-input");
+    if (!input) return;
+    const draft = (input.value || "").trim();
+    const resolved = resolveCommittedFromInput(draft);
+    const committed = wrap ? (wrap.dataset.committed || "") : "";
+    if (resolved) {{
+      input.value = resolved;
+      if (wrap) wrap.dataset.committed = resolved;
+      emit(resolved, draft);
+      return;
+    }}
+    if (draft) emit(committed, draft);
+  }}
+
+  function bindSearchButtonSync() {{
+    if (doc.body && doc.body.dataset.comboSearchSyncBound === "1") return;
+    if (doc.body) doc.body.dataset.comboSearchSyncBound = "1";
+    const handler = function(ev) {{
+      const btn = ev.target && ev.target.closest ? ev.target.closest("button") : null;
+      if (!btn) return;
+      const label = (btn.textContent || "").replace(/\\s+/g, "");
+      if (label.indexOf("検索") < 0) return;
+      syncComboBeforeAction();
+    }};
+    doc.addEventListener("mousedown", handler, true);
+    doc.addEventListener("touchstart", handler, {{ capture: true, passive: true }});
   }}
 
   function bindCombo(wrap, input, list) {{
     if (wrap.dataset.comboBound === "1") return;
     wrap.dataset.comboBound = "1";
     let committed = INITIAL || "";
+    wrap.dataset.committed = committed;
     let activeIndex = -1;
     let suppressEmit = false;
+    let draftTimer = null;
+    let lastDraftEmit = 0;
 
     function optionsNow() {{
       try {{
@@ -214,13 +305,41 @@ def render_searchable_selectbox(
             ev.preventDefault();
             input.value = opt;
             committed = opt;
+            wrap.dataset.committed = opt;
             closeList();
-            emit(opt);
+            emit(opt, opt);
           }});
           list.appendChild(row);
         }});
       }}
       list.classList.add("open");
+    }}
+
+    function emitDraftNow() {{
+      const draft = (input.value || "").trim();
+      const resolved = resolveCommittedFromInput(draft);
+      if (resolved && resolved !== committed) {{
+        committed = resolved;
+        wrap.dataset.committed = resolved;
+        input.value = resolved;
+        emit(resolved, draft);
+        return;
+      }}
+      emit(committed || "", draft);
+    }}
+
+    function scheduleDraftEmit() {{
+      const now = Date.now();
+      if (now - lastDraftEmit >= 80) {{
+        lastDraftEmit = now;
+        emitDraftNow();
+        return;
+      }}
+      if (draftTimer) clearTimeout(draftTimer);
+      draftTimer = setTimeout(function() {{
+        lastDraftEmit = Date.now();
+        emitDraftNow();
+      }}, 80);
     }}
 
     function pickActive() {{
@@ -232,8 +351,9 @@ def render_searchable_selectbox(
       const val = row.dataset.value || "";
       input.value = val;
       committed = val;
+      wrap.dataset.committed = val;
       closeList();
-      emit(val);
+      emit(val, val);
     }}
 
     input.placeholder = PLACEHOLDER;
@@ -255,6 +375,7 @@ def render_searchable_selectbox(
 
     input.addEventListener("input", function() {{
       openList();
+      scheduleDraftEmit();
     }});
 
     input.addEventListener("keydown", function(ev) {{
@@ -284,7 +405,8 @@ def render_searchable_selectbox(
         const opts = optionsNow();
         if (opts.indexOf(q) >= 0) {{
           committed = q;
-          emit(q);
+          wrap.dataset.committed = q;
+          emit(q, q);
         }}
         return;
       }}
@@ -304,25 +426,27 @@ def render_searchable_selectbox(
         if (!q) {{
           if (committed) {{
             committed = "";
-            emit("");
+            wrap.dataset.committed = "";
+            emit("", "");
           }}
           return;
         }}
-        if (opts.indexOf(q) >= 0) {{
-          if (q !== committed) {{
-            committed = q;
-            emit(q);
-          }}
+        const resolved = resolveCommittedFromInput(q);
+        if (resolved) {{
+          committed = resolved;
+          wrap.dataset.committed = resolved;
+          input.value = resolved;
+          emit(resolved, q);
           return;
         }}
-        suppressEmit = true;
-        input.value = committed;
-        suppressEmit = false;
+        emit(committed || "", q);
+        return;
       }}, 160);
     }});
 
     wrap._comboRefresh = function(nextValue, nextOptions) {{
       wrap.dataset.options = JSON.stringify(nextOptions || []);
+      wrap.dataset.committed = nextValue || "";
       if (doc.activeElement !== input) {{
         committed = nextValue || "";
         input.value = committed;
@@ -358,6 +482,7 @@ def render_searchable_selectbox(
       wrap._comboRefresh(INITIAL, OPTIONS);
     }}
     anchor.dataset.comboReady = "1";
+    bindSearchButtonSync();
   }}
 
   mount();
@@ -370,12 +495,18 @@ def render_searchable_selectbox(
         height=0,
     )
 
-    chosen = _parse_combo_component_value(raw, fallback=current)
+    chosen, draft = _parse_combo_component_value(raw, fallback=current)
+    if draft:
+        st.session_state[f"{select_key}_draft"] = draft
     if chosen != current:
         if chosen and chosen not in options:
             chosen = ""
         st.session_state[select_key] = chosen
         current = chosen
+
+    resolved = resolve_combo_selection(select_key, options)
+    if resolved:
+        current = resolved
 
     if help:
         st.caption(help)

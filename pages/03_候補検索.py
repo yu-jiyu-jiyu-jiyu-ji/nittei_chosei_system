@@ -44,7 +44,7 @@ from utils.loading_util import (
     inject_force_busy_marker,
     visible_spinner,
 )
-from utils.combobox_util import render_searchable_selectbox
+from utils.combobox_util import render_searchable_selectbox, resolve_combo_selection
 from utils.project_register_ui import (
     CANDIDATE_REGISTER_DIALOG_RESULT_KEY,
     render_candidate_search_register_ui,
@@ -57,6 +57,25 @@ def _on_candidate_search_button_click() -> None:
     ページ先頭のマスタ取得でも「検索・カレンダー表示中…」に切り替えられる。"""
     st.session_state["_candidate_search_btn_pressed"] = True
     st.session_state["candidate_search_ui_busy"] = True
+    masters = st.session_state.get("_candidate_search_masters") or {}
+    projects = masters.get("projects") if isinstance(masters.get("projects"), list) else []
+    if projects:
+        names = [
+            str(p.get("project_name") or "").strip()
+            for p in projects
+            if str(p.get("project_name") or "").strip()
+        ]
+        resolved = resolve_combo_selection("candidate_search_project_select", names)
+        if resolved:
+            for p in projects:
+                if str(p.get("project_name") or "").strip() == resolved:
+                    try:
+                        rw = int(p.get("required_workers") or 0)
+                        if rw > 0:
+                            st.session_state["candidate_search_capacity"] = rw
+                    except (TypeError, ValueError):
+                        pass
+                    break
 
 
 def _clear_candidate_search_ui_busy() -> None:
@@ -1696,8 +1715,14 @@ button {
         project_name_list,
         select_key="candidate_search_project_select",
         placeholder="案件名を入力して絞り込み・選択…",
-        help="タップしてキーボードで案件名を入力し、表示された一覧から選択してください。",
+        help="案件名を入力して一覧から選ぶか、そのまま「検索」を押してください（一致する案件が1件なら自動で選ばれます）。",
     )
+    if search_press:
+        _resolved_on_search = resolve_combo_selection(
+            "candidate_search_project_select", project_name_list
+        )
+        if _resolved_on_search:
+            selected_project_name = _resolved_on_search
     selected_project = project_options.get(selected_project_name)
 
     vehicle_mode = st.radio(
@@ -1819,6 +1844,14 @@ button {
     # nowrap-row の閉じタグ
     st.markdown("</div>", unsafe_allow_html=True)
 
+
+    if (search_press or search_clicked) and selected_project:
+        try:
+            _rw_search = int(selected_project.get("required_workers") or 0)
+            if _rw_search > 0:
+                st.session_state["candidate_search_capacity"] = _rw_search
+        except (TypeError, ValueError):
+            pass
 
     required_capacity = int(st.session_state.get("candidate_search_capacity", 0))
     loc_ov: Dict[str, str] = st.session_state.setdefault("candidate_location_overrides", {})
@@ -2061,7 +2094,9 @@ button {
     if clear_clicked:
         for k in (
             "candidate_search_project_select",
+            "candidate_search_project_draft",
             "candidate_search_project_query",
+            "_candidate_sync_project_key",
             "worker_multi_select",
             "worker_include_mode",
             "worker_rank_filters",
@@ -2161,6 +2196,7 @@ button {
     # 週移動での再実行時にもカレンダーを維持（来週・再来週の予定閲覧も含む）
     if (
         not search_clicked
+        and not search_press
         and not week_nav_trigger
         and not week_calendar_browse
         and "candidate_results" not in st.session_state
@@ -2174,7 +2210,7 @@ button {
         return
 
     # 案件未選択でも「人数が選択されている」場合は候補表示する（要望⑧）
-    if not selected_project and required_capacity <= 0 and search_clicked:
+    if not selected_project and required_capacity <= 0 and (search_clicked or search_press):
         st.error("案件が選択されていません。検索を行う前に案件を選択するか、人数を指定してください。")
         _clear_candidate_search_ui_busy()
         inject_clear_force_busy_overlay()
