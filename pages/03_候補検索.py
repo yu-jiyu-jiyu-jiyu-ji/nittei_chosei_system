@@ -1720,7 +1720,7 @@ button {
         select_key="candidate_search_project_select",
         query_key="candidate_search_project_query",
         placeholder="案件名を入力して絞り込み・選択…",
-        help="タップしてキーボードで案件名を入力し、表示された一覧から選択してください。",
+        help="文字を入力して候補を絞り込み、一覧からタップして確定してください。",
     )
     if search_press:
         _resolved_on_search = resolve_combo_selection(
@@ -2103,7 +2103,6 @@ button {
             "candidate_search_project_select",
             "candidate_search_project_draft",
             "candidate_search_project_query",
-            "candidate_search_project_pending_pick",
             "_candidate_sync_project_key",
             "worker_multi_select",
             "worker_include_mode",
@@ -2120,7 +2119,6 @@ button {
         st.session_state.pop("candidate_search_display_pending", None)
         st.session_state.pop("_cal_last_component_click", None)
         st.session_state.pop("_cal_last_component_nonce", None)
-        st.session_state.pop("candidate_search_project_pending_pick", None)
         _clear_candidate_search_ui_busy()
         inject_clear_force_busy_overlay()
         st.session_state.pop("_candidate_search_masters", None)

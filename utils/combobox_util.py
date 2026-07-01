@@ -1,6 +1,7 @@
-"""検索可能コンボボックス（st.text_input 連携 + 候補オーバーレイ）."""
+"""検索可能コンボボックス（1枠 HTML コンボ、確定時のみ Python へ同期）."""
 from __future__ import annotations
 
+import html
 import json
 from typing import List, Optional
 
@@ -20,9 +21,39 @@ def _combo_query_key(select_key: str, query_key: Optional[str]) -> str:
     return query_key or f"{select_key}_query"
 
 
-def _combo_draft_keys(select_key: str, query_key: Optional[str]) -> List[str]:
-    qkey = _combo_query_key(select_key, query_key)
-    return [f"{select_key}_draft", qkey]
+def _parse_combo_component_value(raw: object, *, fallback: str = "") -> tuple[str, str]:
+    """(確定値, 入力中ドラフト) を返す."""
+    if raw is None:
+        return fallback, ""
+    raw_s = str(raw).strip()
+    if not raw_s:
+        return "", ""
+    if not raw_s.startswith("{"):
+        return raw_s, raw_s
+    try:
+        payload = json.loads(raw_s)
+    except Exception:
+        return fallback, ""
+    value = str(payload.get("value") or "")
+    draft = str(payload.get("draft") or value or "")
+    return value, draft
+
+
+def _apply_committed(
+    select_key: str,
+    options: List[str],
+    value: str,
+    *,
+    query_key: Optional[str] = None,
+) -> str:
+    """確定した案件名を session_state に反映する."""
+    v = str(value or "").strip()
+    if not v or v not in options:
+        return ""
+    st.session_state[select_key] = v
+    st.session_state[f"{select_key}_draft"] = v
+    st.session_state[_combo_query_key(select_key, query_key)] = v
+    return v
 
 
 def resolve_combo_selection(
@@ -31,68 +62,31 @@ def resolve_combo_selection(
     *,
     query_key: Optional[str] = None,
 ) -> str:
-    """入力文字から案件名を解決して session_state に反映する."""
+    """確定済み・一意に解決できる入力から案件名を返す."""
     current = str(st.session_state.get(select_key) or "").strip()
     if current in options:
         return current
 
-    draft = ""
-    for key in _combo_draft_keys(select_key, query_key):
-        draft = str(st.session_state.get(key) or "").strip()
-        if draft:
-            break
+    draft = str(st.session_state.get(f"{select_key}_draft") or "").strip()
+    if not draft:
+        draft = str(st.session_state.get(_combo_query_key(select_key, query_key)) or "").strip()
     if not draft:
         return ""
 
     for opt in options:
         if opt == draft:
-            st.session_state[select_key] = opt
-            return opt
+            return _apply_committed(select_key, options, opt, query_key=query_key)
 
     draft_cf = draft.casefold()
     exact_ci = [opt for opt in options if opt.casefold() == draft_cf]
     if len(exact_ci) == 1:
-        st.session_state[select_key] = exact_ci[0]
-        return exact_ci[0]
+        return _apply_committed(select_key, options, exact_ci[0], query_key=query_key)
 
     partial = [opt for opt in options if draft_cf in opt.casefold()]
     if len(partial) == 1:
-        st.session_state[select_key] = partial[0]
-        return partial[0]
+        return _apply_committed(select_key, options, partial[0], query_key=query_key)
 
     return ""
-
-
-def _sync_selection_from_query(
-    select_key: str,
-    qkey: str,
-    options: List[str],
-    query: str,
-) -> None:
-    q = str(query or "").strip()
-    st.session_state[f"{select_key}_draft"] = q
-    if not q:
-        st.session_state[select_key] = ""
-        return
-    if q in options:
-        st.session_state[select_key] = q
-        return
-    if len(filter_options(options, q)) == 1:
-        st.session_state[select_key] = filter_options(options, q)[0]
-
-
-def _apply_pending_pick(
-    select_key: str,
-    qkey: str,
-    options: List[str],
-) -> bool:
-    pending = str(st.session_state.pop(f"{select_key}_pending_pick", "") or "").strip()
-    if not pending or pending not in options:
-        return False
-    st.session_state[qkey] = pending
-    st.session_state[select_key] = pending
-    st.session_state[f"{select_key}_draft"] = pending
-    return True
 
 
 def render_searchable_selectbox(
@@ -105,107 +99,116 @@ def render_searchable_selectbox(
     placeholder: str = "案件名を入力して絞り込み・選択…",
     help: Optional[str] = None,
 ) -> str:
-    """Streamlit text_input を正とする1枠コンボ（候補は JS オーバーレイ）."""
+    """1枠 HTML コンボボックス。一覧タップ等で確定した値だけ Python にコピーする."""
     del empty_label
     qkey = _combo_query_key(select_key, query_key)
-    pending_key = f"{select_key}_pending_pick"
-    widget_id = "".join(ch if ch.isalnum() else "_" for ch in select_key)
-    marker_id = f"combo_marker_{widget_id}"
 
-    selected = str(st.session_state.get(select_key) or "").strip()
-    if selected and selected not in options:
+    committed = str(st.session_state.get(select_key) or "").strip()
+    if committed and committed not in options:
+        committed = ""
         st.session_state[select_key] = ""
-        selected = ""
 
-    _apply_pending_pick(select_key, qkey, options)
-
-    if qkey not in st.session_state:
-        st.session_state[qkey] = selected
-
-    def _on_query_change() -> None:
-        _sync_selection_from_query(
-            select_key,
-            qkey,
-            options,
-            str(st.session_state.get(qkey, "") or ""),
-        )
+    widget_id = "".join(ch if ch.isalnum() else "_" for ch in select_key)
+    anchor_id = f"combo_anchor_{widget_id}"
+    input_id = f"combo_input_{widget_id}"
+    list_id = f"combo_list_{widget_id}"
 
     st.markdown(
-        f'<div id="{marker_id}" data-candidate-combo-marker="1" style="display:none;"></div>',
+        f'<p class="candidate-combo-label">{html.escape(label)}</p>',
         unsafe_allow_html=True,
     )
-    query = st.text_input(
-        label,
-        key=qkey,
-        placeholder=placeholder,
-        help=help,
-        on_change=_on_query_change,
+    st.markdown(
+        f'<div id="{anchor_id}" class="candidate-project-combo-anchor"></div>',
+        unsafe_allow_html=True,
     )
-    q = str(query or "").strip()
-    _sync_selection_from_query(select_key, qkey, options, q)
 
     options_js = json.dumps(options, ensure_ascii=False)
-    marker_id_js = json.dumps(marker_id)
+    committed_js = json.dumps(committed, ensure_ascii=False)
+    placeholder_js = json.dumps(placeholder, ensure_ascii=False)
 
     raw = components.html(
         f"""
 <script src="https://cdn.jsdelivr.net/npm/@streamlit/component-lib@2.0.0/dist/index.min.js"></script>
 <script>
 (function() {{
-  const frame = window.frameElement;
-  if (frame) {{
-    frame.style.setProperty("height", "0px", "important");
-    frame.style.setProperty("min-height", "0px", "important");
-    frame.style.setProperty("border", "none", "important");
-    const frameWrap = frame.parentElement;
-    if (frameWrap) {{
-      frameWrap.style.setProperty("margin", "0", "important");
-      frameWrap.style.setProperty("padding", "0", "important");
-    }}
-  }}
-
+  const ANCHOR_ID = {json.dumps(anchor_id)};
+  const INPUT_ID = {json.dumps(input_id)};
+  const LIST_ID = {json.dumps(list_id)};
   const OPTIONS = {options_js};
-  const MARKER_ID = {marker_id_js};
+  const INITIAL = {committed_js};
+  const PLACEHOLDER = {placeholder_js};
   const doc = window.parent && window.parent.document ? window.parent.document : document;
 
-  function emitPick(value) {{
+  function anchorEl() {{
+    return doc.getElementById(ANCHOR_ID);
+  }}
+
+  function wrapEl() {{
+    const anchor = anchorEl();
+    return anchor ? anchor.querySelector(".candidate-combo-wrap") : null;
+  }}
+
+  function emitCommit(value) {{
+    const v = String(value || "").trim();
     try {{
       if (window.Streamlit && window.Streamlit.setComponentValue) {{
-        window.Streamlit.setComponentValue(String(value || ""));
+        window.Streamlit.setComponentValue(JSON.stringify({{
+          value: v,
+          draft: v
+        }}));
       }}
     }} catch (e) {{}}
   }}
 
-  function isComboInput(el) {{
-    if (!el || el.tagName !== "INPUT") return false;
-    const t = (el.getAttribute("type") || "text").toLowerCase();
-    return t === "text" || t === "search" || t === "";
-  }}
-
   function ensureStyles() {{
-    if (doc.getElementById("candidate-combo-overlay-styles")) return;
+    if (doc.getElementById("candidate-combo-styles")) return;
     const style = doc.createElement("style");
-    style.id = "candidate-combo-overlay-styles";
+    style.id = "candidate-combo-styles";
     style.textContent = `
-      [data-testid="stElementContainer"].combo-element-open {{
+      .candidate-project-combo-anchor {{
+        width: 100%;
+        min-height: 40px;
+        margin-bottom: 0.25rem;
         position: relative;
+        z-index: 1;
+      }}
+      .candidate-project-combo-anchor.combo-open {{
         z-index: 10050;
       }}
-      .candidate-combo-host {{
-        position: relative !important;
+      .candidate-combo-label {{
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: rgb(49, 51, 63);
+        margin: 0 0 0.35rem 0;
       }}
-      .candidate-combo-input-mount {{
-        position: relative !important;
+      .candidate-combo-wrap {{
+        width: 100%;
+        position: relative;
+        box-sizing: border-box;
       }}
-      .candidate-combo-host input {{
-        font-size: 16px !important;
+      .candidate-combo-input {{
+        width: 100%;
+        box-sizing: border-box;
+        height: 40px;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid rgba(49, 51, 63, 0.2);
+        border-radius: 0.5rem;
+        font-size: 16px;
+        color: rgb(49, 51, 63);
+        background: #fff;
+        outline: none;
+        -webkit-appearance: none;
       }}
-      .candidate-combo-input-mount.combo-open input {{
-        border-bottom-left-radius: 0 !important;
-        border-bottom-right-radius: 0 !important;
-        border-bottom-color: rgba(49, 51, 63, 0.12) !important;
+      .candidate-combo-input:focus {{
+        border-color: rgb(255, 75, 75);
+        box-shadow: 0 0 0 1px rgb(255, 75, 75);
       }}
-      .candidate-combo-suggest {{
+      .candidate-combo-wrap.combo-open .candidate-combo-input {{
+        border-bottom-left-radius: 0;
+        border-bottom-right-radius: 0;
+        border-bottom-color: rgba(49, 51, 63, 0.12);
+      }}
+      .candidate-combo-list {{
         position: absolute;
         left: 0;
         right: 0;
@@ -213,7 +216,6 @@ def render_searchable_selectbox(
         z-index: 10001;
         max-height: min(46vh, 260px);
         overflow-y: auto;
-        overflow-x: hidden;
         background: #fff;
         border: 1px solid rgba(49, 51, 63, 0.2);
         border-top: none;
@@ -221,24 +223,21 @@ def render_searchable_selectbox(
         box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
         display: none;
       }}
-      .candidate-combo-suggest.open {{
-        display: block !important;
-      }}
-      .candidate-combo-suggest-item {{
+      .candidate-combo-list.open {{ display: block; }}
+      .candidate-combo-item {{
         padding: 0.65rem 0.75rem;
         cursor: pointer;
         font-size: 16px;
         color: rgb(49, 51, 63);
         border-bottom: 1px solid rgba(49, 51, 63, 0.06);
         -webkit-tap-highlight-color: rgba(255, 75, 75, 0.12);
-        line-height: 1.35;
       }}
-      .candidate-combo-suggest-item:last-child {{ border-bottom: none; }}
-      .candidate-combo-suggest-item:hover,
-      .candidate-combo-suggest-item.active {{
+      .candidate-combo-item:last-child {{ border-bottom: none; }}
+      .candidate-combo-item:hover,
+      .candidate-combo-item.active {{
         background: rgba(255, 75, 75, 0.08);
       }}
-      .candidate-combo-suggest-empty {{
+      .candidate-combo-empty {{
         padding: 0.75rem;
         color: rgba(49, 51, 63, 0.55);
         font-size: 0.95rem;
@@ -247,104 +246,167 @@ def render_searchable_selectbox(
     (doc.head || doc.documentElement).appendChild(style);
   }}
 
-  function findInputByMarker() {{
-    const marker = doc.getElementById(MARKER_ID);
-    if (!marker) return null;
-    const markerEc = marker.closest('[data-testid="stElementContainer"]');
-    if (!markerEc) return null;
-    let sibling = markerEc.nextElementSibling;
-    while (sibling) {{
-      const inputs = sibling.querySelectorAll("input");
-      for (let i = 0; i < inputs.length; i++) {{
-        if (isComboInput(inputs[i])) return inputs[i];
+  function optionsFromDom(wrap) {{
+    if (wrap && wrap.dataset.options) {{
+      try {{
+        return JSON.parse(wrap.dataset.options || "[]");
+      }} catch (e) {{}}
+    }}
+    return OPTIONS;
+  }}
+
+  function resolveCommittedFromInput(q, wrap) {{
+    const text = (q || "").trim();
+    if (!text) return "";
+    const opts = optionsFromDom(wrap);
+    if (opts.indexOf(text) >= 0) return text;
+    const lower = text.toLowerCase();
+    const exact = opts.filter(function(o) {{ return String(o).toLowerCase() === lower; }});
+    if (exact.length === 1) return exact[0];
+    const partial = opts.filter(function(o) {{ return String(o).toLowerCase().indexOf(lower) >= 0; }});
+    if (partial.length === 1) return partial[0];
+    return "";
+  }}
+
+  function commitValue(wrap, input, value) {{
+    const v = String(value || "").trim();
+    if (!v) return;
+    input.value = v;
+    wrap.dataset.committed = v;
+    emitCommit(v);
+  }}
+
+  function syncComboBeforeAction() {{
+    const wrap = wrapEl();
+    const input = wrap ? wrap.querySelector(".candidate-combo-input") : null;
+    if (!input || !wrap) return;
+    const draft = (input.value || "").trim();
+    if (!draft) {{
+      wrap.dataset.committed = "";
+      emitCommit("");
+      return;
+    }}
+    const resolved = resolveCommittedFromInput(draft, wrap);
+    if (resolved) commitValue(wrap, input, resolved);
+  }}
+
+  function bindSearchButtonSync() {{
+    if (doc.body && doc.body.dataset.comboSearchSyncBound === "1") return;
+    if (doc.body) doc.body.dataset.comboSearchSyncBound = "1";
+    const handler = function(ev) {{
+      const btn = ev.target && ev.target.closest ? ev.target.closest("button") : null;
+      if (!btn) return;
+      const label = (btn.textContent || "").replace(/\\s+/g, "");
+      if (label.indexOf("検索") < 0) return;
+      if (btn.dataset.comboSearchRelease === "1") {{
+        btn.dataset.comboSearchRelease = "0";
+        return;
       }}
-      sibling = sibling.nextElementSibling;
-    }}
-    return null;
+      syncComboBeforeAction();
+      if (ev.type === "touchstart" || ev.type === "mousedown") {{
+        ev.preventDefault();
+        ev.stopPropagation();
+        btn.dataset.comboSearchRelease = "1";
+        setTimeout(function() {{
+          try {{ btn.click(); }} catch (e) {{}}
+        }}, 150);
+      }}
+    }};
+    doc.addEventListener("mousedown", handler, true);
+    doc.addEventListener("touchstart", handler, {{ capture: true, passive: false }});
   }}
 
-  function findMountPoint(input, host) {{
-    let anchor = input.parentElement;
-    while (anchor && anchor !== host) {{
-      const parent = anchor.parentElement;
-      if (!parent || parent === host) break;
-      const inputs = parent.querySelectorAll("input");
-      if (inputs.length > 1) break;
-      anchor = parent;
-    }}
-    return anchor || input.parentElement || host;
-  }}
-
-  function filteredOptions(q) {{
-    const text = (q || "").trim().toLowerCase();
-    if (!text) return OPTIONS.slice();
-    return OPTIONS.filter(function(o) {{
-      return String(o).toLowerCase().indexOf(text) >= 0;
-    }});
-  }}
-
-  function applyPick(input, opt) {{
-    input.value = opt;
-    try {{
-      input.dispatchEvent(new Event("input", {{ bubbles: true }}));
-      input.dispatchEvent(new Event("change", {{ bubbles: true }}));
-    }} catch (e) {{}}
-    emitPick(opt);
-  }}
-
-  function bindSuggest(mountPoint, elementHost, input, suggest, list) {{
-    const inputId = input.getAttribute("data-combo-input-id") || String(Date.now()) + Math.random();
-    input.setAttribute("data-combo-input-id", inputId);
-    if (mountPoint.dataset.comboBoundInputId === inputId) return;
-    mountPoint.dataset.comboBoundInputId = inputId;
+  function bindCombo(wrap, input, list, anchor) {{
+    if (wrap.dataset.comboBound === "1") return;
+    wrap.dataset.comboBound = "1";
+    let committed = INITIAL || "";
+    wrap.dataset.committed = committed;
     let activeIndex = -1;
 
+    function filtered() {{
+      const opts = optionsFromDom(wrap);
+      const q = (input.value || "").trim().toLowerCase();
+      if (!q) return opts.slice();
+      return opts.filter(function(o) {{
+        return String(o).toLowerCase().indexOf(q) >= 0;
+      }});
+    }}
+
     function closeList() {{
-      mountPoint.classList.remove("combo-open");
-      if (elementHost) elementHost.classList.remove("combo-element-open");
-      suggest.classList.remove("open");
+      wrap.classList.remove("combo-open");
+      if (anchor) anchor.classList.remove("combo-open");
+      list.classList.remove("open");
     }}
 
     function openList() {{
-      const items = filteredOptions(input.value);
+      const items = filtered();
       list.innerHTML = "";
       activeIndex = -1;
       if (!items.length) {{
         const empty = doc.createElement("div");
-        empty.className = "candidate-combo-suggest-empty";
+        empty.className = "candidate-combo-empty";
         empty.textContent = "該当する案件がありません";
         list.appendChild(empty);
       }} else {{
         items.forEach(function(opt) {{
           const row = doc.createElement("div");
-          row.className = "candidate-combo-suggest-item";
+          row.className = "candidate-combo-item";
           row.textContent = opt;
+          row.dataset.value = opt;
           row.addEventListener("mousedown", function(ev) {{
             ev.preventDefault();
-            applyPick(input, opt);
+            committed = opt;
+            commitValue(wrap, input, opt);
             closeList();
           }});
           row.addEventListener("touchstart", function(ev) {{
             ev.preventDefault();
-            applyPick(input, opt);
+            committed = opt;
+            commitValue(wrap, input, opt);
             closeList();
           }}, {{ passive: false }});
           list.appendChild(row);
         }});
       }}
-      mountPoint.classList.add("combo-open");
-      if (elementHost) elementHost.classList.add("combo-element-open");
-      suggest.classList.add("open");
+      wrap.classList.add("combo-open");
+      if (anchor) anchor.classList.add("combo-open");
+      list.classList.add("open");
     }}
+
+    function pickActive() {{
+      const rows = list.querySelectorAll(".candidate-combo-item");
+      if (!rows.length) return;
+      if (activeIndex < 0) activeIndex = 0;
+      const row = rows[activeIndex];
+      if (!row) return;
+      const val = row.dataset.value || "";
+      committed = val;
+      commitValue(wrap, input, val);
+      closeList();
+    }}
+
+    input.placeholder = PLACEHOLDER;
+    input.value = committed;
+    input.setAttribute("inputmode", "search");
+    input.setAttribute("enterkeyhint", "search");
+    input.setAttribute("autocomplete", "off");
+    input.setAttribute("autocorrect", "off");
+    input.setAttribute("autocapitalize", "off");
+    input.setAttribute("spellcheck", "false");
+
+    input.addEventListener("touchstart", function() {{
+      try {{ input.focus({{ preventScroll: false }}); }} catch (e) {{ input.focus(); }}
+    }}, {{ passive: true }});
 
     input.addEventListener("focus", function() {{ openList(); }});
     input.addEventListener("click", function() {{ openList(); }});
     input.addEventListener("input", function() {{ openList(); }});
+
     input.addEventListener("keydown", function(ev) {{
-      const rows = list.querySelectorAll(".candidate-combo-suggest-item");
+      const rows = list.querySelectorAll(".candidate-combo-item");
       if (ev.key === "ArrowDown") {{
         ev.preventDefault();
-        if (!suggest.classList.contains("open")) openList();
+        if (!list.classList.contains("open")) openList();
         if (!rows.length) return;
         activeIndex = Math.min(rows.length - 1, activeIndex + 1);
         rows.forEach(function(r, i) {{ r.classList.toggle("active", i === activeIndex); }});
@@ -357,51 +419,78 @@ def render_searchable_selectbox(
         rows.forEach(function(r, i) {{ r.classList.toggle("active", i === activeIndex); }});
         return;
       }}
-      if (ev.key === "Enter" && suggest.classList.contains("open") && rows.length) {{
+      if (ev.key === "Enter") {{
         ev.preventDefault();
-        if (activeIndex < 0) activeIndex = 0;
-        const row = rows[activeIndex];
-        const val = (row && row.textContent || "").trim();
-        if (!val) return;
-        applyPick(input, val);
-        closeList();
+        if (list.classList.contains("open") && rows.length) {{
+          pickActive();
+          return;
+        }}
+        const resolved = resolveCommittedFromInput((input.value || "").trim(), wrap);
+        if (resolved) {{
+          committed = resolved;
+          commitValue(wrap, input, resolved);
+          closeList();
+        }}
         return;
       }}
-      if (ev.key === "Escape") closeList();
+      if (ev.key === "Escape") {{
+        input.value = committed;
+        closeList();
+      }}
     }});
+
     input.addEventListener("blur", function() {{
-      setTimeout(closeList, 160);
+      setTimeout(function() {{
+        closeList();
+        const q = (input.value || "").trim();
+        if (!q) return;
+        const resolved = resolveCommittedFromInput(q, wrap);
+        if (resolved) {{
+          committed = resolved;
+          commitValue(wrap, input, resolved);
+        }}
+      }}, 160);
     }});
+
+    wrap._comboRefresh = function(nextValue, nextOptions) {{
+      wrap.dataset.options = JSON.stringify(nextOptions || []);
+      wrap.dataset.committed = nextValue || "";
+      if (doc.activeElement !== input) {{
+        committed = nextValue || "";
+        input.value = committed;
+      }}
+    }};
   }}
 
   function mount() {{
     ensureStyles();
-    const input = findInputByMarker();
-    if (!input) return false;
+    const anchor = anchorEl();
+    if (!anchor) return false;
 
-    const host = input.closest('[data-testid="stTextInput"]') || input.closest('[data-testid="stElementContainer"]');
-    if (!host) return false;
-    host.classList.add("candidate-combo-host");
-    const elementHost = host.closest('[data-testid="stElementContainer"]');
-    const mountPoint = findMountPoint(input, host);
-    mountPoint.classList.add("candidate-combo-input-mount");
+    let wrap = anchor.querySelector(".candidate-combo-wrap");
+    if (!wrap) {{
+      wrap = doc.createElement("div");
+      wrap.className = "candidate-combo-wrap";
+      wrap.dataset.options = JSON.stringify(OPTIONS);
+      const input = doc.createElement("input");
+      input.type = "text";
+      input.className = "candidate-combo-input";
+      input.id = INPUT_ID;
+      const list = doc.createElement("div");
+      list.className = "candidate-combo-list";
+      list.id = LIST_ID;
+      wrap.appendChild(input);
+      wrap.appendChild(list);
+      anchor.appendChild(wrap);
+      bindCombo(wrap, input, list, anchor);
+    }}
 
-    let suggest = mountPoint.querySelector(".candidate-combo-suggest");
-    let list;
-    if (!suggest) {{
-      suggest = doc.createElement("div");
-      suggest.className = "candidate-combo-suggest";
-      list = doc.createElement("div");
-      suggest.appendChild(list);
-      mountPoint.appendChild(suggest);
-    }} else {{
-      list = suggest.firstElementChild;
+    wrap.dataset.options = JSON.stringify(OPTIONS);
+    if (typeof wrap._comboRefresh === "function") {{
+      wrap._comboRefresh(INITIAL, OPTIONS);
     }}
-    if (!list) {{
-      list = doc.createElement("div");
-      suggest.appendChild(list);
-    }}
-    bindSuggest(mountPoint, elementHost, input, suggest, list);
+    anchor.dataset.comboReady = "1";
+    bindSearchButtonSync();
     return true;
   }}
 
@@ -414,9 +503,8 @@ def render_searchable_selectbox(
   }}
 
   boot();
-  const obsKey = "comboObserver_" + MARKER_ID;
-  if (doc.body && !doc.body.dataset[obsKey]) {{
-    doc.body.dataset[obsKey] = "1";
+  if (doc.body && !doc.body.dataset.comboObserverBound) {{
+    doc.body.dataset.comboObserverBound = "1";
     try {{
       const obs = new MutationObserver(function() {{ mount(); }});
       obs.observe(doc.body, {{ childList: true, subtree: true }});
@@ -428,15 +516,17 @@ def render_searchable_selectbox(
         height=0,
     )
 
-    picked = str(raw or "").strip()
-    if picked and picked in options:
-        if str(st.session_state.get(qkey) or "").strip() != picked:
-            st.session_state[pending_key] = picked
-            st.rerun()
+    chosen, _draft = _parse_combo_component_value(raw, fallback=committed)
+    if chosen and chosen in options:
+        committed = _apply_committed(select_key, options, chosen, query_key=query_key)
 
     resolved = resolve_combo_selection(select_key, options, query_key=query_key)
     if resolved:
-        return resolved
+        committed = resolved
 
-    final = str(st.session_state.get(select_key) or "").strip()
-    return final if final in options else ""
+    if help:
+        st.caption(help)
+    if committed and committed in options:
+        st.caption(f"選択中: {committed}")
+
+    return committed if committed in options else ""
