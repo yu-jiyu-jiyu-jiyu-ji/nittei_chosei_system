@@ -46,9 +46,23 @@ def consume_pending_register_draft(key_prefix: str) -> None:
     draft = st.session_state.pop(_field_key(key_prefix, "pending_draft"), None)
     if not isinstance(draft, dict):
         return
-    st.session_state[_field_key(key_prefix, "project_name")] = str(draft.get("project_name") or "")
-    st.session_state[_field_key(key_prefix, "address")] = str(draft.get("address") or "")
+    name_key = _field_key(key_prefix, "project_name")
+    addr_key = _field_key(key_prefix, "address")
+    st.session_state.pop(name_key, None)
+    st.session_state.pop(addr_key, None)
+    st.session_state[name_key] = str(draft.get("project_name") or "")
+    st.session_state[addr_key] = str(draft.get("address") or "")
     st.session_state[_field_key(key_prefix, "force_open_expander")] = True
+
+
+def copy_calendar_event_to_register(
+    *,
+    key_prefix: str,
+    project_name: str,
+    address: str,
+) -> None:
+    """カレンダー収集の on_click 用（ボタン押下直後に下書きを予約）."""
+    apply_project_register_draft(key_prefix, project_name=project_name, address=address)
 
 
 def _field_key(key_prefix: str, suffix: str) -> str:
@@ -164,7 +178,6 @@ def render_project_register_expander(
     title: str = "案件を新規登録",
 ) -> Optional[Dict[str, Any]]:
     """案件一覧向け: エキスパンダー内フォーム。成功時は作成した案件 dict を返す."""
-    consume_pending_register_draft(key_prefix)
     with _register_expander(title, key_prefix=key_prefix, close_after_register=close_after_register):
         created = _render_register_form(key_prefix)
         if created and close_after_register:

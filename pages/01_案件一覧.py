@@ -19,6 +19,7 @@ from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_w
 from utils.loading_util import visible_spinner
 from utils.project_register_ui import (
     REGISTER_DRAFT_FLASH_KEY,
+    consume_pending_register_draft,
     render_project_register_expander,
 )
 from utils.session_util import init_session_state, navigate_to_candidate_search_after_register
@@ -296,6 +297,7 @@ def render_page() -> None:
     st.session_state["_active_page_id"] = "project_list"
     inject_wide_layout()
     inject_sidebar_nav()
+    consume_pending_register_draft("project_list_new")
 
     if st.session_state.pop("project_deleted_flash", False):
         st.success("削除しました。")
@@ -305,6 +307,7 @@ def render_page() -> None:
 
     if st.session_state.pop(REGISTER_DRAFT_FLASH_KEY, False):
         st.success("案件名と住所を新規登録フォームへ転記しました。上部のフォームを確認してください。")
+        st.toast("新規登録フォームへ転記しました", icon="✅")
 
     # ----------------------------
     # 上部：新規登録フォーム

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import html
-from datetime import date, timedelta
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 
@@ -13,7 +12,7 @@ from services.calendar_collect_service import (
     sunday_week_containing,
 )
 from utils.loading_util import visible_spinner
-from utils.project_register_ui import apply_project_register_draft
+from utils.project_register_ui import copy_calendar_event_to_register
 
 CALENDAR_COLLECT_ACTIVE_KEY = "calendar_collect_active"
 CALENDAR_COLLECT_WEEK_KEY = "calendar_collect_week_start"
@@ -35,11 +34,39 @@ def _week_label(week_start: date) -> str:
     return f"{week_start.strftime('%Y/%m/%d')} 〜 {week_end.strftime('%Y/%m/%d')}"
 
 
+_WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"]
+
+
+def _week_date_filter_options(week_start: date) -> List[Tuple[str, Optional[date]]]:
+    """対象週の日付絞り込み選択肢（先頭は全件）."""
+    week_start = sunday_week_containing(week_start)
+    options: List[Tuple[str, Optional[date]]] = [("（全ての日付）", None)]
+    for i in range(7):
+        d = week_start + timedelta(days=i)
+        label = f"{d.strftime('%Y/%m/%d')}（{_WEEKDAY_LABELS[i]}）"
+        options.append((label, d))
+    return options
+
+
+def _row_date(row: Dict[str, Any]) -> Optional[date]:
+    start_at = row.get("start_at")
+    if isinstance(start_at, datetime):
+        return start_at.date()
+    raw = str(row.get("date") or "").strip()
+    for fmt in ("%Y/%m/%d", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def _filter_rows(
     rows: List[Dict[str, Any]],
     *,
     query: str,
     worker_labels: List[str],
+    filter_date: Optional[date] = None,
 ) -> List[Dict[str, Any]]:
     q = (query or "").strip().casefold()
     worker_set = set(worker_labels or [])
@@ -47,6 +74,10 @@ def _filter_rows(
     for row in rows:
         if worker_set and row.get("worker_label") not in worker_set:
             continue
+        if filter_date is not None:
+            row_d = _row_date(row)
+            if row_d != filter_date:
+                continue
         if not q:
             out.append(row)
             continue
@@ -104,74 +135,6 @@ def _ensure_rows_loaded(
     )
 
 
-def _inject_collect_card_css() -> None:
-    st.markdown(
-        """
-<style>
-.cal-collect-list { display:flex; flex-direction:column; gap:0.55rem; }
-.cal-collect-card {
-    border:1px solid #e5e7eb;
-    border-radius:10px;
-    padding:0.65rem 0.8rem 0.45rem;
-    background:#fff;
-}
-.cal-collect-card-head {
-    display:flex;
-    justify-content:space-between;
-    align-items:flex-start;
-    gap:0.5rem;
-    margin-bottom:0.35rem;
-    font-size:0.78rem;
-    color:#6b7280;
-    line-height:1.35;
-}
-.cal-collect-card-time {
-    white-space:nowrap;
-    font-weight:600;
-    color:#4b5563;
-}
-.cal-collect-card-title {
-    font-size:0.92rem;
-    font-weight:700;
-    color:#111827;
-    line-height:1.4;
-    margin:0 0 0.3rem 0;
-}
-.cal-collect-card-line {
-    font-size:0.78rem;
-    color:#4b5563;
-    line-height:1.4;
-    margin:0.1rem 0;
-}
-.cal-collect-card-line b { color:#6b7280; font-weight:600; }
-div[data-testid="stVerticalBlock"]:has(.cal-collect-card) + div[data-testid="stVerticalBlock"] div[data-testid="stButton"] button {
-    margin-top:-0.15rem;
-    margin-bottom:0.35rem;
-    border:none;
-    background:transparent;
-    color:#2563eb;
-    font-weight:600;
-    padding:0 0 0.2rem;
-    justify-content:flex-start;
-    box-shadow:none;
-    min-height:2rem;
-}
-@media (max-width: 768px) {
-    .cal-collect-list { gap:0.45rem; }
-    .cal-collect-card {
-        padding:0.5rem 0.65rem 0.35rem;
-        border-radius:8px;
-    }
-    .cal-collect-card-head { font-size:0.74rem; margin-bottom:0.25rem; }
-    .cal-collect-card-title { font-size:0.86rem; }
-    .cal-collect-card-line { font-size:0.74rem; }
-}
-</style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 def _time_range_label(row: Dict[str, Any]) -> str:
     start_s = str(row.get("start_time") or "")
     end_s = str(row.get("end_time") or "")
@@ -182,43 +145,41 @@ def _time_range_label(row: Dict[str, Any]) -> str:
     return start_s or end_s or "—"
 
 
-def _build_collect_card_html(row: Dict[str, Any]) -> str:
-    date_s = html.escape(str(row.get("date") or ""))
-    worker = html.escape(str(row.get("worker_label") or ""))
-    title = html.escape(str(row.get("title") or ""))
-    time_s = html.escape(_time_range_label(row))
-    location = html.escape(str(row.get("location") or "—"))
-    members = html.escape(str(row.get("members") or "—"))
-    return (
-        f'<div class="cal-collect-card">'
-        f'<div class="cal-collect-card-head">'
-        f"<span>{date_s} · {worker}</span>"
-        f'<span class="cal-collect-card-time">{time_s}</span>'
-        f"</div>"
-        f'<p class="cal-collect-card-title">{title}</p>'
-        f'<p class="cal-collect-card-line"><b>場所</b> {location}</p>'
-        f'<p class="cal-collect-card-line"><b>メンバー</b> {members}</p>'
-        f"</div>"
-    )
-
-
 def _render_collect_table(filtered_rows: List[Dict[str, Any]]) -> None:
     if not filtered_rows:
         st.info("表示する予定がありません。")
         return
 
-    _inject_collect_card_css()
-    st.markdown('<div class="cal-collect-list">', unsafe_allow_html=True)
-    for row in filtered_rows:
-        st.markdown(_build_collect_card_html(row), unsafe_allow_html=True)
-        if st.button("複製", key=f"cal_collect_copy_{row.get('row_key')}", type="tertiary"):
-            apply_project_register_draft(
-                REGISTER_KEY_PREFIX,
-                project_name=str(row.get("title") or ""),
-                address=str(row.get("location") or ""),
-            )
-            st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+    for idx, row in enumerate(filtered_rows):
+        title = str(row.get("title") or "")
+        address = str(row.get("location") or "")
+        with st.container(border=True):
+            head_l, head_r = st.columns([4, 1], vertical_alignment="center")
+            with head_l:
+                st.caption(
+                    f"{row.get('date', '')} · {row.get('worker_label', '')} · {_time_range_label(row)}"
+                )
+            with head_r:
+                st.button(
+                    "複製",
+                    type="primary",
+                    key=f"cal_collect_copy_{idx}",
+                    use_container_width=True,
+                    on_click=copy_calendar_event_to_register,
+                    kwargs={
+                        "key_prefix": REGISTER_KEY_PREFIX,
+                        "project_name": title,
+                        "address": address,
+                    },
+                )
+            st.markdown(f"**{title}**")
+            location = str(row.get("location") or "").strip()
+            members = str(row.get("members") or "").strip()
+            if location:
+                st.caption(f"場所: {location}")
+            else:
+                st.caption("場所: —")
+            st.caption(f"メンバー: {members or '—'}")
 
 
 def render_calendar_collect_section(
@@ -260,6 +221,7 @@ def render_calendar_collect_section(
         if st.button("前週", key="calendar_collect_prev_week", use_container_width=True):
             st.session_state[CALENDAR_COLLECT_WEEK_KEY] = week_start - timedelta(days=7)
             st.session_state.pop(CALENDAR_COLLECT_CACHE_WEEK_KEY, None)
+            st.session_state.pop("calendar_collect_date_filter", None)
             st.rerun()
     with nav_c:
         st.markdown(
@@ -271,6 +233,7 @@ def render_calendar_collect_section(
         if st.button("次週", key="calendar_collect_next_week", use_container_width=True):
             st.session_state[CALENDAR_COLLECT_WEEK_KEY] = week_start + timedelta(days=7)
             st.session_state.pop(CALENDAR_COLLECT_CACHE_WEEK_KEY, None)
+            st.session_state.pop("calendar_collect_date_filter", None)
             st.rerun()
 
     if st.button("閉じる", key="calendar_collect_close", type="secondary"):
@@ -283,12 +246,22 @@ def render_calendar_collect_section(
         session_tokens=session_tokens,
     )
     worker_options = sorted({str(r.get("worker_label") or "") for r in rows if r.get("worker_label")})
+    date_options = _week_date_filter_options(week_start)
+    date_labels = [label for label, _ in date_options]
 
-    search_q = st.text_input(
-        "検索（タイトル・場所・メンバーなど）",
-        key="calendar_collect_search",
-        placeholder="キーワードで絞り込み…",
-    )
+    filt1, filt2 = st.columns(2)
+    with filt1:
+        search_q = st.text_input(
+            "検索（タイトル・場所・メンバーなど）",
+            key="calendar_collect_search",
+            placeholder="キーワードで絞り込み…",
+        )
+    with filt2:
+        selected_date_label = st.selectbox(
+            "日付で絞り込み",
+            options=date_labels,
+            key="calendar_collect_date_filter",
+        )
     worker_filter = st.multiselect(
         "職人で絞り込み",
         options=worker_options,
@@ -296,6 +269,12 @@ def render_calendar_collect_section(
         placeholder="（全員）",
     )
 
-    filtered = _filter_rows(rows, query=search_q, worker_labels=worker_filter)
+    filter_date = next((d for label, d in date_options if label == selected_date_label), None)
+    filtered = _filter_rows(
+        rows,
+        query=search_q,
+        worker_labels=worker_filter,
+        filter_date=filter_date,
+    )
     st.caption(f"表示件数: {len(filtered)} / {len(rows)} 件")
     _render_collect_table(filtered)
