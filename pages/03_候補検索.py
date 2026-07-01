@@ -2103,6 +2103,7 @@ button {
             "candidate_search_project_select",
             "candidate_search_project_draft",
             "candidate_search_project_query",
+            "candidate_search_project_pending_pick",
             "_candidate_sync_project_key",
             "worker_multi_select",
             "worker_include_mode",
@@ -2119,7 +2120,7 @@ button {
         st.session_state.pop("candidate_search_display_pending", None)
         st.session_state.pop("_cal_last_component_click", None)
         st.session_state.pop("_cal_last_component_nonce", None)
-        st.session_state.pop("_combo_search_resync", None)
+        st.session_state.pop("candidate_search_project_pending_pick", None)
         _clear_candidate_search_ui_busy()
         inject_clear_force_busy_overlay()
         st.session_state.pop("_candidate_search_masters", None)
@@ -2234,21 +2235,6 @@ button {
             except (TypeError, ValueError):
                 pass
         required_capacity = int(st.session_state.get("candidate_search_capacity", 0))
-        if (
-            not selected_project
-            and required_capacity <= 0
-            and str(
-                st.session_state.get("candidate_search_project_draft")
-                or st.session_state.get("candidate_search_project_query")
-                or ""
-            ).strip()
-            and not st.session_state.get("_combo_search_resync")
-        ):
-            st.session_state["_combo_search_resync"] = True
-            st.session_state["_candidate_search_btn_pressed"] = True
-            st.session_state["candidate_search_ui_busy"] = True
-            st.rerun()
-        st.session_state.pop("_combo_search_resync", None)
 
     if not selected_project and required_capacity <= 0 and (search_clicked or search_press):
         st.error("案件が選択されていません。検索を行う前に案件を選択するか、人数を指定してください。")
