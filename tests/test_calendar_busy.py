@@ -20,7 +20,7 @@ def _event(
     return ev
 
 
-def test_needs_action_invitation_is_not_busy() -> None:
+def test_needs_action_invitation_is_busy() -> None:
     ev = _event(
         attendees=[
             {
@@ -30,7 +30,7 @@ def test_needs_action_invitation_is_not_busy() -> None:
             }
         ]
     )
-    assert event_counts_as_busy(ev, owner_email="worker@example.com") is False
+    assert event_counts_as_busy(ev, owner_email="worker@example.com") is True
 
 
 def test_declined_invitation_is_not_busy() -> None:

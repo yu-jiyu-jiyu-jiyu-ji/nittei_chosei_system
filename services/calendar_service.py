@@ -142,8 +142,8 @@ def event_counts_as_busy(
 ) -> bool:
     """予定が空き判定・移動計算の「占有」に含めるか.
 
-    招待のみで未回答（needsAction）・辞退（declined）は占有しない。
-    主催者・承諾済み（accepted）・仮承諾（tentative）は占有する。
+    招待で未回答（needsAction）・承諾済み（accepted）・仮承諾（tentative）は占有する。
+    辞退（declined）のみ占有しない。主催者の予定は常に占有する。
     """
     if str(ev.get("status") or "").strip().lower() == "cancelled":
         return False
@@ -179,7 +179,7 @@ def event_counts_as_busy(
         return True
 
     status = str(self_attendee.get("responseStatus") or "").strip().lower()
-    if status in ("declined", "needsaction"):
+    if status == "declined":
         return False
     return True
 
