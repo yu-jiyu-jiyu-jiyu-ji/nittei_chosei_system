@@ -44,6 +44,7 @@ from utils.loading_util import (
     inject_force_busy_marker,
     visible_spinner,
 )
+from utils.combobox_util import render_searchable_selectbox
 from utils.project_register_ui import (
     CANDIDATE_REGISTER_DIALOG_RESULT_KEY,
     render_candidate_search_register_ui,
@@ -1690,11 +1691,13 @@ button {
     project_options = {p["project_name"]: p for p in projects}
     project_name_list = list(project_options.keys())
 
-    selected_project_name = st.selectbox(
+    selected_project_name = render_searchable_selectbox(
         "案件",
-        options=[""] + project_name_list,
-        format_func=lambda v: v if v else "（選択してください）",
-        key="candidate_search_project_select",
+        project_name_list,
+        select_key="candidate_search_project_select",
+        query_key="candidate_search_project_query",
+        placeholder="案件名の一部を入力して絞り込み…",
+        help="入力で一覧を絞り込み、下の一覧から案件を選択します。",
     )
     selected_project = project_options.get(selected_project_name)
 
@@ -2059,6 +2062,7 @@ button {
     if clear_clicked:
         for k in (
             "candidate_search_project_select",
+            "candidate_search_project_query",
             "worker_multi_select",
             "worker_include_mode",
             "worker_rank_filters",

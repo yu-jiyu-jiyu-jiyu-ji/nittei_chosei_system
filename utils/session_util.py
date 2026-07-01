@@ -68,6 +68,7 @@ def apply_registered_project_to_candidate_search(project: Dict[str, Any]) -> boo
     st.session_state["selected_project"] = project
     st.session_state["selected_project_id"] = project.get("project_id")
     st.session_state["candidate_search_project_select"] = pname
+    st.session_state["candidate_search_project_query"] = pname
     st.session_state["_candidate_sync_project_key"] = pname
     try:
         rw = int(project.get("required_workers") or 0)
