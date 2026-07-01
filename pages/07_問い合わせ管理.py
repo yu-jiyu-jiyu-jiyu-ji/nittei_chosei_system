@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from typing import Any, Dict, List, Optional
-
-import html
+from typing import Any, Dict, List
 
 import streamlit as st
 
@@ -22,11 +19,16 @@ from services.inquiry_service import (
     save_inquiry_attachment_files,
     update_inquiry_status,
 )
+from utils.inquiry_list_util import (
+    CATEGORY_LABEL,
+    STATUS_LABEL,
+    format_inquiry_ts,
+    render_inquiry_card_list,
+    resolve_inquiry_selected_index,
+)
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
 from utils.session_util import init_session_state
 
-CATEGORY_LABEL = {"usage": "使い方", "system": "システム"}
-STATUS_LABEL = {"open": "未対応", "in_progress": "対応中", "closed": "完了"}
 STATUS_OPTIONS = ["open", "in_progress", "closed"]
 ADMIN_PASS_ENV = "INQUIRY_ADMIN_PASSWORD"
 _INQ_ADMIN_LOAD_TIMEOUT_SEC = 12.0
@@ -60,150 +62,6 @@ def _render_attachment_images(paths: List[str]) -> None:
                 st.image(str(rp))
             else:
                 st.caption(str(p))
-
-
-def _format_ts(raw: Optional[str]) -> str:
-    if not raw:
-        return "—"
-    try:
-        s = str(raw).replace("Z", "+00:00")
-        dt = datetime.fromisoformat(s)
-        return dt.strftime("%Y-%m-%d %H:%M")
-    except (TypeError, ValueError):
-        return str(raw)
-
-
-def _format_ts_date(raw: Optional[str]) -> str:
-    if not raw:
-        return "—"
-    try:
-        s = str(raw).replace("Z", "+00:00")
-        dt = datetime.fromisoformat(s)
-        return dt.strftime("%Y/%m/%d")
-    except (TypeError, ValueError):
-        return str(raw)
-
-
-_STATUS_BADGE_CLASS = {
-    "open": "inq-status-open",
-    "in_progress": "inq-status-progress",
-    "closed": "inq-status-closed",
-}
-
-
-def _inject_inquiry_list_css() -> None:
-    st.markdown(
-        """
-<style>
-.inq-list { display: flex; flex-direction: column; gap: 0.85rem; }
-.inq-card {
-    border: 1px solid #e5e7eb;
-    border-radius: 12px;
-    padding: 1rem 1.1rem 0.35rem;
-    background: #fff;
-}
-.inq-card.is-selected {
-    border-color: #2563eb;
-    box-shadow: 0 0 0 1px #2563eb;
-    background: #f8fbff;
-}
-.inq-card-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 0.75rem;
-    margin-bottom: 0.55rem;
-}
-.inq-card-meta {
-    font-size: 0.82rem;
-    color: #6b7280;
-    line-height: 1.45;
-}
-.inq-status {
-    display: inline-block;
-    font-size: 0.74rem;
-    font-weight: 700;
-    padding: 0.22rem 0.6rem;
-    border-radius: 999px;
-    white-space: nowrap;
-}
-.inq-status-open { background: #fef3c7; color: #b45309; }
-.inq-status-progress { background: #dbeafe; color: #1d4ed8; }
-.inq-status-closed { background: #e5e7eb; color: #4b5563; }
-.inq-card-title {
-    font-size: 1.02rem;
-    font-weight: 700;
-    color: #111827;
-    line-height: 1.5;
-    margin: 0 0 0.15rem 0;
-}
-div[data-testid="stVerticalBlock"]:has(.inq-card) + div[data-testid="stVerticalBlock"] div[data-testid="stButton"] button {
-    border: none;
-    background: transparent;
-    color: #2563eb;
-    font-weight: 600;
-    padding: 0.15rem 0 0.55rem;
-    justify-content: flex-start;
-    box-shadow: none;
-}
-div[data-testid="stVerticalBlock"]:has(.inq-card) + div[data-testid="stVerticalBlock"] div[data-testid="stButton"] button:hover {
-    color: #1d4ed8;
-    background: transparent;
-}
-</style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _status_badge_html(status: str) -> str:
-    key = status if status in _STATUS_BADGE_CLASS else "open"
-    label = STATUS_LABEL.get(key, status)
-    css = _STATUS_BADGE_CLASS.get(key, "inq-status-open")
-    return f'<span class="inq-status {css}">{html.escape(label)}</span>'
-
-
-def _build_inquiry_card_html(it: Dict[str, Any], *, selected: bool) -> str:
-    status = str(it.get("status") or "open")
-    category = html.escape(CATEGORY_LABEL.get(it.get("category"), "—"))
-    email = html.escape(str(it.get("user_email") or "—"))
-    title = html.escape(str(it.get("summary") or "（概要なし）"))
-    date_s = html.escape(_format_ts_date(it.get("created_at")))
-    sel_cls = " is-selected" if selected else ""
-    return (
-        f'<div class="inq-card{sel_cls}">'
-        f'<div class="inq-card-head">'
-        f'<div class="inq-card-meta">{category} · {email}<br>{date_s}</div>'
-        f"{_status_badge_html(status)}"
-        f"</div>"
-        f'<p class="inq-card-title">{title}</p>'
-        f"</div>"
-    )
-
-
-def _resolve_selected_index(items: List[Dict[str, Any]]) -> int:
-    """セッション保存 ID から表示対象の index を決める."""
-    selected_id = str(st.session_state.get("inq_admin_selected_id") or "").strip()
-    if selected_id:
-        for i, it in enumerate(items):
-            if str(it.get("inquiry_id") or "") == selected_id:
-                return i
-    st.session_state["inq_admin_selected_id"] = str(items[0].get("inquiry_id") or "")
-    return 0
-
-
-def _render_inquiry_card_list(items: List[Dict[str, Any]], *, selected_id: str) -> None:
-    """カード型の問い合わせ一覧を描画する."""
-    _inject_inquiry_list_css()
-    st.markdown('<div class="inq-list">', unsafe_allow_html=True)
-    for it in items:
-        inquiry_id = str(it.get("inquiry_id") or "")
-        selected = inquiry_id == selected_id
-        st.markdown(_build_inquiry_card_html(it, selected=selected), unsafe_allow_html=True)
-        if st.button("詳細を見る →", key=f"inq_pick_{inquiry_id}", type="tertiary"):
-            st.session_state["inq_admin_selected_id"] = inquiry_id
-            st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
 
 
 @st.dialog("開発用プロンプト（ドラフト）")
@@ -280,7 +138,7 @@ def render_page() -> None:
         st.warning("最新データの取得がタイムアウトしたため、直近の表示データを表示しています。")
 
     admin_name = str(st.session_state.get("current_user_name") or "").strip()
-    ix = _resolve_selected_index(items)
+    ix = resolve_inquiry_selected_index(items, session_key="inq_admin_selected_id")
     row = items[ix]
     inquiry_id = str(row.get("inquiry_id") or "")
     selected_id = inquiry_id
@@ -289,7 +147,12 @@ def render_page() -> None:
     with list_col:
         st.markdown("##### 全件一覧")
         st.caption("カードの「詳細を見る」から内容を表示できます。")
-        _render_inquiry_card_list(items, selected_id=selected_id)
+        render_inquiry_card_list(
+            items,
+            selected_id=selected_id,
+            session_key="inq_admin_selected_id",
+            button_key_prefix="inq_pick_",
+        )
 
     with detail_col:
         st.markdown("##### 詳細・操作")
@@ -298,7 +161,7 @@ def render_page() -> None:
             f"{row.get('user_name', '')} `<{row.get('user_email', '')}>`"
         )
         st.caption(
-            f"作成: {_format_ts(row.get('created_at'))} ／ "
+            f"作成: {format_inquiry_ts(row.get('created_at'))} ／ "
             f"ステータス: {STATUS_LABEL.get(row.get('status') or 'open', '—')}"
         )
 
@@ -377,7 +240,7 @@ def render_page() -> None:
             for m in msgs:
                 with st.chat_message("assistant" if m.get("role") == "admin" else "user"):
                     who = "管理者" if m.get("role") == "admin" else (m.get("sender_name") or "起票者")
-                    st.caption(f"{who} · {_format_ts(m.get('created_at'))}")
+                    st.caption(f"{who} · {format_inquiry_ts(m.get('created_at'))}")
                     if m.get("content"):
                         st.write(m.get("content", ""))
                     msg_images = m.get("image_urls") or []

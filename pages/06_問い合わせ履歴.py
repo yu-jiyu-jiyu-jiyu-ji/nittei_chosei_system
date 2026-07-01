@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import streamlit as st
 
@@ -25,23 +24,23 @@ from utils.inquiry_dialog_util import (
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
 from utils.session_util import init_session_state
 
-CATEGORY_LABEL = {"usage": "使い方", "system": "システム"}
-STATUS_LABEL = {"open": "未対応", "in_progress": "対応中", "closed": "完了"}
-
-
-def _format_ts(raw: Optional[str]) -> str:
-    if not raw:
-        return "—"
-    try:
-        s = str(raw).replace("Z", "+00:00")
-        dt = datetime.fromisoformat(s)
-        return dt.strftime("%Y-%m-%d %H:%M")
-    except (TypeError, ValueError):
-        return str(raw)
+from utils.inquiry_list_util import (
+    CATEGORY_LABEL,
+    STATUS_LABEL,
+    format_inquiry_ts,
+    render_inquiry_card_list,
+    resolve_inquiry_selected_index,
+)
 
 
 def _admin_reply_count(row: Dict[str, Any]) -> int:
     return len([m for m in (row.get("messages") or []) if m.get("role") == "admin"])
+
+
+def _history_card_meta(it: Dict[str, Any]) -> str:
+    category = CATEGORY_LABEL.get(it.get("category"), "—")
+    replies = _admin_reply_count(it)
+    return f"{category} · 返信{replies}件"
 
 
 def render_page() -> None:
@@ -141,35 +140,32 @@ def render_page() -> None:
         st.info("まだ問い合わせはありません。")
         st.stop()
 
-    left, right = st.columns([1, 2])
-    with left:
+    ix = resolve_inquiry_selected_index(items, session_key="inq_history_selected_id")
+    row = items[ix]
+    selected_id = str(row.get("inquiry_id") or "")
+
+    list_col, detail_col = st.columns([2, 3])
+    with list_col:
         st.markdown("##### 一覧")
-        options = list(range(len(items)))
-        labels = [
-            f"[{CATEGORY_LABEL.get(it.get('category'), '')}] {STATUS_LABEL.get(it.get('status'), '')} "
-            f"· 返信{_admin_reply_count(it)} · {_format_ts(it.get('created_at'))} — "
-            f"{(it.get('summary') or '')[:56]}"
-            for it in items
-        ]
-        ix = st.radio(
-            "件名",
-            options,
-            format_func=lambda i: labels[i],
-            key="inq_selected_idx",
-            label_visibility="collapsed",
+        st.caption("カードの「詳細を見る」から内容を表示できます。")
+        render_inquiry_card_list(
+            items,
+            selected_id=selected_id,
+            session_key="inq_history_selected_id",
+            button_key_prefix="inq_hist_pick_",
+            meta_line_builder=_history_card_meta,
         )
 
-    row = items[ix]
-    with right:
+    with detail_col:
         st.markdown("##### 詳細")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.write("種別:", CATEGORY_LABEL.get(row.get("category"), "—"))
-        with c2:
-            st.write("ステータス:", STATUS_LABEL.get(row.get("status"), "—"))
-        st.write("日時:", _format_ts(row.get("created_at")))
-        st.markdown("**概要**")
-        st.write(row.get("summary") or "—")
+        st.write(
+            f"**{row.get('summary', '')}** ／ {CATEGORY_LABEL.get(row.get('category'), '')}"
+        )
+        st.caption(
+            f"日時: {format_inquiry_ts(row.get('created_at'))} ／ "
+            f"ステータス: {STATUS_LABEL.get(row.get('status') or 'open', '—')} ／ "
+            f"返信: {_admin_reply_count(row)}件"
+        )
         st.markdown("**内容**")
         st.text(row.get("detail") or "（なし）")
 
@@ -198,7 +194,7 @@ def render_page() -> None:
                         who = "管理者"
                     else:
                         who = (m.get("sender_name") or "").strip() or "起票者"
-                    st.caption(f"{who} · {_format_ts(m.get('created_at'))}")
+                    st.caption(f"{who} · {format_inquiry_ts(m.get('created_at'))}")
                     if m.get("content"):
                         st.write(m.get("content", ""))
                     msg_images = m.get("image_urls") or []
