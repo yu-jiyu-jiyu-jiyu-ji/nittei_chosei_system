@@ -264,7 +264,7 @@ def _render_collect_table(filtered_rows: List[Dict[str, Any]]) -> None:
         address = str(row.get("location") or "")
         with st.container(border=True):
             st.markdown('<div class="cal-collect-entry"></div>', unsafe_allow_html=True)
-            line_col, btn_col = st.columns([8, 1], gap="small", vertical_alignment="stretch")
+            line_col, btn_col = st.columns([8, 1], gap="small", vertical_alignment="center")
             with line_col:
                 st.markdown(
                     f'<div class="cal-inline-row"><div class="cal-inline-text">{_build_inline_line_html(row)}</div></div>',
