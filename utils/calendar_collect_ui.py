@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -145,41 +146,77 @@ def _time_range_label(row: Dict[str, Any]) -> str:
     return start_s or end_s or "—"
 
 
+def _inject_compact_row_css() -> None:
+    st.markdown(
+        """
+<style>
+.cal-collect-compact-list { display:flex; flex-direction:column; gap:0.22rem; margin-top:0.15rem; }
+.cal-inline-row {
+  border:1px solid #e5e7eb;
+  border-radius:5px;
+  padding:0.18rem 0.38rem;
+  background:#fff;
+  min-height:1.45rem;
+  overflow-x:auto;
+  -webkit-overflow-scrolling:touch;
+}
+.cal-inline-text {
+  font-size:0.71rem;
+  line-height:1.25;
+  color:#4b5563;
+  white-space:nowrap;
+}
+.cal-inline-text b { color:#111827; font-weight:700; }
+.cal-inline-sep { color:#9ca3af; padding:0 0.2rem; }
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _build_inline_line_html(row: Dict[str, Any]) -> str:
+    title = html.escape(str(row.get("title") or ""))
+    date_s = html.escape(str(row.get("date") or ""))
+    time_s = html.escape(_time_range_label(row))
+    worker = html.escape(str(row.get("worker_label") or ""))
+    location = html.escape(str(row.get("location") or "").strip() or "—")
+    members = html.escape(str(row.get("members") or "").strip() or "—")
+    sep = '<span class="cal-inline-sep">·</span>'
+    return (
+        f"<b>{title}</b>{sep}{date_s}{sep}{time_s}{sep}{worker}{sep}{location}{sep}{members}"
+    )
+
+
 def _render_collect_table(filtered_rows: List[Dict[str, Any]]) -> None:
     if not filtered_rows:
         st.info("表示する予定がありません。")
         return
 
+    _inject_compact_row_css()
+    st.markdown('<div class="cal-collect-compact-list">', unsafe_allow_html=True)
     for idx, row in enumerate(filtered_rows):
         title = str(row.get("title") or "")
         address = str(row.get("location") or "")
-        with st.container(border=True):
-            head_l, head_r = st.columns([4, 1], vertical_alignment="center")
-            with head_l:
-                st.caption(
-                    f"{row.get('date', '')} · {row.get('worker_label', '')} · {_time_range_label(row)}"
-                )
-            with head_r:
-                st.button(
-                    "複製",
-                    type="primary",
-                    key=f"cal_collect_copy_{idx}",
-                    use_container_width=True,
-                    on_click=copy_calendar_event_to_register,
-                    kwargs={
-                        "key_prefix": REGISTER_KEY_PREFIX,
-                        "project_name": title,
-                        "address": address,
-                    },
-                )
-            st.markdown(f"**{title}**")
-            location = str(row.get("location") or "").strip()
-            members = str(row.get("members") or "").strip()
-            if location:
-                st.caption(f"場所: {location}")
-            else:
-                st.caption("場所: —")
-            st.caption(f"メンバー: {members or '—'}")
+        line_col, btn_col = st.columns([9, 1], gap="small", vertical_alignment="center")
+        with line_col:
+            st.markdown(
+                f'<div class="cal-inline-row"><div class="cal-inline-text">{_build_inline_line_html(row)}</div></div>',
+                unsafe_allow_html=True,
+            )
+        with btn_col:
+            st.button(
+                "複製",
+                type="primary",
+                key=f"cal_collect_copy_{idx}",
+                use_container_width=True,
+                on_click=copy_calendar_event_to_register,
+                kwargs={
+                    "key_prefix": REGISTER_KEY_PREFIX,
+                    "project_name": title,
+                    "address": address,
+                },
+            )
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_calendar_collect_section(

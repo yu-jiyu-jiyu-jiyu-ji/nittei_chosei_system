@@ -20,7 +20,9 @@ from utils.loading_util import visible_spinner
 from utils.project_register_ui import (
     REGISTER_DRAFT_FLASH_KEY,
     consume_pending_register_draft,
+    render_project_register_anchor,
     render_project_register_expander,
+    render_project_register_scroll_if_needed,
 )
 from utils.session_util import init_session_state, navigate_to_candidate_search_after_register
 from utils.validation_util import validate_project_input
@@ -312,6 +314,7 @@ def render_page() -> None:
     # ----------------------------
     # 上部：新規登録フォーム
     # ----------------------------
+    render_project_register_anchor()
     st.subheader("新規登録")
     created = render_project_register_expander(key_prefix="project_list_new")
     if created:
@@ -446,6 +449,8 @@ def render_page() -> None:
                         st.session_state["project_detail_id"] = p.get("project_id")
                         st.rerun()
                 st.divider()
+
+    render_project_register_scroll_if_needed()
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from config.constants import (
     CONSTRUCTION_TYPE_OPTIONS,
@@ -25,6 +26,36 @@ _VEHICLE_COUNT_OPTIONS: List[int] = list(range(0, MAX_REQUIRED_VEHICLES + 1))
 
 CANDIDATE_REGISTER_DIALOG_RESULT_KEY = "candidate_register_dialog_result"
 REGISTER_DRAFT_FLASH_KEY = "project_register_draft_flash"
+REGISTER_SCROLL_TO_TOP_KEY = "project_register_scroll_to_top"
+PROJECT_REGISTER_ANCHOR_ID = "project-register-top"
+
+
+def render_project_register_anchor() -> None:
+    """新規登録セクションへのスクロール用アンカー."""
+    st.markdown(f'<div id="{PROJECT_REGISTER_ANCHOR_ID}"></div>', unsafe_allow_html=True)
+
+
+def render_project_register_scroll_if_needed() -> None:
+    """複製後など、新規登録フォームへスムーズスクロール."""
+    if not st.session_state.pop(REGISTER_SCROLL_TO_TOP_KEY, False):
+        return
+    components.html(
+        f"""
+        <script>
+        (function () {{
+            const doc = window.parent.document;
+            const anchor = doc.getElementById("{PROJECT_REGISTER_ANCHOR_ID}");
+            if (anchor) {{
+                anchor.scrollIntoView({{ behavior: "smooth", block: "start" }});
+                return;
+            }}
+            const root = doc.scrollingElement || doc.documentElement;
+            if (root) root.scrollTo({{ top: 0, behavior: "smooth" }});
+        }})();
+        </script>
+        """,
+        height=0,
+    )
 
 
 def apply_project_register_draft(
@@ -39,6 +70,7 @@ def apply_project_register_draft(
         "address": str(address or "").strip(),
     }
     st.session_state[REGISTER_DRAFT_FLASH_KEY] = True
+    st.session_state[REGISTER_SCROLL_TO_TOP_KEY] = True
 
 
 def consume_pending_register_draft(key_prefix: str) -> None:
