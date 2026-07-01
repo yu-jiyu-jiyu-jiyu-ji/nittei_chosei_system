@@ -44,6 +44,7 @@ from utils.loading_util import (
     inject_force_busy_marker,
     visible_spinner,
 )
+from utils.calendar_collect_ui import navigate_to_project_list_calendar_collect
 from utils.combobox_util import render_searchable_selectbox, resolve_combo_selection
 from utils.project_register_ui import (
     CANDIDATE_REGISTER_DIALOG_RESULT_KEY,
@@ -1749,6 +1750,11 @@ button {
     )
 
     render_candidate_search_register_ui()
+
+    cal_col, _ = st.columns([1, 3])
+    with cal_col:
+        if st.button("カレンダー情報収集", key="candidate_search_calendar_collect_btn"):
+            navigate_to_project_list_calendar_collect()
 
     project_options = {p["project_name"]: p for p in projects}
     project_name_list = list(project_options.keys())

@@ -13,6 +13,8 @@ from services.schedule_commit_service import remove_project_schedule_from_google
 from services.setting_service import get_settings
 from services.vehicle_service import list_vehicles
 from services.worker_service import list_workers
+from services.worker_service import list_workers
+from utils.calendar_collect_ui import render_calendar_collect_section
 from utils.display_util import format_status
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
 from utils.loading_util import visible_spinner
@@ -306,6 +308,19 @@ def render_page() -> None:
     created = render_project_register_expander(key_prefix="project_list_new")
     if created:
         navigate_to_candidate_search_after_register(created)
+
+    workers: list[Dict[str, Any]] = []
+    try:
+        workers = list_workers()
+    except FirestoreConnectionError:
+        st.warning("職人マスタを読み込めないため、カレンダー情報収集は利用できません。")
+    except Exception:
+        st.warning("職人マスタの取得に失敗したため、カレンダー情報収集は利用できません。")
+    else:
+        render_calendar_collect_section(
+            workers=workers,
+            session_tokens=st.session_state.get("google_calendar_tokens"),
+        )
 
     # ----------------------------
     # 絞り込み条件（案件は常時表示、条件で絞り込み）

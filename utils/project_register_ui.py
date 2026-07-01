@@ -26,6 +26,18 @@ _VEHICLE_COUNT_OPTIONS: List[int] = list(range(0, MAX_REQUIRED_VEHICLES + 1))
 CANDIDATE_REGISTER_DIALOG_RESULT_KEY = "candidate_register_dialog_result"
 
 
+def apply_project_register_draft(
+    key_prefix: str,
+    *,
+    project_name: str,
+    address: str,
+) -> None:
+    """カレンダー収集などから案件名・住所だけを新規登録フォームへ転記する."""
+    st.session_state[_field_key(key_prefix, "project_name")] = str(project_name or "").strip()
+    st.session_state[_field_key(key_prefix, "address")] = str(address or "").strip()
+    st.session_state[_field_key(key_prefix, "force_open_expander")] = True
+
+
 def _field_key(key_prefix: str, suffix: str) -> str:
     return f"{key_prefix}_{suffix}"
 
@@ -117,16 +129,17 @@ def _register_expander(
     key_prefix: str,
     close_after_register: bool,
 ) -> Iterator[None]:
+    force_open = bool(st.session_state.pop(_field_key(key_prefix, "force_open_expander"), False))
     if close_after_register:
         force_close = st.session_state.pop(_field_key(key_prefix, "force_close_expander"), False)
         if force_close:
             with st.expander(title, expanded=False):
                 yield
         else:
-            with st.expander(title):
+            with st.expander(title, expanded=force_open):
                 yield
     else:
-        with st.expander(title):
+        with st.expander(title, expanded=force_open):
             yield
 
 
