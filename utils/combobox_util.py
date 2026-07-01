@@ -141,13 +141,6 @@ def render_searchable_selectbox(
     q = str(query or "").strip()
     _sync_selection_from_query(select_key, qkey, options, q)
 
-    if not q:
-        filtered: List[str] = []
-    else:
-        filtered = filter_options(options, q)
-        if not filtered:
-            st.caption("該当する案件がありません。キーワードを変えてください。")
-
     options_js = json.dumps(options, ensure_ascii=False)
     label_js = json.dumps(label, ensure_ascii=False)
     overlay_id_js = json.dumps(overlay_id)
@@ -157,6 +150,18 @@ def render_searchable_selectbox(
 <script src="https://cdn.jsdelivr.net/npm/@streamlit/component-lib@2.0.0/dist/index.min.js"></script>
 <script>
 (function() {{
+  const frame = window.frameElement;
+  if (frame) {{
+    frame.style.setProperty("height", "0px", "important");
+    frame.style.setProperty("min-height", "0px", "important");
+    frame.style.setProperty("border", "none", "important");
+    const frameWrap = frame.parentElement;
+    if (frameWrap) {{
+      frameWrap.style.setProperty("margin", "0", "important");
+      frameWrap.style.setProperty("padding", "0", "important");
+    }}
+  }}
+
   const OPTIONS = {options_js};
   const LABEL = {label_js};
   const OVERLAY_ID = {overlay_id_js};
@@ -175,21 +180,53 @@ def render_searchable_selectbox(
     const style = doc.createElement("style");
     style.id = "candidate-combo-overlay-styles";
     style.textContent = `
+      .candidate-combo-host {{
+        position: relative !important;
+      }}
+      [data-testid="stElementContainer"].combo-element-open {{
+        position: relative;
+        z-index: 10050;
+      }}
+      .candidate-combo-input-mount {{
+        position: relative !important;
+      }}
+      .candidate-combo-input-mount.combo-open input[type="text"] {{
+        border-bottom-left-radius: 0 !important;
+        border-bottom-right-radius: 0 !important;
+        border-bottom-color: rgba(49, 51, 63, 0.12) !important;
+      }}
+      .candidate-combo-host input[type="text"] {{
+        border: 1px solid rgba(49, 51, 63, 0.2) !important;
+        border-radius: 0.5rem !important;
+        font-size: 16px !important;
+        box-shadow: none !important;
+        background: #fff !important;
+      }}
+      .candidate-combo-host input[type="text"]:focus {{
+        border-color: rgb(255, 75, 75) !important;
+        box-shadow: 0 0 0 1px rgb(255, 75, 75) !important;
+        outline: none !important;
+      }}
       .candidate-combo-suggest {{
         position: absolute;
         left: 0;
         right: 0;
-        top: calc(100% + 4px);
+        top: 100%;
+        margin-top: -1px;
         z-index: 10001;
-        max-height: min(50vh, 280px);
+        max-height: min(46vh, 260px);
         overflow-y: auto;
+        overflow-x: hidden;
         background: #fff;
         border: 1px solid rgba(49, 51, 63, 0.2);
-        border-radius: 0.5rem;
-        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+        border-top: none;
+        border-radius: 0 0 0.5rem 0.5rem;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
         display: none;
       }}
-      .candidate-combo-suggest.open {{ display: block; }}
+      .candidate-combo-input-mount.combo-open .candidate-combo-suggest.open {{
+        display: block;
+      }}
       .candidate-combo-suggest-item {{
         padding: 0.65rem 0.75rem;
         cursor: pointer;
@@ -197,6 +234,7 @@ def render_searchable_selectbox(
         color: rgb(49, 51, 63);
         border-bottom: 1px solid rgba(49, 51, 63, 0.06);
         -webkit-tap-highlight-color: rgba(255, 75, 75, 0.12);
+        line-height: 1.35;
       }}
       .candidate-combo-suggest-item:last-child {{ border-bottom: none; }}
       .candidate-combo-suggest-item:hover,
@@ -207,9 +245,6 @@ def render_searchable_selectbox(
         padding: 0.75rem;
         color: rgba(49, 51, 63, 0.55);
         font-size: 0.95rem;
-      }}
-      .candidate-combo-input-wrap {{
-        position: relative;
       }}
     `;
     (doc.head || doc.documentElement).appendChild(style);
@@ -243,12 +278,14 @@ def render_searchable_selectbox(
     }});
   }}
 
-  function bindSuggest(input, suggest, list) {{
+  function bindSuggest(mountPoint, elementHost, input, suggest, list) {{
     if (input.dataset.comboOverlayBound === "1") return;
     input.dataset.comboOverlayBound = "1";
     let activeIndex = -1;
 
     function closeList() {{
+      mountPoint.classList.remove("combo-open");
+      if (elementHost) elementHost.classList.remove("combo-element-open");
       suggest.classList.remove("open");
     }}
 
@@ -267,6 +304,7 @@ def render_searchable_selectbox(
           row.className = "candidate-combo-suggest-item";
           row.textContent = opt;
           row.addEventListener("mousedown", function(ev) {{ ev.preventDefault(); }});
+          row.addEventListener("touchstart", function(ev) {{ ev.preventDefault(); }}, {{ passive: false }});
           row.addEventListener("click", function(ev) {{
             ev.preventDefault();
             input.value = opt;
@@ -276,6 +314,8 @@ def render_searchable_selectbox(
           list.appendChild(row);
         }});
       }}
+      mountPoint.classList.add("combo-open");
+      if (elementHost) elementHost.classList.add("combo-element-open");
       suggest.classList.add("open");
     }}
 
@@ -319,35 +359,39 @@ def render_searchable_selectbox(
     }});
   }}
 
+  function findMountPoint(input, host) {{
+    let anchor = input.parentElement;
+    while (anchor && anchor !== host) {{
+      const parent = anchor.parentElement;
+      if (!parent || parent === host) break;
+      const inputs = parent.querySelectorAll('input[type="text"]');
+      if (inputs.length > 1) break;
+      anchor = parent;
+    }}
+    return anchor || input.parentElement || host;
+  }}
+
   function mount() {{
     ensureStyles();
     const input = findInputForLabel();
     if (!input) return;
 
-    const textRoot =
-      input.closest('[data-testid="stTextInput"]') ||
-      input.closest('[data-testid="stElementContainer"]');
-    if (!textRoot) return;
+    const host = input.closest('[data-testid="stTextInput"]');
+    if (!host) return;
+    host.classList.add("candidate-combo-host");
+    const elementHost = host.closest('[data-testid="stElementContainer"]');
+    const mountPoint = findMountPoint(input, host);
 
-    let wrap = textRoot.querySelector(".candidate-combo-input-wrap");
-    if (!wrap) {{
-      wrap = doc.createElement("div");
-      wrap.className = "candidate-combo-input-wrap";
-      const parent = input.parentElement;
-      if (!parent) return;
-      parent.insertBefore(wrap, input);
-      wrap.appendChild(input);
-    }}
-
-    let suggest = wrap.querySelector(".candidate-combo-suggest");
+    let suggest = mountPoint.querySelector(":scope > .candidate-combo-suggest");
     if (!suggest) {{
       suggest = doc.createElement("div");
       suggest.className = "candidate-combo-suggest";
       suggest.id = OVERLAY_ID;
       const list = doc.createElement("div");
       suggest.appendChild(list);
-      wrap.appendChild(suggest);
-      bindSuggest(input, suggest, list);
+      mountPoint.classList.add("candidate-combo-input-mount");
+      mountPoint.appendChild(suggest);
+      bindSuggest(mountPoint, elementHost, input, suggest, list);
     }}
   }}
 
