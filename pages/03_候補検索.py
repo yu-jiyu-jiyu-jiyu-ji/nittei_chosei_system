@@ -1762,6 +1762,14 @@ button {
                 pass
         else:
             st.session_state["candidate_search_capacity"] = 0
+    elif search_press and selected_project:
+        # 検索ボタン on_click と同様に、ウィジェット描画前に人数を揃える
+        try:
+            rw = int(selected_project.get("required_workers") or 0)
+            if rw > 0:
+                st.session_state["candidate_search_capacity"] = max(0, rw)
+        except (TypeError, ValueError):
+            pass
 
     worker_options: List[Dict[str, str]] = []
     for w in workers:
@@ -1850,15 +1858,6 @@ button {
 
     # nowrap-row の閉じタグ
     st.markdown("</div>", unsafe_allow_html=True)
-
-
-    if (search_press or search_clicked) and selected_project:
-        try:
-            _rw_search = int(selected_project.get("required_workers") or 0)
-            if _rw_search > 0:
-                st.session_state["candidate_search_capacity"] = _rw_search
-        except (TypeError, ValueError):
-            pass
 
     required_capacity = int(st.session_state.get("candidate_search_capacity", 0))
     loc_ov: Dict[str, str] = st.session_state.setdefault("candidate_location_overrides", {})
@@ -2226,12 +2225,6 @@ button {
         if _final_name:
             selected_project_name = _final_name
             selected_project = project_options.get(_final_name)
-            try:
-                _rw_final = int((selected_project or {}).get("required_workers") or 0)
-                if _rw_final > 0:
-                    st.session_state["candidate_search_capacity"] = _rw_final
-            except (TypeError, ValueError):
-                pass
         required_capacity = int(st.session_state.get("candidate_search_capacity", 0))
 
     if not selected_project and required_capacity <= 0 and (search_clicked or search_press):
