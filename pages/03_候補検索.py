@@ -858,13 +858,13 @@ def _record_calendar_gesture_suppress(raw: Any) -> None:
         return
     at_ms = int(payload.get("at") or 0)
     if at_ms <= 0:
-        at_ms = int(time.time() * 1000)
+        at_ms = int(datetime.now().timestamp() * 1000)
     st.session_state["_cal_gesture_suppress_until_ms"] = at_ms + _CALENDAR_GESTURE_SUPPRESS_MS
 
 
 def _is_calendar_selection_suppressed() -> bool:
     until_ms = int(st.session_state.get("_cal_gesture_suppress_until_ms") or 0)
-    return int(time.time() * 1000) < until_ms
+    return int(datetime.now().timestamp() * 1000) < until_ms
 
 
 def _reset_plotly_calendar_widget_state() -> None:
