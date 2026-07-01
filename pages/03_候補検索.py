@@ -65,7 +65,11 @@ def _on_candidate_search_button_click() -> None:
             for p in projects
             if str(p.get("project_name") or "").strip()
         ]
-        resolved = resolve_combo_selection("candidate_search_project_select", names)
+        resolved = resolve_combo_selection(
+            "candidate_search_project_select",
+            names,
+            query_key="candidate_search_project_query",
+        )
         if resolved:
             for p in projects:
                 if str(p.get("project_name") or "").strip() == resolved:
@@ -1714,12 +1718,15 @@ button {
         "案件",
         project_name_list,
         select_key="candidate_search_project_select",
+        query_key="candidate_search_project_query",
         placeholder="案件名を入力して絞り込み・選択…",
-        help="案件名を入力して一覧から選ぶか、そのまま「検索」を押してください（一致する案件が1件なら自動で選ばれます）。",
+        help="案件名の一部を入力して絞り込み、一覧から選んでください。",
     )
     if search_press:
         _resolved_on_search = resolve_combo_selection(
-            "candidate_search_project_select", project_name_list
+            "candidate_search_project_select",
+            project_name_list,
+            query_key="candidate_search_project_query",
         )
         if _resolved_on_search:
             selected_project_name = _resolved_on_search
