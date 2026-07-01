@@ -1696,7 +1696,7 @@ button {
         project_name_list,
         select_key="candidate_search_project_select",
         placeholder="案件名を入力して絞り込み・選択…",
-        help="1つの欄で入力して絞り込み、一覧から選択できます。",
+        help="クリックして開き、案件名を入力すると一覧が絞り込まれます。",
     )
     selected_project = project_options.get(selected_project_name)
 
