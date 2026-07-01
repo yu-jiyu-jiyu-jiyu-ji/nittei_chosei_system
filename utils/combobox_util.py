@@ -48,11 +48,6 @@ def resolve_combo_selection(
         st.session_state[select_key] = exact_ci[0]
         return exact_ci[0]
 
-    partial = [opt for opt in options if draft_cf in opt.casefold()]
-    if len(partial) == 1:
-        st.session_state[select_key] = partial[0]
-        return partial[0]
-
     return ""
 
 
@@ -98,9 +93,6 @@ def render_searchable_selectbox(
             st.session_state[select_key] = q
             return
         filtered = filter_options(options, q)
-        if len(filtered) == 1:
-            st.session_state[select_key] = filtered[0]
-            return
         cur = str(st.session_state.get(select_key) or "").strip()
         if cur not in filtered:
             st.session_state[select_key] = ""
@@ -113,9 +105,7 @@ def render_searchable_selectbox(
     filtered = filter_options(options, q) if q else list(options)
 
     show_picker = False
-    if q and len(filtered) == 1:
-        st.session_state[select_key] = filtered[0]
-    elif q and not filtered:
+    if q and not filtered:
         st.session_state[select_key] = ""
     elif filtered:
         show_picker = True
@@ -200,8 +190,7 @@ def render_searchable_selectbox(
             on_change=_on_select_change,
         )
 
-    resolved = resolve_combo_selection(select_key, options, query_key=query_key)
-    final = resolved or str(st.session_state.get(select_key) or "").strip()
+    final = str(st.session_state.get(select_key) or "").strip()
     if final in options:
         st.markdown(
             f'<div class="candidate-combo-selected-badge">選択中: {html.escape(final)}</div>',
