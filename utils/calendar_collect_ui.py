@@ -104,64 +104,121 @@ def _ensure_rows_loaded(
     )
 
 
+def _inject_collect_card_css() -> None:
+    st.markdown(
+        """
+<style>
+.cal-collect-list { display:flex; flex-direction:column; gap:0.55rem; }
+.cal-collect-card {
+    border:1px solid #e5e7eb;
+    border-radius:10px;
+    padding:0.65rem 0.8rem 0.45rem;
+    background:#fff;
+}
+.cal-collect-card-head {
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-start;
+    gap:0.5rem;
+    margin-bottom:0.35rem;
+    font-size:0.78rem;
+    color:#6b7280;
+    line-height:1.35;
+}
+.cal-collect-card-time {
+    white-space:nowrap;
+    font-weight:600;
+    color:#4b5563;
+}
+.cal-collect-card-title {
+    font-size:0.92rem;
+    font-weight:700;
+    color:#111827;
+    line-height:1.4;
+    margin:0 0 0.3rem 0;
+}
+.cal-collect-card-line {
+    font-size:0.78rem;
+    color:#4b5563;
+    line-height:1.4;
+    margin:0.1rem 0;
+}
+.cal-collect-card-line b { color:#6b7280; font-weight:600; }
+div[data-testid="stVerticalBlock"]:has(.cal-collect-card) + div[data-testid="stVerticalBlock"] div[data-testid="stButton"] button {
+    margin-top:-0.15rem;
+    margin-bottom:0.35rem;
+    border:none;
+    background:transparent;
+    color:#2563eb;
+    font-weight:600;
+    padding:0 0 0.2rem;
+    justify-content:flex-start;
+    box-shadow:none;
+    min-height:2rem;
+}
+@media (max-width: 768px) {
+    .cal-collect-list { gap:0.45rem; }
+    .cal-collect-card {
+        padding:0.5rem 0.65rem 0.35rem;
+        border-radius:8px;
+    }
+    .cal-collect-card-head { font-size:0.74rem; margin-bottom:0.25rem; }
+    .cal-collect-card-title { font-size:0.86rem; }
+    .cal-collect-card-line { font-size:0.74rem; }
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _time_range_label(row: Dict[str, Any]) -> str:
+    start_s = str(row.get("start_time") or "")
+    end_s = str(row.get("end_time") or "")
+    if start_s == "終日":
+        return "終日"
+    if start_s and end_s:
+        return f"{start_s} - {end_s}"
+    return start_s or end_s or "—"
+
+
+def _build_collect_card_html(row: Dict[str, Any]) -> str:
+    date_s = html.escape(str(row.get("date") or ""))
+    worker = html.escape(str(row.get("worker_label") or ""))
+    title = html.escape(str(row.get("title") or ""))
+    time_s = html.escape(_time_range_label(row))
+    location = html.escape(str(row.get("location") or "—"))
+    members = html.escape(str(row.get("members") or "—"))
+    return (
+        f'<div class="cal-collect-card">'
+        f'<div class="cal-collect-card-head">'
+        f"<span>{date_s} · {worker}</span>"
+        f'<span class="cal-collect-card-time">{time_s}</span>'
+        f"</div>"
+        f'<p class="cal-collect-card-title">{title}</p>'
+        f'<p class="cal-collect-card-line"><b>場所</b> {location}</p>'
+        f'<p class="cal-collect-card-line"><b>メンバー</b> {members}</p>'
+        f"</div>"
+    )
+
+
 def _render_collect_table(filtered_rows: List[Dict[str, Any]]) -> None:
     if not filtered_rows:
         st.info("表示する予定がありません。")
         return
 
-    st.markdown(
-        """
-<style>
-.cal-collect-hdr { font-size:0.82rem; font-weight:700; color:#374151; padding-bottom:0.25rem; border-bottom:1px solid #e5e7eb; margin-bottom:0.35rem; }
-.cal-collect-row { font-size:0.84rem; padding:0.35rem 0; border-bottom:1px solid #f3f4f6; }
-</style>
-        """,
-        unsafe_allow_html=True,
-    )
-    widths = [1.0, 2.2, 0.8, 0.8, 1.8, 1.6, 0.7]
-    header = st.columns(widths)
-    for col, label in zip(
-        header,
-        ["日付", "タイトル", "開始", "終了", "場所", "メンバー", "複製"],
-    ):
-        col.markdown(f'<div class="cal-collect-hdr">{label}</div>', unsafe_allow_html=True)
-
+    _inject_collect_card_css()
+    st.markdown('<div class="cal-collect-list">', unsafe_allow_html=True)
     for row in filtered_rows:
-        cols = st.columns(widths)
-        cols[0].markdown(
-            f'<div class="cal-collect-row">{html.escape(str(row.get("date") or ""))}</div>',
-            unsafe_allow_html=True,
-        )
-        cols[1].markdown(
-            f'<div class="cal-collect-row">{html.escape(str(row.get("title") or ""))}'
-            f'<br><span style="color:#6b7280;font-size:0.75rem;">{html.escape(str(row.get("worker_label") or ""))}</span></div>',
-            unsafe_allow_html=True,
-        )
-        cols[2].markdown(
-            f'<div class="cal-collect-row">{html.escape(str(row.get("start_time") or ""))}</div>',
-            unsafe_allow_html=True,
-        )
-        cols[3].markdown(
-            f'<div class="cal-collect-row">{html.escape(str(row.get("end_time") or ""))}</div>',
-            unsafe_allow_html=True,
-        )
-        cols[4].markdown(
-            f'<div class="cal-collect-row">{html.escape(str(row.get("location") or "—"))}</div>',
-            unsafe_allow_html=True,
-        )
-        cols[5].markdown(
-            f'<div class="cal-collect-row">{html.escape(str(row.get("members") or "—"))}</div>',
-            unsafe_allow_html=True,
-        )
-        with cols[6]:
-            if st.button("複製", key=f"cal_collect_copy_{row.get('row_key')}", type="secondary"):
-                apply_project_register_draft(
-                    REGISTER_KEY_PREFIX,
-                    project_name=str(row.get("title") or ""),
-                    address=str(row.get("location") or ""),
-                )
-                st.success("案件名と住所を新規登録フォームへ転記しました。上部のフォームを確認してください。")
-                st.rerun()
+        st.markdown(_build_collect_card_html(row), unsafe_allow_html=True)
+        if st.button("複製", key=f"cal_collect_copy_{row.get('row_key')}", type="tertiary"):
+            apply_project_register_draft(
+                REGISTER_KEY_PREFIX,
+                project_name=str(row.get("title") or ""),
+                address=str(row.get("location") or ""),
+            )
+            st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_calendar_collect_section(
@@ -198,23 +255,27 @@ def render_calendar_collect_section(
         week_start = date.fromisoformat(str(week_start))
         st.session_state[CALENDAR_COLLECT_WEEK_KEY] = week_start
 
-    nav_l, nav_c, nav_r, nav_close = st.columns([1, 3, 1, 1])
+    nav_l, nav_c, nav_r = st.columns([1, 2, 1])
     with nav_l:
-        if st.button("前週", key="calendar_collect_prev_week"):
+        if st.button("前週", key="calendar_collect_prev_week", use_container_width=True):
             st.session_state[CALENDAR_COLLECT_WEEK_KEY] = week_start - timedelta(days=7)
             st.session_state.pop(CALENDAR_COLLECT_CACHE_WEEK_KEY, None)
             st.rerun()
     with nav_c:
-        st.markdown(f"**対象週:** {_week_label(week_start)}（日曜始まり）")
+        st.markdown(
+            f"<div style='text-align:center;font-size:0.9rem;'>"
+            f"<b>対象週</b><br>{_week_label(week_start)}</div>",
+            unsafe_allow_html=True,
+        )
     with nav_r:
-        if st.button("次週", key="calendar_collect_next_week"):
+        if st.button("次週", key="calendar_collect_next_week", use_container_width=True):
             st.session_state[CALENDAR_COLLECT_WEEK_KEY] = week_start + timedelta(days=7)
             st.session_state.pop(CALENDAR_COLLECT_CACHE_WEEK_KEY, None)
             st.rerun()
-    with nav_close:
-        if st.button("閉じる", key="calendar_collect_close"):
-            st.session_state[CALENDAR_COLLECT_ACTIVE_KEY] = False
-            st.rerun()
+
+    if st.button("閉じる", key="calendar_collect_close", type="secondary"):
+        st.session_state[CALENDAR_COLLECT_ACTIVE_KEY] = False
+        st.rerun()
 
     rows = _ensure_rows_loaded(
         week_start=week_start,
@@ -223,20 +284,17 @@ def render_calendar_collect_section(
     )
     worker_options = sorted({str(r.get("worker_label") or "") for r in rows if r.get("worker_label")})
 
-    filt_l, filt_r = st.columns([2, 1])
-    with filt_l:
-        search_q = st.text_input(
-            "検索（タイトル・場所・メンバーなど）",
-            key="calendar_collect_search",
-            placeholder="キーワードで絞り込み…",
-        )
-    with filt_r:
-        worker_filter = st.multiselect(
-            "職人で絞り込み",
-            options=worker_options,
-            key="calendar_collect_worker_filter",
-            placeholder="（全員）",
-        )
+    search_q = st.text_input(
+        "検索（タイトル・場所・メンバーなど）",
+        key="calendar_collect_search",
+        placeholder="キーワードで絞り込み…",
+    )
+    worker_filter = st.multiselect(
+        "職人で絞り込み",
+        options=worker_options,
+        key="calendar_collect_worker_filter",
+        placeholder="（全員）",
+    )
 
     filtered = _filter_rows(rows, query=search_q, worker_labels=worker_filter)
     st.caption(f"表示件数: {len(filtered)} / {len(rows)} 件")

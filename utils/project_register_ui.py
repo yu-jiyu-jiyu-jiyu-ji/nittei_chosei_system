@@ -24,6 +24,7 @@ _WORKER_COUNT_OPTIONS: List[int] = list(range(1, MAX_REQUIRED_WORKERS + 1))
 _VEHICLE_COUNT_OPTIONS: List[int] = list(range(0, MAX_REQUIRED_VEHICLES + 1))
 
 CANDIDATE_REGISTER_DIALOG_RESULT_KEY = "candidate_register_dialog_result"
+REGISTER_DRAFT_FLASH_KEY = "project_register_draft_flash"
 
 
 def apply_project_register_draft(
@@ -32,9 +33,21 @@ def apply_project_register_draft(
     project_name: str,
     address: str,
 ) -> None:
-    """カレンダー収集などから案件名・住所だけを新規登録フォームへ転記する."""
-    st.session_state[_field_key(key_prefix, "project_name")] = str(project_name or "").strip()
-    st.session_state[_field_key(key_prefix, "address")] = str(address or "").strip()
+    """カレンダー収集などから案件名・住所の下書きを予約する（次 rerun でフォームへ反映）."""
+    st.session_state[_field_key(key_prefix, "pending_draft")] = {
+        "project_name": str(project_name or "").strip(),
+        "address": str(address or "").strip(),
+    }
+    st.session_state[REGISTER_DRAFT_FLASH_KEY] = True
+
+
+def consume_pending_register_draft(key_prefix: str) -> None:
+    """ウィジェット生成前に下書きを session_state へ反映する."""
+    draft = st.session_state.pop(_field_key(key_prefix, "pending_draft"), None)
+    if not isinstance(draft, dict):
+        return
+    st.session_state[_field_key(key_prefix, "project_name")] = str(draft.get("project_name") or "")
+    st.session_state[_field_key(key_prefix, "address")] = str(draft.get("address") or "")
     st.session_state[_field_key(key_prefix, "force_open_expander")] = True
 
 
@@ -151,6 +164,7 @@ def render_project_register_expander(
     title: str = "案件を新規登録",
 ) -> Optional[Dict[str, Any]]:
     """案件一覧向け: エキスパンダー内フォーム。成功時は作成した案件 dict を返す."""
+    consume_pending_register_draft(key_prefix)
     with _register_expander(title, key_prefix=key_prefix, close_after_register=close_after_register):
         created = _render_register_form(key_prefix)
         if created and close_after_register:

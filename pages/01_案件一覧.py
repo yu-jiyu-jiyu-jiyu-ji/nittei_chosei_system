@@ -13,12 +13,14 @@ from services.schedule_commit_service import remove_project_schedule_from_google
 from services.setting_service import get_settings
 from services.vehicle_service import list_vehicles
 from services.worker_service import list_workers
-from services.worker_service import list_workers
 from utils.calendar_collect_ui import render_calendar_collect_section
 from utils.display_util import format_status
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
 from utils.loading_util import visible_spinner
-from utils.project_register_ui import render_project_register_expander
+from utils.project_register_ui import (
+    REGISTER_DRAFT_FLASH_KEY,
+    render_project_register_expander,
+)
 from utils.session_util import init_session_state, navigate_to_candidate_search_after_register
 from utils.validation_util import validate_project_input
 
@@ -300,6 +302,9 @@ def render_page() -> None:
 
     st.title("案件一覧")
     st.caption("案件の登録・一覧・詳細を管理します。")
+
+    if st.session_state.pop(REGISTER_DRAFT_FLASH_KEY, False):
+        st.success("案件名と住所を新規登録フォームへ転記しました。上部のフォームを確認してください。")
 
     # ----------------------------
     # 上部：新規登録フォーム
