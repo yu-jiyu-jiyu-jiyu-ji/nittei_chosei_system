@@ -139,6 +139,17 @@ def render_searchable_selectbox(
   const PLACEHOLDER = {placeholder_js};
   const doc = window.parent && window.parent.document ? window.parent.document : document;
 
+  function initStreamlit() {{
+    try {{
+      if (window.Streamlit && window.Streamlit.setComponentReady) {{
+        window.Streamlit.setComponentReady();
+      }}
+    }} catch (e) {{}}
+  }}
+
+  initStreamlit();
+  window.addEventListener("load", initStreamlit);
+
   function anchorEl() {{
     return doc.getElementById(ANCHOR_ID);
   }}
@@ -517,16 +528,19 @@ def render_searchable_selectbox(
     )
 
     chosen, _draft = _parse_combo_component_value(raw, fallback=committed)
+    prev_committed = str(st.session_state.get(select_key) or "").strip()
     if chosen and chosen in options:
-        committed = _apply_committed(select_key, options, chosen, query_key=query_key)
+        applied = _apply_committed(select_key, options, chosen, query_key=query_key)
+        if applied and applied != prev_committed:
+            st.rerun()
 
-    resolved = resolve_combo_selection(select_key, options, query_key=query_key)
-    if resolved:
-        committed = resolved
+    resolve_combo_selection(select_key, options, query_key=query_key)
 
     if help:
         st.caption(help)
-    if committed and committed in options:
-        st.caption(f"選択中: {committed}")
+    display_committed = str(st.session_state.get(select_key) or "").strip()
+    if display_committed in options:
+        st.info(f"選択中: {display_committed}")
 
-    return committed if committed in options else ""
+    final = str(st.session_state.get(select_key) or "").strip()
+    return final if final in options else ""
