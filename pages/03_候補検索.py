@@ -911,15 +911,18 @@ def _purge_candidate_dialog_widget_keys(dcid: Optional[str] = None) -> None:
             st.session_state.pop(key, None)
 
 
+def _on_candidate_dialog_close() -> None:
+    """予約ダイアログ「閉じる」用 on_click（dialog 内の st.rerun は白画面の原因になる）."""
+    _reset_candidate_dialog_session(clear_plotly=False)
+
+
 def _reset_candidate_dialog_session(*, clear_plotly: bool = False) -> None:
     """予約ダイアログを閉じる／検索し直すときの状態クリア（再検索はしない）。"""
     st.session_state.pop("candidate_dialog_id", None)
     _purge_candidate_dialog_widget_keys()
-    if clear_plotly:
-        st.session_state.pop("_cal_plotly_selection_sig", None)
-        st.session_state.pop("_cal_last_component_click", None)
-        st.session_state.pop("_cal_last_component_nonce", None)
-        _reset_plotly_calendar_widget_state()
+    st.session_state.pop("_cal_last_component_click", None)
+    st.session_state.pop("_cal_last_component_nonce", None)
+    _reset_plotly_calendar_widget_state()
 
 
 # 日付列内の候補ブロック幅（x 軸データ座標。1.0 ≒ 列幅いっぱい）
@@ -2580,9 +2583,12 @@ button {
                     st.error("登録に失敗しました。内容を確認して「閉じる」を押してください。")
                 col_close, col_decide = st.columns(2)
                 with col_close:
-                    if st.button("閉じる", key=f"dialog_close_{wid}", disabled=processing):
-                        _reset_candidate_dialog_session(clear_plotly=False)
-                        st.rerun()
+                    st.button(
+                        "閉じる",
+                        key=f"dialog_close_{wid}",
+                        disabled=processing,
+                        on_click=_on_candidate_dialog_close,
+                    )
                 with col_decide:
                     if st.button(
                         "決定",
