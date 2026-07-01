@@ -212,18 +212,32 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
   width: 100%;
   min-height: 2.75rem;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 0.08rem;
+  overflow: hidden;
+}
+.cal-inline-meta {
+  font-size: 0.62rem;
+  line-height: 1.2;
+  color: #6b7280;
+  white-space: nowrap;
   overflow-x: auto;
+  max-width: 100%;
   -webkit-overflow-scrolling: touch;
 }
-.cal-inline-text {
-  font-size: 0.71rem;
-  line-height: 1.2;
-  color: #4b5563;
+.cal-inline-title {
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.25;
+  color: #111827;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
-.cal-inline-text b { color: #111827; font-weight: 700; }
-.cal-inline-sep { color: #9ca3af; padding: 0 0.18rem; }
+.cal-inline-sep { color: #9ca3af; }
 @media (max-width: 768px) {
   div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
     div[data-testid="column"]:last-child
@@ -232,7 +246,8 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
     font-size: 0.7rem !important;
   }
   .cal-inline-row { min-height: 2.6rem; }
-  .cal-inline-text { font-size: 0.68rem; }
+  .cal-inline-meta { font-size: 0.58rem; }
+  .cal-inline-title { font-size: 0.78rem; }
 }
 </style>
         """,
@@ -240,7 +255,7 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
     )
 
 
-def _build_inline_line_html(row: Dict[str, Any]) -> str:
+def _build_card_body_html(row: Dict[str, Any]) -> str:
     title = html.escape(str(row.get("title") or ""))
     date_s = html.escape(str(row.get("date") or ""))
     time_s = html.escape(_time_range_label(row))
@@ -248,8 +263,12 @@ def _build_inline_line_html(row: Dict[str, Any]) -> str:
     location = html.escape(str(row.get("location") or "").strip() or "—")
     members = html.escape(str(row.get("members") or "").strip() or "—")
     sep = '<span class="cal-inline-sep">·</span>'
+    meta = f"{date_s}{sep}{time_s}{sep}{worker}{sep}{location}{sep}{members}"
     return (
-        f"<b>{title}</b>{sep}{date_s}{sep}{time_s}{sep}{worker}{sep}{location}{sep}{members}"
+        f'<div class="cal-inline-row">'
+        f'<div class="cal-inline-meta">{meta}</div>'
+        f'<div class="cal-inline-title">{title}</div>'
+        f"</div>"
     )
 
 
@@ -266,10 +285,7 @@ def _render_collect_table(filtered_rows: List[Dict[str, Any]]) -> None:
             st.markdown('<div class="cal-collect-entry"></div>', unsafe_allow_html=True)
             line_col, btn_col = st.columns([8, 1], gap="small", vertical_alignment="center")
             with line_col:
-                st.markdown(
-                    f'<div class="cal-inline-row"><div class="cal-inline-text">{_build_inline_line_html(row)}</div></div>',
-                    unsafe_allow_html=True,
-                )
+                st.markdown(_build_card_body_html(row), unsafe_allow_html=True)
             with btn_col:
                 st.button(
                     "複製",
