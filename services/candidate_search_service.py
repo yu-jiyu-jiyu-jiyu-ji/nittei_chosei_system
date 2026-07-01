@@ -40,6 +40,17 @@ from services.vehicle_assignment_service import (
 
 TZ = ZoneInfo("Asia/Tokyo")
 
+# 車両カレンダーなしのとき、候補枠の前後に確保する分（既存予定との間隔）
+_NO_VEHICLE_SLOT_BUFFER_MINUTES = 60
+
+
+def _slot_calendar_buffers(*, use_vehicle_calendar: bool) -> Tuple[float, float]:
+    """車両なしは予定前後1時間を空け、車両ありは住所ベースの Maps 判定に任せる."""
+    if use_vehicle_calendar:
+        return 0.0, 0.0
+    m = float(_NO_VEHICLE_SLOT_BUFFER_MINUTES)
+    return m, m
+
 
 def _calendar_owner_email(resource: Dict[str, Any]) -> Optional[str]:
     em = str(resource.get("email") or "").strip()
@@ -809,6 +820,9 @@ def search_candidates(
     worker_off_dow: Dict[str, Set[int]] = {
         wid: worker_fixed_days_off_set(wid_to_worker[wid]) for wid in ready_ids
     }
+    slot_buf_before, slot_buf_after = _slot_calendar_buffers(
+        use_vehicle_calendar=use_vehicle_calendar
+    )
 
     for d in search_days:
         if is_company_closed_day(d, settings):
@@ -856,15 +870,20 @@ def search_candidates(
                 ev_w = _week_events(wc, cal_id)
                 owner_em = _calendar_owner_email(w)
                 if interval_free_cached(
-                    ev_w, slot_start, slot_end, owner_email=owner_em
+                    ev_w,
+                    slot_start,
+                    slot_end,
+                    buffer_before_minutes=slot_buf_before,
+                    buffer_after_minutes=slot_buf_after,
+                    owner_email=owner_em,
                 ):
                     slot_free_ids.append(wid)
 
             if len(slot_free_ids) < headcount:
                 continue
 
-            # B: Distance Matrix をスロット単位でまとめて取得（同一 OD はキャッシュ）
-            if project_address and maps_ok:
+            # B: Distance Matrix をスロット単位でまとめて取得（車両あり時のみ・住所ベース）
+            if use_vehicle_calendar and project_address and maps_ok:
                 dm_pairs: List[Tuple[str, str]] = []
                 pa = project_address.strip()
                 for wid in slot_free_ids:
@@ -936,7 +955,7 @@ def search_candidates(
                                 dm_pairs.append((oa, pa))
                 travel_duration_minutes_prefetch(dm_pairs)
 
-            # C: 移動・住所だけで不可能な職人を組み合わせ前に除外（内側ループと同じ判定）
+            # C: 移動・住所だけで不可能な職人を組み合わせ前に除外（車両あり時のみ）
             slot_pruned: List[str] = []
             for wid in slot_free_ids:
                 w = wid_to_worker[wid]
@@ -947,45 +966,48 @@ def search_candidates(
                 ev_w = _week_events(wc, cal_id)
                 owner_em = _calendar_owner_email(w)
                 ok_w = True
-                prev = get_previous_event_before_cached(
-                    ev_w, slot_start, day_start=day_start, owner_email=owner_em
-                )
-                if prev:
-                    loc = event_location(prev)
-                    pid = prev.get("id") or ""
-                    okey = _location_override_key(wid, str(pid))
-                    if not loc and okey in loc_ov:
-                        loc = loc_ov[okey]
-                    if loc and project_address and maps_ok:
-                        b = event_time_bounds(prev)
-                        pe = b[1] if b else None
-                        if pe:
-                            tr = travel_duration_minutes(loc, project_address)
-                            if tr is not None and pe + timedelta(minutes=tr) > slot_start:
-                                ok_w = False
-                if ok_w and project_address and maps_ok:
-                    nxt = get_next_event_after_cached(
-                        ev_w,
-                        slot_end,
-                        day_start=day_start,
-                        day_end=day_end,
-                        owner_email=owner_em,
+                if use_vehicle_calendar and project_address and maps_ok:
+                    prev = get_previous_event_before_cached(
+                        ev_w, slot_start, day_start=day_start, owner_email=owner_em
                     )
-                    if nxt:
-                        loc_n = event_location(nxt)
-                        nid = nxt.get("id") or ""
-                        okey_n = _location_override_key(wid, str(nid))
-                        if not loc_n and okey_n in loc_ov:
-                            loc_n = loc_ov[okey_n]
-                        if loc_n:
-                            nb = event_time_bounds(nxt)
-                            ns = nb[0] if nb else None
-                            if ns:
-                                tr_n = travel_duration_minutes(
-                                    project_address.strip(), loc_n.strip()
-                                )
-                                if tr_n is not None and slot_end + timedelta(minutes=tr_n) > ns:
+                    if prev:
+                        loc = event_location(prev)
+                        pid = prev.get("id") or ""
+                        okey = _location_override_key(wid, str(pid))
+                        if not loc and okey in loc_ov:
+                            loc = loc_ov[okey]
+                        if loc:
+                            b = event_time_bounds(prev)
+                            pe = b[1] if b else None
+                            if pe:
+                                tr = travel_duration_minutes(loc, project_address)
+                                if tr is not None and pe + timedelta(minutes=tr) > slot_start:
                                     ok_w = False
+                    if ok_w:
+                        nxt = get_next_event_after_cached(
+                            ev_w,
+                            slot_end,
+                            day_start=day_start,
+                            day_end=day_end,
+                            owner_email=owner_em,
+                        )
+                        if nxt:
+                            loc_n = event_location(nxt)
+                            nid = nxt.get("id") or ""
+                            okey_n = _location_override_key(wid, str(nid))
+                            if not loc_n and okey_n in loc_ov:
+                                loc_n = loc_ov[okey_n]
+                            if loc_n:
+                                nb = event_time_bounds(nxt)
+                                ns = nb[0] if nb else None
+                                if ns:
+                                    tr_n = travel_duration_minutes(
+                                        project_address.strip(), loc_n.strip()
+                                    )
+                                    if tr_n is not None and slot_end + timedelta(
+                                        minutes=tr_n
+                                    ) > ns:
+                                        ok_w = False
                 if ok_w:
                     slot_pruned.append(wid)
             slot_free_ids = slot_pruned
@@ -1039,59 +1061,65 @@ def search_candidates(
                     ev_w = _week_events(wc, cal_id)
                     owner_em = _calendar_owner_email(w)
                     if not interval_free_cached(
-                        ev_w, slot_start, slot_end, owner_email=owner_em
+                        ev_w,
+                        slot_start,
+                        slot_end,
+                        buffer_before_minutes=slot_buf_before,
+                        buffer_after_minutes=slot_buf_after,
+                        owner_email=owner_em,
                     ):
                         ok = False
                         break
 
-                    prev = get_previous_event_before_cached(
-                        ev_w, slot_start, day_start=day_start, owner_email=owner_em
-                    )
-                    if prev:
-                        pid = prev.get("id") or ""
-                        loc = event_location(prev)
-                        okey = _location_override_key(wid, str(pid))
-                        if not loc and okey in loc_ov:
-                            loc = loc_ov[okey]
-                        if loc and project_address and maps_ok:
-                            b = event_time_bounds(prev)
-                            pe = b[1] if b else None
-                            if pe:
-                                tr = travel_duration_minutes(loc, project_address)
-                                prev_to_site_minutes[wid] = tr
-                                # None のときは API 失敗等のため移動制約をかけず、空き枠は採用する
-                                if tr is not None and (
-                                    pe + timedelta(minutes=tr) > slot_start
-                                ):
-                                    ok = False
-                                    break
-
-                    if ok and project_address and maps_ok:
-                        nxt = get_next_event_after_cached(
-                            ev_w,
-                            slot_end,
-                            day_start=day_start,
-                            day_end=day_end,
-                            owner_email=owner_em,
+                    if use_vehicle_calendar and project_address and maps_ok:
+                        prev = get_previous_event_before_cached(
+                            ev_w, slot_start, day_start=day_start, owner_email=owner_em
                         )
-                        if nxt:
-                            nid = nxt.get("id") or ""
-                            loc_n = event_location(nxt)
-                            okey_n = _location_override_key(wid, str(nid))
-                            if not loc_n and okey_n in loc_ov:
-                                loc_n = loc_ov[okey_n]
-                            if loc_n:
-                                nb = event_time_bounds(nxt)
-                                ns = nb[0] if nb else None
-                                if ns:
-                                    tr_n = travel_duration_minutes(
-                                        project_address.strip(), loc_n.strip()
-                                    )
-                                    if tr_n is not None and (
-                                        slot_end + timedelta(minutes=tr_n) > ns
+                        if prev:
+                            pid = prev.get("id") or ""
+                            loc = event_location(prev)
+                            okey = _location_override_key(wid, str(pid))
+                            if not loc and okey in loc_ov:
+                                loc = loc_ov[okey]
+                            if loc:
+                                b = event_time_bounds(prev)
+                                pe = b[1] if b else None
+                                if pe:
+                                    tr = travel_duration_minutes(loc, project_address)
+                                    prev_to_site_minutes[wid] = tr
+                                    # None のときは API 失敗等のため移動制約をかけず、空き枠は採用する
+                                    if tr is not None and (
+                                        pe + timedelta(minutes=tr) > slot_start
                                     ):
                                         ok = False
                                         break
+
+                        if ok:
+                            nxt = get_next_event_after_cached(
+                                ev_w,
+                                slot_end,
+                                day_start=day_start,
+                                day_end=day_end,
+                                owner_email=owner_em,
+                            )
+                            if nxt:
+                                nid = nxt.get("id") or ""
+                                loc_n = event_location(nxt)
+                                okey_n = _location_override_key(wid, str(nid))
+                                if not loc_n and okey_n in loc_ov:
+                                    loc_n = loc_ov[okey_n]
+                                if loc_n:
+                                    nb = event_time_bounds(nxt)
+                                    ns = nb[0] if nb else None
+                                    if ns:
+                                        tr_n = travel_duration_minutes(
+                                            project_address.strip(), loc_n.strip()
+                                        )
+                                        if tr_n is not None and (
+                                            slot_end + timedelta(minutes=tr_n) > ns
+                                        ):
+                                            ok = False
+                                            break
 
                 if not ok:
                     continue
