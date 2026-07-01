@@ -2217,6 +2217,38 @@ button {
         return
 
     # 案件未選択でも「人数が選択されている」場合は候補表示する（要望⑧）
+    if search_clicked or search_press:
+        _final_name = resolve_combo_selection(
+            "candidate_search_project_select",
+            project_name_list,
+            query_key="candidate_search_project_query",
+        )
+        if _final_name:
+            selected_project_name = _final_name
+            selected_project = project_options.get(_final_name)
+            try:
+                _rw_final = int((selected_project or {}).get("required_workers") or 0)
+                if _rw_final > 0:
+                    st.session_state["candidate_search_capacity"] = _rw_final
+            except (TypeError, ValueError):
+                pass
+        required_capacity = int(st.session_state.get("candidate_search_capacity", 0))
+        if (
+            not selected_project
+            and required_capacity <= 0
+            and str(
+                st.session_state.get("candidate_search_project_draft")
+                or st.session_state.get("candidate_search_project_query")
+                or ""
+            ).strip()
+            and not st.session_state.get("_combo_search_resync")
+        ):
+            st.session_state["_combo_search_resync"] = True
+            st.session_state["_candidate_search_btn_pressed"] = True
+            st.session_state["candidate_search_ui_busy"] = True
+            st.rerun()
+        st.session_state.pop("_combo_search_resync", None)
+
     if not selected_project and required_capacity <= 0 and (search_clicked or search_press):
         st.error("案件が選択されていません。検索を行う前に案件を選択するか、人数を指定してください。")
         _clear_candidate_search_ui_busy()
@@ -2234,7 +2266,7 @@ button {
 
     try:
         # 検索ボタン／週ナビ → カレンダー1回取得＋表示チャンク日数分の分割計算（candidate_search_job ブロック）
-        run_search = search_clicked or week_nav_trigger
+        run_search = search_clicked or search_press or week_nav_trigger
         if run_search:
             st.session_state["candidate_search_ui_busy"] = True
             st.session_state.pop("candidate_results", None)

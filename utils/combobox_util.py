@@ -291,10 +291,24 @@ def render_searchable_selectbox(
       if (!btn) return;
       const label = (btn.textContent || "").replace(/\\s+/g, "");
       if (label.indexOf("検索") < 0) return;
+      if (btn.dataset.comboSearchRelease === "1") {{
+        btn.dataset.comboSearchRelease = "0";
+        return;
+      }}
       syncComboBeforeAction();
+      if (ev.type === "touchstart" || ev.type === "mousedown") {{
+        ev.preventDefault();
+        ev.stopPropagation();
+        btn.dataset.comboSearchRelease = "1";
+        setTimeout(function() {{
+          try {{
+            btn.click();
+          }} catch (e) {{}}
+        }}, 150);
+      }}
     }};
     doc.addEventListener("mousedown", handler, true);
-    doc.addEventListener("touchstart", handler, {{ capture: true, passive: true }});
+    doc.addEventListener("touchstart", handler, {{ capture: true, passive: false }});
   }}
 
   function bindCombo(wrap, input, list, anchor) {{
@@ -338,15 +352,24 @@ def render_searchable_selectbox(
           row.className = "candidate-combo-item";
           row.textContent = opt;
           row.dataset.value = opt;
-          row.addEventListener("mousedown", function(ev) {{ ev.preventDefault(); }});
-          row.addEventListener("touchstart", function(ev) {{ ev.preventDefault(); }}, {{ passive: false }});
-          row.addEventListener("click", function(ev) {{
+          row.addEventListener("mousedown", function(ev) {{
             ev.preventDefault();
             input.value = opt;
             committed = opt;
             wrap.dataset.committed = opt;
             closeList();
             emit(opt, opt);
+          }});
+          row.addEventListener("touchstart", function(ev) {{
+            ev.preventDefault();
+            input.value = opt;
+            committed = opt;
+            wrap.dataset.committed = opt;
+            closeList();
+            emit(opt, opt);
+          }}, {{ passive: false }});
+          row.addEventListener("click", function(ev) {{
+            ev.preventDefault();
           }});
           list.appendChild(row);
         }});
