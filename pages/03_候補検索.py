@@ -1720,7 +1720,7 @@ button {
         select_key="candidate_search_project_select",
         query_key="candidate_search_project_query",
         placeholder="案件名を入力して絞り込み・選択…",
-        help="上の欄に文字を入力して絞り込み、下の一覧から選んで確定してください。",
+        help="上の欄に文字を入力して絞り込み、同じ枠内の一覧から選んでください。",
     )
     if search_press:
         _resolved_on_search = resolve_combo_selection(
