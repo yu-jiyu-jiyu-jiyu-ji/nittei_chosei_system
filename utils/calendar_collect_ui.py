@@ -202,15 +202,15 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
   div[data-testid="stButton"] > button {
   flex: 1;
   width: 100%;
-  min-height: 2.75rem !important;
+  min-height: 3rem !important;
   height: auto !important;
-  padding: 0 0.4rem !important;
-  font-size: 0.74rem !important;
+  padding: 0 0.45rem !important;
+  font-size: 0.8rem !important;
   line-height: 1.1 !important;
 }
 .cal-inline-row {
   width: 100%;
-  min-height: 2.75rem;
+  min-height: 3rem;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -219,7 +219,7 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
   overflow: hidden;
 }
 .cal-inline-meta {
-  font-size: 0.62rem;
+  font-size: 0.76rem;
   line-height: 1.2;
   color: #6b7280;
   white-space: nowrap;
@@ -228,7 +228,7 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
   -webkit-overflow-scrolling: touch;
 }
 .cal-inline-title {
-  font-size: 0.84rem;
+  font-size: 1rem;
   font-weight: 700;
   line-height: 1.25;
   color: #111827;
@@ -242,12 +242,12 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
   div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
     div[data-testid="column"]:last-child
     div[data-testid="stButton"] > button {
-    min-height: 2.6rem !important;
-    font-size: 0.7rem !important;
+    min-height: 2.85rem !important;
+    font-size: 0.76rem !important;
   }
-  .cal-inline-row { min-height: 2.6rem; }
-  .cal-inline-meta { font-size: 0.58rem; }
-  .cal-inline-title { font-size: 0.78rem; }
+  .cal-inline-row { min-height: 2.85rem; }
+  .cal-inline-meta { font-size: 0.72rem; }
+  .cal-inline-title { font-size: 0.94rem; }
 }
 </style>
         """,
