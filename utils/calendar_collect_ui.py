@@ -150,24 +150,90 @@ def _inject_compact_row_css() -> None:
     st.markdown(
         """
 <style>
-.cal-collect-compact-list { display:flex; flex-direction:column; gap:0.22rem; margin-top:0.15rem; }
+.cal-collect-entry { display: none; }
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry) {
+  padding: 0.12rem 0.3rem !important;
+  margin-bottom: 0.18rem !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
+  div[data-testid="stHorizontalBlock"] {
+  align-items: stretch !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
+  div[data-testid="column"]:first-child {
+  display: flex !important;
+  align-items: stretch !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
+  div[data-testid="column"]:first-child
+  > div[data-testid="stVerticalBlock"] {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
+  div[data-testid="column"]:first-child
+  div[data-testid="stMarkdownContainer"] {
+  width: 100%;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
+  div[data-testid="column"]:last-child {
+  display: flex !important;
+  align-items: stretch !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
+  div[data-testid="column"]:last-child
+  > div[data-testid="stVerticalBlock"] {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
+  div[data-testid="column"]:last-child
+  div[data-testid="stButton"] {
+  flex: 1;
+  display: flex;
+  margin: 0 !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
+  div[data-testid="column"]:last-child
+  div[data-testid="stButton"] > button {
+  flex: 1;
+  width: 100%;
+  min-height: 2.75rem !important;
+  height: auto !important;
+  padding: 0 0.4rem !important;
+  font-size: 0.74rem !important;
+  line-height: 1.1 !important;
+}
 .cal-inline-row {
-  border:1px solid #e5e7eb;
-  border-radius:5px;
-  padding:0.18rem 0.38rem;
-  background:#fff;
-  min-height:1.45rem;
-  overflow-x:auto;
-  -webkit-overflow-scrolling:touch;
+  width: 100%;
+  min-height: 2.75rem;
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .cal-inline-text {
-  font-size:0.71rem;
-  line-height:1.25;
-  color:#4b5563;
-  white-space:nowrap;
+  font-size: 0.71rem;
+  line-height: 1.2;
+  color: #4b5563;
+  white-space: nowrap;
 }
-.cal-inline-text b { color:#111827; font-weight:700; }
-.cal-inline-sep { color:#9ca3af; padding:0 0.2rem; }
+.cal-inline-text b { color: #111827; font-weight: 700; }
+.cal-inline-sep { color: #9ca3af; padding: 0 0.18rem; }
+@media (max-width: 768px) {
+  div[data-testid="stVerticalBlockBorderWrapper"]:has(.cal-collect-entry)
+    div[data-testid="column"]:last-child
+    div[data-testid="stButton"] > button {
+    min-height: 2.6rem !important;
+    font-size: 0.7rem !important;
+  }
+  .cal-inline-row { min-height: 2.6rem; }
+  .cal-inline-text { font-size: 0.68rem; }
+}
 </style>
         """,
         unsafe_allow_html=True,
@@ -193,30 +259,30 @@ def _render_collect_table(filtered_rows: List[Dict[str, Any]]) -> None:
         return
 
     _inject_compact_row_css()
-    st.markdown('<div class="cal-collect-compact-list">', unsafe_allow_html=True)
     for idx, row in enumerate(filtered_rows):
         title = str(row.get("title") or "")
         address = str(row.get("location") or "")
-        line_col, btn_col = st.columns([9, 1], gap="small", vertical_alignment="center")
-        with line_col:
-            st.markdown(
-                f'<div class="cal-inline-row"><div class="cal-inline-text">{_build_inline_line_html(row)}</div></div>',
-                unsafe_allow_html=True,
-            )
-        with btn_col:
-            st.button(
-                "複製",
-                type="primary",
-                key=f"cal_collect_copy_{idx}",
-                use_container_width=True,
-                on_click=copy_calendar_event_to_register,
-                kwargs={
-                    "key_prefix": REGISTER_KEY_PREFIX,
-                    "project_name": title,
-                    "address": address,
-                },
-            )
-    st.markdown("</div>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown('<div class="cal-collect-entry"></div>', unsafe_allow_html=True)
+            line_col, btn_col = st.columns([8, 1], gap="small", vertical_alignment="stretch")
+            with line_col:
+                st.markdown(
+                    f'<div class="cal-inline-row"><div class="cal-inline-text">{_build_inline_line_html(row)}</div></div>',
+                    unsafe_allow_html=True,
+                )
+            with btn_col:
+                st.button(
+                    "複製",
+                    type="primary",
+                    key=f"cal_collect_copy_{idx}",
+                    use_container_width=True,
+                    on_click=copy_calendar_event_to_register,
+                    kwargs={
+                        "key_prefix": REGISTER_KEY_PREFIX,
+                        "project_name": title,
+                        "address": address,
+                    },
+                )
 
 
 def render_calendar_collect_section(
