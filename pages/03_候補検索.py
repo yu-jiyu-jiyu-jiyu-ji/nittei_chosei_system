@@ -2103,7 +2103,6 @@ button {
             "candidate_search_project_select",
             "candidate_search_project_draft",
             "candidate_search_project_query",
-            "candidate_search_project_pending_pick",
             "_candidate_sync_project_key",
             "worker_multi_select",
             "worker_include_mode",
