@@ -1720,7 +1720,7 @@ button {
         select_key="candidate_search_project_select",
         query_key="candidate_search_project_query",
         placeholder="案件名を入力して絞り込み・選択…",
-        help="案件名の一部を入力して絞り込み、一覧から選んでください。",
+        help="タップしてキーボードで案件名を入力し、表示された一覧から選択してください。",
     )
     if search_press:
         _resolved_on_search = resolve_combo_selection(
@@ -2103,6 +2103,7 @@ button {
             "candidate_search_project_select",
             "candidate_search_project_draft",
             "candidate_search_project_query",
+            "candidate_search_project_pending_pick",
             "_candidate_sync_project_key",
             "worker_multi_select",
             "worker_include_mode",
