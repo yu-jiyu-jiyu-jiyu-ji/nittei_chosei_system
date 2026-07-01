@@ -916,6 +916,42 @@ def _on_candidate_dialog_close() -> None:
     _reset_candidate_dialog_session(clear_plotly=False)
 
 
+def _render_worker_travel_popovers(
+    target: Dict[str, Any],
+    *,
+    worker_id_to_name: Dict[str, str],
+) -> None:
+    """職人名タップで直前・直後の予定と住所をポップアップ表示."""
+    wids = [str(x) for x in (target.get("worker_ids") or []) if str(x).strip()]
+    if not wids:
+        st.write("-")
+        return
+    adj_all = target.get("worker_adjacent_events") or {}
+    st.caption("職人名をタップすると、直前・直後の予定と住所を表示します。")
+    for wid in wids:
+        wn = worker_id_to_name.get(wid, wid)
+        adj = adj_all.get(wid) or {}
+        with st.popover(f"📍 {wn}"):
+            prev = adj.get("prev")
+            if prev:
+                st.markdown("**直前の予定**")
+                st.write(f"{prev.get('summary', '（無題）')}（{prev.get('time', '')}）")
+                st.write(f"**出発住所**: {prev.get('location', '住所なし')}")
+            else:
+                st.write("**直前の予定**: なし")
+            st.divider()
+            nxt = adj.get("next")
+            if nxt:
+                st.markdown("**直後の予定**")
+                st.write(f"{nxt.get('summary', '（無題）')}（{nxt.get('time', '')}）")
+                st.write(f"**向かい先**: {nxt.get('location', '住所なし')}")
+            else:
+                st.write("**直後の予定**: なし")
+            tw = (target.get("travel_to_site_minutes_by_worker") or {}).get(wid)
+            if tw is not None:
+                st.caption(f"現場までの移動目安: 約{float(tw):.0f}分")
+
+
 def _reset_candidate_dialog_session(*, clear_plotly: bool = False) -> None:
     """予約ダイアログを閉じる／検索し直すときの状態クリア（再検索はしない）。"""
     st.session_state.pop("candidate_dialog_id", None)
@@ -2534,10 +2570,20 @@ button {
                     f"**時間帯**: {start_at_d.strftime('%H:%M')} 〜 {end_at_d.strftime('%H:%M')}"
                 )
                 st.write(f"**対応可能人数**: {target.get('capacity')} 人")
-                st.write(f"**職人**: {workers_text_d or '-'}")
+                st.write("**職人**")
+                if target.get("worker_adjacent_events"):
+                    _render_worker_travel_popovers(
+                        target,
+                        worker_id_to_name=worker_id_to_name,
+                    )
+                else:
+                    st.write(workers_text_d or "-")
+                    st.caption(
+                        "直前・直後の住所は再検索後の候補から表示できます。"
+                    )
                 st.write(f"**車両**: {vehicles_text_d or '-'}")
                 tw_d = target.get("travel_to_site_minutes_by_worker") or {}
-                if isinstance(tw_d, dict) and tw_d:
+                if isinstance(tw_d, dict) and tw_d and not target.get("worker_adjacent_events"):
                     tw_parts = []
                     for wid_m, minutes in sorted(tw_d.items()):
                         wn = worker_id_to_name.get(wid_m, wid_m)

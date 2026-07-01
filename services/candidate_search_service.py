@@ -311,6 +311,96 @@ def _location_override_key(worker_id: str, event_id: str) -> str:
     return f"{worker_id}:{event_id}"
 
 
+def _event_location_for_worker(
+    ev: Dict[str, Any],
+    *,
+    worker_id: str,
+    loc_ov: Dict[str, str],
+) -> str:
+    loc = event_location(ev)
+    eid = str(ev.get("id") or "")
+    if not str(loc or "").strip():
+        okey = _location_override_key(worker_id, eid)
+        loc = str(loc_ov.get(okey) or "").strip()
+    return str(loc or "").strip()
+
+
+def _pack_adjacent_event(
+    ev: Optional[Dict[str, Any]],
+    *,
+    worker_id: str,
+    loc_ov: Dict[str, str],
+) -> Optional[Dict[str, str]]:
+    if not ev:
+        return None
+    b = event_time_bounds(ev)
+    time_label = ""
+    if b:
+        s, e = b
+        if s.tzinfo is None:
+            s = s.replace(tzinfo=TZ)
+        else:
+            s = s.astimezone(TZ)
+        if e.tzinfo is None:
+            e = e.replace(tzinfo=TZ)
+        else:
+            e = e.astimezone(TZ)
+        time_label = f"{s.strftime('%H:%M')}〜{e.strftime('%H:%M')}"
+    loc = _event_location_for_worker(ev, worker_id=worker_id, loc_ov=loc_ov)
+    return {
+        "summary": str(ev.get("summary") or "（無題）").strip()[:120],
+        "time": time_label,
+        "location": loc if loc else "住所なし",
+    }
+
+
+def build_worker_adjacent_events_map(
+    *,
+    worker_ids: List[str],
+    workers_by_id: Dict[str, Dict[str, Any]],
+    events_by_cal_id: Dict[str, List[Dict[str, Any]]],
+    slot_start: datetime,
+    slot_end: datetime,
+    loc_ov: Dict[str, str],
+) -> Dict[str, Dict[str, Any]]:
+    """候補枠ごとに、職人の直前・直後予定と住所をまとめる（予約ダイアログ表示用）."""
+    if slot_start.tzinfo is None:
+        slot_start = slot_start.replace(tzinfo=TZ)
+    else:
+        slot_start = slot_start.astimezone(TZ)
+    if slot_end.tzinfo is None:
+        slot_end = slot_end.replace(tzinfo=TZ)
+    else:
+        slot_end = slot_end.astimezone(TZ)
+    day_start = datetime.combine(slot_start.date(), time.min, tzinfo=TZ)
+    day_end = day_start + timedelta(days=1)
+    out: Dict[str, Dict[str, Any]] = {}
+    for wid in worker_ids:
+        w = workers_by_id.get(str(wid))
+        if not w:
+            continue
+        cal_id = str(w.get("calendar_id") or "").strip()
+        if not cal_id:
+            continue
+        ev_w = list(events_by_cal_id.get(cal_id) or [])
+        owner_em = _calendar_owner_email(w)
+        prev = get_previous_event_before_cached(
+            ev_w, slot_start, day_start=day_start, owner_email=owner_em
+        )
+        nxt = get_next_event_after_cached(
+            ev_w,
+            slot_end,
+            day_start=day_start,
+            day_end=day_end,
+            owner_email=owner_em,
+        )
+        out[str(wid)] = {
+            "prev": _pack_adjacent_event(prev, worker_id=str(wid), loc_ov=loc_ov),
+            "next": _pack_adjacent_event(nxt, worker_id=str(wid), loc_ov=loc_ov),
+        }
+    return out
+
+
 def _required_headcount(
     project: Optional[Dict[str, Any]],
     ui_capacity: int,
@@ -1270,6 +1360,14 @@ def search_candidates(
                                 )
 
                 cid = f"R{d.isoformat().replace('-', '')}{slot_start.hour:02d}{slot_start.minute:02d}_{len(candidates)}"
+                worker_adjacent_events = build_worker_adjacent_events_map(
+                    worker_ids=worker_ids,
+                    workers_by_id=wid_to_worker,
+                    events_by_cal_id=events_by_cal_id,
+                    slot_start=slot_start,
+                    slot_end=slot_end,
+                    loc_ov=loc_ov,
+                )
                 candidates.append(
                     {
                         "candidate_id": cid,
@@ -1284,6 +1382,7 @@ def search_candidates(
                         "travel_to_site_minutes_max": travel_max,
                         "material_completed_events_count": material_completed_count,
                         "material_extra_minutes": material_extra_val,
+                        "worker_adjacent_events": worker_adjacent_events,
                     }
                 )
                 accepted_in_slot = True
