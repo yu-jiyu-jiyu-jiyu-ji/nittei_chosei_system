@@ -131,6 +131,59 @@ def list_events_in_range_safe(
     return events, None
 
 
+def _normalize_calendar_email(email: Optional[str]) -> str:
+    return str(email or "").strip().casefold()
+
+
+def event_counts_as_busy(
+    ev: Dict[str, Any],
+    *,
+    owner_email: Optional[str] = None,
+) -> bool:
+    """予定が空き判定・移動計算の「占有」に含めるか.
+
+    招待のみで未回答（needsAction）・辞退（declined）は占有しない。
+    主催者・承諾済み（accepted）・仮承諾（tentative）は占有する。
+    """
+    if str(ev.get("status") or "").strip().lower() == "cancelled":
+        return False
+
+    owner = _normalize_calendar_email(owner_email)
+    if not owner:
+        return True
+
+    organizer = ev.get("organizer") if isinstance(ev.get("organizer"), dict) else {}
+    if organizer.get("self") is True:
+        return True
+    org_email = _normalize_calendar_email(organizer.get("email"))
+    if org_email and org_email == owner:
+        return True
+
+    attendees = ev.get("attendees")
+    if not isinstance(attendees, list) or not attendees:
+        return True
+
+    self_attendee: Optional[Dict[str, Any]] = None
+    for att in attendees:
+        if not isinstance(att, dict):
+            continue
+        if att.get("self") is True:
+            self_attendee = att
+            break
+        att_email = _normalize_calendar_email(att.get("email"))
+        if att_email and att_email == owner:
+            self_attendee = att
+            break
+
+    if self_attendee is None:
+        return True
+
+    status = str(self_attendee.get("responseStatus") or "").strip().lower()
+    if status in ("declined", "needsaction"):
+        return False
+    return True
+
+
 def event_time_bounds(ev: Dict[str, Any]) -> Optional[Tuple[datetime, datetime]]:
     """予定の開始・終了（タイムゾーン付き）。"""
     return _event_bounds(ev)
@@ -168,6 +221,7 @@ def interval_free_cached(
     *,
     buffer_before_minutes: float = 0,
     buffer_after_minutes: float = 0,
+    owner_email: Optional[str] = None,
 ) -> bool:
     """list_events_in_range で取得済みの events を使い、API を呼ばず空き判定する."""
     if interval_start >= interval_end:
@@ -175,6 +229,8 @@ def interval_free_cached(
     pad_start = interval_start - timedelta(minutes=buffer_before_minutes)
     pad_end = interval_end + timedelta(minutes=buffer_after_minutes)
     for ev in events:
+        if not event_counts_as_busy(ev, owner_email=owner_email):
+            continue
         b = event_time_bounds(ev)
         if not b:
             continue
@@ -189,10 +245,13 @@ def get_previous_event_before_cached(
     before: datetime,
     *,
     day_start: datetime,
+    owner_email: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """list_events_in_range(day_start, before) に相当する範囲のイベントから、終了が最大のものを返す."""
     best: Optional[Tuple[datetime, Dict[str, Any]]] = None
     for ev in events:
+        if not event_counts_as_busy(ev, owner_email=owner_email):
+            continue
         b = event_time_bounds(ev)
         if not b:
             continue
@@ -211,10 +270,13 @@ def get_next_event_after_cached(
     *,
     day_start: datetime,
     day_end: datetime,
+    owner_email: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """day_start〜day_end の範囲で、開始が after 以上で最も早い予定を返す（枠終了後の「次の予定」）."""
     best: Optional[Tuple[datetime, Dict[str, Any]]] = None
     for ev in events:
+        if not event_counts_as_busy(ev, owner_email=owner_email):
+            continue
         b = event_time_bounds(ev)
         if not b:
             continue
@@ -231,10 +293,14 @@ def count_completed_events_before_cached(
     events: List[Dict[str, Any]],
     day_start: datetime,
     before: datetime,
+    *,
+    owner_email: Optional[str] = None,
 ) -> int:
     """day_start 〜 before の窓と重なり、かつ終了が before 以前の予定件数（list_events_in_range 相当）。"""
     n = 0
     for ev in events:
+        if not event_counts_as_busy(ev, owner_email=owner_email):
+            continue
         b = event_time_bounds(ev)
         if not b:
             continue
@@ -254,6 +320,7 @@ def is_interval_free(
     *,
     buffer_before_minutes: float = 0,
     buffer_after_minutes: float = 0,
+    owner_email: Optional[str] = None,
 ) -> bool:
     """[interval_start, interval_end) に既存予定と重なりがないか."""
     if interval_start >= interval_end:
@@ -262,6 +329,8 @@ def is_interval_free(
     pad_end = interval_end + timedelta(minutes=buffer_after_minutes)
     events = list_events_in_range(creds, calendar_id, pad_start - timedelta(days=1), pad_end + timedelta(days=1))
     for ev in events:
+        if not event_counts_as_busy(ev, owner_email=owner_email):
+            continue
         b = event_time_bounds(ev)
         if not b:
             continue

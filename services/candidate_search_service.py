@@ -13,6 +13,7 @@ from google.oauth2.credentials import Credentials
 
 from services.calendar_service import (
     count_completed_events_before_cached,
+    event_counts_as_busy,
     event_location,
     event_time_bounds,
     get_next_event_after_cached,
@@ -38,6 +39,11 @@ from services.vehicle_assignment_service import (
 )
 
 TZ = ZoneInfo("Asia/Tokyo")
+
+
+def _calendar_owner_email(resource: Dict[str, Any]) -> Optional[str]:
+    em = str(resource.get("email") or "").strip()
+    return em or None
 
 
 def _parse_positive_int(value: Any, default: int) -> int:
@@ -432,14 +438,20 @@ def material_return_extra_minutes_cached(
     office_address: str,
     next_site_address: str,
     load_minutes: int,
+    *,
+    owner_email: Optional[str] = None,
 ) -> float:
     """material_return_extra_minutes のキャッシュ版（週一括取得した events を利用）."""
-    n = count_completed_events_before_cached(events, day_start, slot_start)
+    n = count_completed_events_before_cached(
+        events, day_start, slot_start, owner_email=owner_email
+    )
     if n < 2 or (n % 2) != 0:
         return 0.0
     if not maps_api_key_configured() or not office_address.strip() or not next_site_address.strip():
         return 0.0
-    prev = get_previous_event_before_cached(events, slot_start, day_start=day_start)
+    prev = get_previous_event_before_cached(
+        events, slot_start, day_start=day_start, owner_email=owner_email
+    )
     origin = event_location(prev) if prev else ""
     if not origin.strip():
         origin = office_address
@@ -842,7 +854,10 @@ def search_candidates(
                     continue
                 wc = creds_map[wid]
                 ev_w = _week_events(wc, cal_id)
-                if interval_free_cached(ev_w, slot_start, slot_end):
+                owner_em = _calendar_owner_email(w)
+                if interval_free_cached(
+                    ev_w, slot_start, slot_end, owner_email=owner_em
+                ):
                     slot_free_ids.append(wid)
 
             if len(slot_free_ids) < headcount:
@@ -859,7 +874,10 @@ def search_candidates(
                         continue
                     wc = creds_map[wid]
                     ev_w = _week_events(wc, cal_id)
-                    prev = get_previous_event_before_cached(ev_w, slot_start, day_start=day_start)
+                    owner_em = _calendar_owner_email(w)
+                    prev = get_previous_event_before_cached(
+                        ev_w, slot_start, day_start=day_start, owner_email=owner_em
+                    )
                     if prev:
                         loc = event_location(prev)
                         pid = prev.get("id") or ""
@@ -869,7 +887,11 @@ def search_candidates(
                         if loc:
                             dm_pairs.append((loc.strip(), pa))
                     nxt = get_next_event_after_cached(
-                        ev_w, slot_end, day_start=day_start, day_end=day_end
+                        ev_w,
+                        slot_end,
+                        day_start=day_start,
+                        day_end=day_end,
+                        owner_email=owner_em,
                     )
                     if nxt:
                         loc_n = event_location(nxt)
@@ -898,7 +920,13 @@ def search_candidates(
                             if not vcreds or not vcal:
                                 continue
                             ev_v = _week_events(vcreds, vcal)
-                            prev_v = get_previous_event_before_cached(ev_v, slot_start, day_start=day_start)
+                            owner_vem = _calendar_owner_email(v)
+                            prev_v = get_previous_event_before_cached(
+                                ev_v,
+                                slot_start,
+                                day_start=day_start,
+                                owner_email=owner_vem,
+                            )
                             origin = event_location(prev_v) if prev_v else ""
                             if not origin.strip():
                                 origin = office
@@ -917,8 +945,11 @@ def search_candidates(
                     continue
                 wc = creds_map[wid]
                 ev_w = _week_events(wc, cal_id)
+                owner_em = _calendar_owner_email(w)
                 ok_w = True
-                prev = get_previous_event_before_cached(ev_w, slot_start, day_start=day_start)
+                prev = get_previous_event_before_cached(
+                    ev_w, slot_start, day_start=day_start, owner_email=owner_em
+                )
                 if prev:
                     loc = event_location(prev)
                     pid = prev.get("id") or ""
@@ -934,7 +965,11 @@ def search_candidates(
                                 ok_w = False
                 if ok_w and project_address and maps_ok:
                     nxt = get_next_event_after_cached(
-                        ev_w, slot_end, day_start=day_start, day_end=day_end
+                        ev_w,
+                        slot_end,
+                        day_start=day_start,
+                        day_end=day_end,
+                        owner_email=owner_em,
                     )
                     if nxt:
                         loc_n = event_location(nxt)
@@ -1002,11 +1037,16 @@ def search_candidates(
                         break
                     wc = creds_map[wid]
                     ev_w = _week_events(wc, cal_id)
-                    if not interval_free_cached(ev_w, slot_start, slot_end):
+                    owner_em = _calendar_owner_email(w)
+                    if not interval_free_cached(
+                        ev_w, slot_start, slot_end, owner_email=owner_em
+                    ):
                         ok = False
                         break
 
-                    prev = get_previous_event_before_cached(ev_w, slot_start, day_start=day_start)
+                    prev = get_previous_event_before_cached(
+                        ev_w, slot_start, day_start=day_start, owner_email=owner_em
+                    )
                     if prev:
                         pid = prev.get("id") or ""
                         loc = event_location(prev)
@@ -1028,7 +1068,11 @@ def search_candidates(
 
                     if ok and project_address and maps_ok:
                         nxt = get_next_event_after_cached(
-                            ev_w, slot_end, day_start=day_start, day_end=day_end
+                            ev_w,
+                            slot_end,
+                            day_start=day_start,
+                            day_end=day_end,
+                            owner_email=owner_em,
                         )
                         if nxt:
                             nid = nxt.get("id") or ""
@@ -1076,7 +1120,10 @@ def search_candidates(
                             ok_vehicle = False
                             break
                         ev_v = _week_events(vcreds, vcal)
-                        if not interval_free_cached(ev_v, slot_start, slot_end):
+                        owner_vem = _calendar_owner_email(v)
+                        if not interval_free_cached(
+                            ev_v, slot_start, slot_end, owner_email=owner_vem
+                        ):
                             ok_vehicle = False
                             break
                         if project_address and maps_ok and office:
@@ -1087,12 +1134,16 @@ def search_candidates(
                                 office,
                                 project_address,
                                 load_min,
+                                owner_email=owner_vem,
                             )
                             if first_vid is not None and str(vid) == first_vid:
                                 material_extra_first = float(extra)
                             if extra > 0:
                                 prev_v = get_previous_event_before_cached(
-                                    ev_v, slot_start, day_start=day_start
+                                    ev_v,
+                                    slot_start,
+                                    day_start=day_start,
+                                    owner_email=owner_vem,
                                 )
                                 if prev_v:
                                     vb = event_time_bounds(prev_v)
@@ -1131,7 +1182,10 @@ def search_candidates(
                     cal_id_w = str(w.get("calendar_id") or "").strip()
                     wc = creds_map[wid]
                     ev_w = _week_events(wc, cal_id_w)
-                    prev_tw = get_previous_event_before_cached(ev_w, slot_start, day_start=day_start)
+                    owner_em = _calendar_owner_email(w)
+                    prev_tw = get_previous_event_before_cached(
+                        ev_w, slot_start, day_start=day_start, owner_email=owner_em
+                    )
                     if wid in prev_to_site_minutes:
                         tr_m = prev_to_site_minutes[wid]
                     elif prev_tw and project_address and maps_ok:
@@ -1165,8 +1219,12 @@ def search_candidates(
                         )
                         if vc0 and vcal0:
                             ev_v0 = _week_events(vc0, vcal0)
+                            owner_v0em = _calendar_owner_email(v0)
                             material_completed_count = count_completed_events_before_cached(
-                                ev_v0, day_start, slot_start
+                                ev_v0,
+                                day_start,
+                                slot_start,
+                                owner_email=owner_v0em,
                             )
                             if selected_material_extra_first is not None:
                                 material_extra_val = selected_material_extra_first
@@ -1179,6 +1237,7 @@ def search_candidates(
                                         office,
                                         project_address,
                                         load_min,
+                                        owner_email=owner_v0em,
                                     )
                                 )
 
@@ -1236,9 +1295,12 @@ def _events_to_week_busy_rows(
     kind: str,
     label: str,
     calendar_id: str,
+    owner_email: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for ev in events:
+        if not event_counts_as_busy(ev, owner_email=owner_email):
+            continue
         b = event_time_bounds(ev)
         if not b:
             continue
@@ -1282,6 +1344,7 @@ def week_busy_events_from_bundle(
                 kind="worker",
                 label=label,
                 calendar_id=cal_id,
+                owner_email=_calendar_owner_email(w),
             )
         )
     if use_vehicle_calendar:
@@ -1300,6 +1363,7 @@ def week_busy_events_from_bundle(
                     kind="vehicle",
                     label=label,
                     calendar_id=cal_id,
+                    owner_email=_calendar_owner_email(v),
                 )
             )
     out.sort(key=lambda x: x["start_at"])
@@ -1366,7 +1430,7 @@ def collect_week_busy_events(
                 seen_cal.add(cal_id)
                 prefetch_pairs.append((creds, cal_id))
 
-    cal_id_to_meta: Dict[str, Tuple[str, str, str]] = {}
+    cal_id_to_meta: Dict[str, Tuple[str, str, str, Optional[str]]] = {}
     for w in workers:
         if not w.get("is_active", True):
             continue
@@ -1376,6 +1440,7 @@ def collect_week_busy_events(
                 "worker",
                 f"職人:{w.get('name', w.get('worker_id'))}",
                 cal_id,
+                _calendar_owner_email(w),
             )
     if use_vehicle_calendar:
         for v in vehicles:
@@ -1387,6 +1452,7 @@ def collect_week_busy_events(
                     "vehicle",
                     f"車両:{v.get('name', v.get('vehicle_id'))}",
                     cal_id,
+                    _calendar_owner_email(v),
                 )
 
     bundle, fetch_errors = _parallel_fetch_events_by_calendar_id_with_errors(
@@ -1400,9 +1466,15 @@ def collect_week_busy_events(
         meta = cal_id_to_meta.get(cal_id)
         if not meta:
             continue
-        kind, label, cid = meta
+        kind, label, cid, owner_email = meta
         out.extend(
-            _events_to_week_busy_rows(events, kind=kind, label=label, calendar_id=cid)
+            _events_to_week_busy_rows(
+                events,
+                kind=kind,
+                label=label,
+                calendar_id=cid,
+                owner_email=owner_email,
+            )
         )
 
     out.sort(key=lambda x: x["start_at"])

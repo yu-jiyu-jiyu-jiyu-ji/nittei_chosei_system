@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from services.calendar_service import (
     count_completed_events_before_cached,
     delete_calendar_event,
+    event_counts_as_busy,
     event_location,
     event_time_bounds,
     get_next_event_after_cached,
@@ -63,10 +64,13 @@ def _previous_non_travel_event(
     *,
     before: datetime,
     day_start: datetime,
+    owner_email: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """直前予定が移動イベントの場合は、さらに前の非移動予定まで遡る。"""
     candidates: List[Tuple[datetime, Dict[str, Any]]] = []
     for ev in events:
+        if not event_counts_as_busy(ev, owner_email=owner_email):
+            continue
         b = event_time_bounds(ev)
         if not b:
             continue
@@ -186,6 +190,7 @@ def _insert_work_and_travel_blocks(
     candidate: Optional[Dict[str, Any]] = None,
     settings: Optional[Dict[str, Any]] = None,
     attendee_emails: Optional[List[str]] = None,
+    owner_email: Optional[str] = None,
 ) -> bool:
     """現場の前後に移動ブロックを挟んで登録する（職人・車両の両カレンダーで共通）.
 
@@ -211,12 +216,18 @@ def _insert_work_and_travel_blocks(
     office = str((settings or {}).get("office_address") or "").strip()
 
     if addr and maps_api_key_configured():
-        prev = get_previous_event_before_cached(events, slot_start_for_cache, day_start=day_start_dt)
+        prev = get_previous_event_before_cached(
+            events,
+            slot_start_for_cache,
+            day_start=day_start_dt,
+            owner_email=owner_email,
+        )
         if _is_travel_event(prev):
             prev = _previous_non_travel_event(
                 events,
                 before=slot_start_for_cache,
                 day_start=day_start_dt,
+                owner_email=owner_email,
             )
         if prev:
             loc = event_location(prev)
@@ -361,13 +372,16 @@ def _insert_work_and_travel_blocks(
             slot_end_for_cache,
             day_start=day_start_dt,
             day_end=day_end_dt,
+            owner_email=owner_email,
         )
         nb = event_time_bounds(nxt) if nxt else None
         ns = nb[0] if nb else None
         ns_n = _dt_to_naive_local(ns) if ns else None
 
         # 積載量が2件超（= 3件目以降着手）では、無条件で拠点戻りを優先
-        done_count = count_completed_events_before_cached(events, day_start_dt, slot_start_for_cache)
+        done_count = count_completed_events_before_cached(
+            events, day_start_dt, slot_start_for_cache, owner_email=owner_email
+        )
         force_return_office = done_count >= 2 and bool(office)
 
         dest = ""
@@ -686,6 +700,7 @@ def commit_candidate_to_calendars(
             candidate=candidate,
             settings=settings,
             attendee_emails=all_attendee_emails,
+            owner_email=str(w.get("email") or "").strip() or None,
         )
         if ok_entity:
             any_calendar_registered = True
@@ -727,6 +742,7 @@ def commit_candidate_to_calendars(
             candidate=candidate,
             settings=settings,
             attendee_emails=all_attendee_emails,
+            owner_email=str(v.get("email") or "").strip() or None,
         )
         if ok_entity:
             any_calendar_registered = True
