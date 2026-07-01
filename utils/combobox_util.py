@@ -111,6 +111,7 @@ def render_searchable_selectbox(
     qkey = _combo_query_key(select_key, query_key)
     pending_key = f"{select_key}_pending_pick"
     overlay_id = f"combo_overlay_{''.join(ch if ch.isalnum() else '_' for ch in select_key)}"
+    marker_id = f"combo_marker_{''.join(ch if ch.isalnum() else '_' for ch in select_key)}"
 
     selected = str(st.session_state.get(select_key) or "").strip()
     if selected and selected not in options:
@@ -131,6 +132,10 @@ def render_searchable_selectbox(
             str(st.session_state.get(qkey, "") or ""),
         )
 
+    st.markdown(
+        f'<div id="{marker_id}" data-candidate-combo-marker="1" style="display:none;height:0;margin:0;padding:0;"></div>',
+        unsafe_allow_html=True,
+    )
     query = st.text_input(
         label,
         key=qkey,
@@ -142,7 +147,7 @@ def render_searchable_selectbox(
     _sync_selection_from_query(select_key, qkey, options, q)
 
     options_js = json.dumps(options, ensure_ascii=False)
-    label_js = json.dumps(label, ensure_ascii=False)
+    marker_id_js = json.dumps(marker_id)
     overlay_id_js = json.dumps(overlay_id)
 
     raw = components.html(
@@ -163,9 +168,15 @@ def render_searchable_selectbox(
   }}
 
   const OPTIONS = {options_js};
-  const LABEL = {label_js};
+  const MARKER_ID = {marker_id_js};
   const OVERLAY_ID = {overlay_id_js};
   const doc = window.parent && window.parent.document ? window.parent.document : document;
+
+  function isComboInput(el) {{
+    if (!el || el.tagName !== "INPUT") return false;
+    const t = (el.getAttribute("type") || "text").toLowerCase();
+    return t === "text" || t === "search" || t === "";
+  }}
 
   function emitPick(value) {{
     try {{
@@ -190,19 +201,19 @@ def render_searchable_selectbox(
       .candidate-combo-input-mount {{
         position: relative !important;
       }}
-      .candidate-combo-input-mount.combo-open input[type="text"] {{
+      .candidate-combo-input-mount.combo-open input {{
         border-bottom-left-radius: 0 !important;
         border-bottom-right-radius: 0 !important;
         border-bottom-color: rgba(49, 51, 63, 0.12) !important;
       }}
-      .candidate-combo-host input[type="text"] {{
+      .candidate-combo-host input {{
         border: 1px solid rgba(49, 51, 63, 0.2) !important;
         border-radius: 0.5rem !important;
         font-size: 16px !important;
         box-shadow: none !important;
         background: #fff !important;
       }}
-      .candidate-combo-host input[type="text"]:focus {{
+      .candidate-combo-host input:focus {{
         border-color: rgb(255, 75, 75) !important;
         box-shadow: 0 0 0 1px rgb(255, 75, 75) !important;
         outline: none !important;
@@ -224,8 +235,8 @@ def render_searchable_selectbox(
         box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
         display: none;
       }}
-      .candidate-combo-input-mount.combo-open .candidate-combo-suggest.open {{
-        display: block;
+      .candidate-combo-suggest.open {{
+        display: block !important;
       }}
       .candidate-combo-suggest-item {{
         padding: 0.65rem 0.75rem;
@@ -250,24 +261,36 @@ def render_searchable_selectbox(
     (doc.head || doc.documentElement).appendChild(style);
   }}
 
-  function findInputForLabel() {{
-    const nodes = doc.querySelectorAll(
-      '[data-testid="stTextInput"] label, .candidate-combo-label, p'
-    );
-    for (let i = 0; i < nodes.length; i++) {{
-      const node = nodes[i];
-      const text = (node.textContent || "").replace(/\\s+/g, "").trim();
-      const want = String(LABEL || "").replace(/\\s+/g, "").trim();
-      if (!want || text !== want) continue;
-      const root =
-        node.closest('[data-testid="stTextInput"]') ||
-        node.closest('[data-testid="stElementContainer"]');
-      if (!root) continue;
-      const input = root.querySelector('input[type="text"]');
-      if (input) return input;
+  function findInputByMarker() {{
+    const marker = doc.getElementById(MARKER_ID);
+    if (!marker) return null;
+    const markerEc = marker.closest('[data-testid="stElementContainer"]');
+    if (!markerEc) return null;
+    let sibling = markerEc.nextElementSibling;
+    while (sibling) {{
+      const inputs = sibling.querySelectorAll("input");
+      for (let i = 0; i < inputs.length; i++) {{
+        if (isComboInput(inputs[i])) return inputs[i];
+      }}
+      sibling = sibling.nextElementSibling;
     }}
-    const inputs = doc.querySelectorAll('[data-testid="stTextInput"] input[type="text"]');
-    return inputs.length ? inputs[inputs.length - 1] : null;
+    const block = markerEc.closest('[data-testid="stVerticalBlock"], [data-testid="stForm"]');
+    if (!block) return null;
+    let seen = false;
+    const containers = block.querySelectorAll('[data-testid="stElementContainer"]');
+    for (let i = 0; i < containers.length; i++) {{
+      const ec = containers[i];
+      if (ec === markerEc) {{
+        seen = true;
+        continue;
+      }}
+      if (!seen) continue;
+      const inputs = ec.querySelectorAll("input");
+      for (let j = 0; j < inputs.length; j++) {{
+        if (isComboInput(inputs[j])) return inputs[j];
+      }}
+    }}
+    return null;
   }}
 
   function filteredOptions(q) {{
@@ -279,8 +302,10 @@ def render_searchable_selectbox(
   }}
 
   function bindSuggest(mountPoint, elementHost, input, suggest, list) {{
-    if (input.dataset.comboOverlayBound === "1") return;
-    input.dataset.comboOverlayBound = "1";
+    const inputId = input.getAttribute("data-combo-input-id") || String(Date.now()) + Math.random();
+    input.setAttribute("data-combo-input-id", inputId);
+    if (mountPoint.dataset.comboBoundInputId === inputId) return;
+    mountPoint.dataset.comboBoundInputId = inputId;
     let activeIndex = -1;
 
     function closeList() {{
@@ -320,6 +345,10 @@ def render_searchable_selectbox(
     }}
 
     input.addEventListener("focus", function() {{ openList(); }});
+    input.addEventListener("click", function() {{ openList(); }});
+    input.addEventListener("touchstart", function() {{
+      setTimeout(openList, 0);
+    }}, {{ passive: true }});
     input.addEventListener("input", function() {{ openList(); }});
     input.addEventListener("keydown", function(ev) {{
       const rows = list.querySelectorAll(".candidate-combo-suggest-item");
@@ -364,7 +393,7 @@ def render_searchable_selectbox(
     while (anchor && anchor !== host) {{
       const parent = anchor.parentElement;
       if (!parent || parent === host) break;
-      const inputs = parent.querySelectorAll('input[type="text"]');
+      const inputs = parent.querySelectorAll("input");
       if (inputs.length > 1) break;
       anchor = parent;
     }}
@@ -373,32 +402,52 @@ def render_searchable_selectbox(
 
   function mount() {{
     ensureStyles();
-    const input = findInputForLabel();
-    if (!input) return;
+    const input = findInputByMarker();
+    if (!input) return false;
 
-    const host = input.closest('[data-testid="stTextInput"]');
-    if (!host) return;
+    const host = input.closest('[data-testid="stTextInput"]') || input.closest('[data-testid="stElementContainer"]');
+    if (!host) return false;
     host.classList.add("candidate-combo-host");
     const elementHost = host.closest('[data-testid="stElementContainer"]');
     const mountPoint = findMountPoint(input, host);
 
-    let suggest = mountPoint.querySelector(":scope > .candidate-combo-suggest");
+    mountPoint.classList.add("candidate-combo-input-mount");
+    let suggest = mountPoint.querySelector(".candidate-combo-suggest");
+    let list;
     if (!suggest) {{
       suggest = doc.createElement("div");
       suggest.className = "candidate-combo-suggest";
       suggest.id = OVERLAY_ID;
-      const list = doc.createElement("div");
+      list = doc.createElement("div");
       suggest.appendChild(list);
-      mountPoint.classList.add("candidate-combo-input-mount");
       mountPoint.appendChild(suggest);
-      bindSuggest(mountPoint, elementHost, input, suggest, list);
+    }} else {{
+      list = suggest.firstElementChild;
     }}
+    if (!list) {{
+      list = doc.createElement("div");
+      suggest.appendChild(list);
+    }}
+    bindSuggest(mountPoint, elementHost, input, suggest, list);
+    return true;
   }}
 
-  mount();
-  setTimeout(mount, 120);
-  setTimeout(mount, 500);
-  setTimeout(mount, 1200);
+  function boot() {{
+    mount();
+    setTimeout(mount, 80);
+    setTimeout(mount, 250);
+    setTimeout(mount, 700);
+    setTimeout(mount, 1500);
+  }}
+
+  boot();
+  if (doc.body && !doc.body.dataset.comboObserverBound) {{
+    doc.body.dataset.comboObserverBound = "1";
+    try {{
+      const obs = new MutationObserver(function() {{ mount(); }});
+      obs.observe(doc.body, {{ childList: true, subtree: true }});
+    }} catch (e) {{}}
+  }}
 }})();
 </script>
 """,
