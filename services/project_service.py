@@ -101,6 +101,48 @@ def create_project(
         raise FirestoreSaveError(f"案件の保存に失敗しました: {e}") from e
 
 
+def create_quick_project(
+    *,
+    project_name: str,
+    required_workers: int,
+    work_duration_minutes: int,
+    address: str = "",
+    customer_name: str = "",
+    current_user_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """空き確定時の最小入力から案件を作成する（顧客名・住所・施工内容は後追い可）."""
+    name = str(project_name or "").strip()
+    if not name:
+        raise FirestoreSaveError("案件名は必須です。")
+    try:
+        workers_n = int(required_workers)
+    except (TypeError, ValueError) as e:
+        raise FirestoreSaveError("必要人数が不正です。") from e
+    try:
+        duration_n = int(work_duration_minutes)
+    except (TypeError, ValueError) as e:
+        raise FirestoreSaveError("作業時間が不正です。") from e
+    if workers_n <= 0:
+        raise FirestoreSaveError("必要人数は1人以上で入力してください。")
+    if duration_n <= 0:
+        raise FirestoreSaveError("作業時間（分）は必須です。")
+
+    return create_project(
+        {
+            "project_name": name,
+            "customer_name": str(customer_name or "").strip() or "（未設定）",
+            "address": str(address or "").strip() or "（未設定）",
+            "construction_type": ["その他"],
+            "construction_type_other": "空き確定時の簡易登録",
+            "work_duration_minutes": duration_n,
+            "required_workers": workers_n,
+            "required_vehicle_count": None,
+            "note": "",
+        },
+        current_user_name=current_user_name,
+    )
+
+
 def update_project(
     project_id: str,
     data: Dict[str, Any],

@@ -12,7 +12,13 @@ import streamlit.components.v1 as components
 import streamlit as st
 import pandas as pd
 
-from config.constants import APP_TITLE, DB_UNAVAILABLE_MESSAGE
+from config.constants import (
+    APP_TITLE,
+    DB_UNAVAILABLE_MESSAGE,
+    MAX_REQUIRED_WORKERS,
+    MAX_WORK_DURATION_MINUTES,
+    MIN_WORK_DURATION_MINUTES,
+)
 from services.candidate_search_service import (
     apply_previous_location_overrides_to_calendars,
     calendar_display_day_offsets,
@@ -28,7 +34,11 @@ from services.candidate_search_service import (
     work_hours_display_hours,
 )
 from services.firestore_service import FirestoreConnectionError, FirestoreSaveError
-from services.project_service import list_projects as list_projects_from_service, patch_project_fields
+from services.project_service import (
+    create_quick_project,
+    list_projects as list_projects_from_service,
+    patch_project_fields,
+)
 from services.schedule_commit_service import (
     commit_candidate_to_calendars,
     remove_project_schedule_from_google,
@@ -198,6 +208,93 @@ def _format_week_range_short(ws: date) -> str:
     """週ナビ用: 日曜始まりの7日間（例: 5/18（日）〜5/24（土））."""
     we = ws + timedelta(days=6)
     return f"{ws.month}/{ws.day}（{_YOUBI[ws.weekday()]}）〜{we.month}/{we.day}（{_YOUBI[we.weekday()]}）"
+
+
+def _format_slot_card_label(start_at: datetime, end_at: datetime) -> str:
+    """空きカード見出し（例: 08/12（水） 10:00〜12:00）."""
+    d = start_at.date()
+    return (
+        f"{d.month:02d}/{d.day:02d}（{_YOUBI[d.weekday()]}） "
+        f"{start_at.strftime('%H:%M')}〜{end_at.strftime('%H:%M')}"
+    )
+
+
+_DURATION_OPTIONS: List[int] = list(range(MIN_WORK_DURATION_MINUTES, MAX_WORK_DURATION_MINUTES + 1, 30))
+_WEEK_OFFSET_OPTIONS: List[Tuple[int, str]] = [
+    (0, "今週"),
+    (1, "来週"),
+    (2, "再来週"),
+    (3, "翌々週"),
+]
+
+
+def _build_search_project(
+    selected_project: Optional[Dict[str, Any]],
+    *,
+    required_capacity: int,
+    work_duration_minutes: int,
+) -> Dict[str, Any]:
+    """案件未選択でも人数・作業時間だけで検索できるよう、検索用 dict を組み立てる."""
+    duration = max(MIN_WORK_DURATION_MINUTES, int(work_duration_minutes or 120))
+    capacity = max(0, int(required_capacity or 0))
+    if selected_project:
+        out = dict(selected_project)
+        out["work_duration_minutes"] = duration
+        if capacity > 0:
+            out["required_workers"] = capacity
+        return out
+    return {
+        "project_id": "",
+        "project_name": "",
+        "customer_name": "",
+        "address": "",
+        "work_duration_minutes": duration,
+        "required_workers": capacity,
+        "required_vehicle_count": None,
+        "note": "",
+    }
+
+
+def _open_candidate_dialog_from_card(candidate_id: str) -> None:
+    """空きカードから予約ダイアログを開く."""
+    cid = str(candidate_id or "").strip()
+    if not cid:
+        return
+    _purge_candidate_dialog_widget_keys()
+    st.session_state["candidate_dialog_id"] = cid
+    st.session_state["_cal_last_component_click"] = cid
+    st.session_state["_cal_last_component_nonce"] = f"card_{cid}_{datetime.now().timestamp():.6f}"
+    st.session_state.pop("candidate_search_display_pending", None)
+    _clear_candidate_search_ui_busy()
+
+
+def _render_free_slot_cards(
+    candidates: List[Dict[str, Any]],
+    *,
+    worker_id_to_name: Dict[str, str],
+) -> None:
+    """近い空きからカード一覧を表示する."""
+    if not candidates:
+        return
+    st.caption("条件に合う空き日程です。カードを開くと直前・直後の所在を確認し、カレンダー登録できます。")
+    for idx, c in enumerate(candidates):
+        start_at = c.get("start_at")
+        end_at = c.get("end_at") or start_at
+        if not isinstance(start_at, datetime) or not isinstance(end_at, datetime):
+            continue
+        cid = str(c.get("candidate_id") or "")
+        workers_text = "、".join(
+            worker_id_to_name.get(str(wid), str(wid)) for wid in (c.get("worker_ids") or [])
+        ) or "—"
+        with st.container(border=True):
+            c1, c2 = st.columns([4.2, 1.2])
+            with c1:
+                st.markdown(f"**{_format_slot_card_label(start_at, end_at)}**")
+                st.caption(f"人数 {c.get('capacity') or '—'}｜職人 {workers_text}")
+            with c2:
+                if st.button("開く", key=f"free_slot_open_{cid}_{idx}", use_container_width=True):
+                    _open_candidate_dialog_from_card(cid)
+                    st.rerun()
 
 
 def _sunday_week_from_today(week_offset: int) -> date:
@@ -905,6 +1002,8 @@ def _purge_candidate_dialog_widget_keys(dcid: Optional[str] = None) -> None:
         if not (
             key.startswith("dialog_decide_result_")
             or key.startswith("dialog_event_title_")
+            or key.startswith("dialog_project_name_")
+            or key.startswith("dialog_project_address_")
             or key.startswith("dialog_decide_processing_")
         ):
             continue
@@ -1531,8 +1630,8 @@ def _render_candidate_search_page_body() -> None:
     ):
         inject_clear_force_busy_overlay()
 
-    st.title("候補検索")
-    st.caption("案件条件をもとに、予定を入れても問題ない候補日時を検索します。")
+    st.title("空き日程")
+    st.caption("人数と作業時間を指定して、直近の空き枠をカードで表示します。開いて確認し、そのままカレンダー登録できます。")
 
     notice = st.session_state.pop("schedule_commit_notice", None)
     if notice:
@@ -1549,7 +1648,7 @@ def _render_candidate_search_page_body() -> None:
             del st.query_params["candidate_id"]
         except Exception:
             pass
-        st.info("候補はカレンダー上の色ブロックをクリックして開きます。古いブックマークのクエリは無視しました。")
+        st.info("空きカードの「開く」から詳細を表示します。古いブックマークのクエリは無視しました。")
 
     week_nav_trigger = st.session_state.pop("week_nav_trigger_search", False)
     if "candidate_calendar_week_start" not in st.session_state:
@@ -1741,170 +1840,197 @@ button {
         settings = {}
 
     # ----------------------------
-    # 上部：検索条件（画像UIの再現）
+    # 上部：検索条件（空き優先の最小項目）
     # ----------------------------
     st.subheader("条件")
-    st.caption(
-        "ステータスが「対応済み（リフォーム完了）」の案件は、日程候補の対象外のためここには表示されません。"
-        " 未登録の案件は「＋ 案件を新規登録」から追加できます（登録後は自動で候補検索を開始します）。"
-    )
+    st.caption("必須は人数・作業時間・週だけです。案件を選ばなくても空きを探せます。")
 
-    render_candidate_search_register_ui()
-
-    cal_col, _ = st.columns([1, 3])
-    with cal_col:
-        if st.button("カレンダー情報収集", key="candidate_search_calendar_collect_btn"):
-            navigate_to_project_list_calendar_collect()
-
-    project_options = {p["project_name"]: p for p in projects}
-    project_name_list = list(project_options.keys())
-
-    selected_project_name = render_searchable_selectbox(
-        "案件",
-        project_name_list,
-        select_key="candidate_search_project_select",
-        query_key="candidate_search_project_query",
-        placeholder="案件名を入力して絞り込み・選択…",
-        help="上の欄に文字を入力して絞り込み、同じ枠内の一覧から選んでください。",
-    )
-    if search_press:
-        _resolved_on_search = resolve_combo_selection(
-            "candidate_search_project_select",
-            project_name_list,
-            query_key="candidate_search_project_query",
-        )
-        if _resolved_on_search:
-            selected_project_name = _resolved_on_search
-    selected_project = project_options.get(selected_project_name)
-
-    vehicle_mode = st.radio(
-        "車両",
-        options=["なし", "あり"],
-        horizontal=True,
-        key="candidate_search_vehicle_mode",
-        help="なし: 職人の Google カレンダーのみで候補を出します。あり: 従来どおり車両の空きも確認します。",
-    )
-    use_vehicle_calendar = vehicle_mode == "あり"
-    if not use_vehicle_calendar:
-        st.caption(
-            "車両の Google カレンダーは使いません。候補確定時も職人カレンダーのみ登録されます。"
-        )
-
-    # 人数（- / 入力 / +）と 職人（選択 + 含む/含まない）と ボタン（右寄せ）
     if "candidate_search_capacity" not in st.session_state:
-        st.session_state["candidate_search_capacity"] = 0
+        st.session_state["candidate_search_capacity"] = 1
+    if "candidate_search_duration_minutes" not in st.session_state:
+        st.session_state["candidate_search_duration_minutes"] = 120
+    if "candidate_search_week_offset" not in st.session_state:
+        st.session_state["candidate_search_week_offset"] = 0
 
-    # 案件を変えたときは、人数を案件の「必要人数」で揃える（0 のまま検索できないのを防ぐ）
-    _prev_proj_key = st.session_state.get("_candidate_sync_project_key")
-    _cur_proj_key = selected_project_name or ""
-    if _cur_proj_key != _prev_proj_key:
-        st.session_state["_candidate_sync_project_key"] = _cur_proj_key
-        if selected_project:
-            try:
-                rw = int(selected_project.get("required_workers") or 0)
-                st.session_state["candidate_search_capacity"] = max(0, rw)
-            except (TypeError, ValueError):
-                pass
-        else:
-            st.session_state["candidate_search_capacity"] = 0
-    elif search_press and selected_project:
-        # 検索ボタン on_click と同様に、ウィジェット描画前に人数を揃える
-        try:
-            rw = int(selected_project.get("required_workers") or 0)
-            if rw > 0:
-                st.session_state["candidate_search_capacity"] = max(0, rw)
-        except (TypeError, ValueError):
-            pass
+    # 週オフセット → 表示週の日曜へ反映
+    _week_offset = int(st.session_state.get("candidate_search_week_offset") or 0)
+    st.session_state["candidate_calendar_week_start"] = _sunday_week_from_today(_week_offset)
 
-    worker_options: List[Dict[str, str]] = []
-    for w in workers:
-        wid = str(w.get("worker_id") or "")
-        wname = str(w.get("name") or wid)
-        wrank = str(w.get("rank") or "").strip()
-        rank_label = wrank if wrank else "ランク未設定"
-        worker_options.append(
-            {
-                "value": wid,
-                "label": f"{wname} [{rank_label}]",
-            }
-        )
-    worker_value_to_label = {o["value"]: o["label"] for o in worker_options}
-    worker_values = [o["value"] for o in worker_options]
-    rank_options_raw = settings.get("worker_ranks") or []
-    rank_options = [str(x).strip() for x in rank_options_raw if str(x).strip()] if isinstance(rank_options_raw, list) else []
-
-    # 画像では「職人  Aさん  を含む」のイメージなので、職人は単一選択（未選択可）＋含む/含まない
-    # 条件行をラップして横並び指定用のクラスを付与
-    st.markdown('<div class="nowrap-row">', unsafe_allow_html=True)
-    col_cap, col_worker, col_buttons = st.columns([2.2, 5.6, 1.2])
+    col_cap, col_dur, col_week = st.columns(3)
     with col_cap:
-        st.write("人数")
-        # text_input と別キーで上書きされていたため ± が効かなかった。number_input で同一キーに統一する。
         st.number_input(
-            "人数の値",
-            min_value=0,
+            "人数*",
+            min_value=1,
+            max_value=MAX_REQUIRED_WORKERS,
             step=1,
             key="candidate_search_capacity",
-            label_visibility="collapsed",
+        )
+    with col_dur:
+        st.selectbox(
+            "作業時間（分）*",
+            options=_DURATION_OPTIONS,
+            key="candidate_search_duration_minutes",
+        )
+    with col_week:
+        week_labels = [label for _, label in _WEEK_OFFSET_OPTIONS]
+        week_values = [val for val, _ in _WEEK_OFFSET_OPTIONS]
+        current_offset = int(st.session_state.get("candidate_search_week_offset") or 0)
+        try:
+            week_index = week_values.index(current_offset)
+        except ValueError:
+            week_index = 0
+        picked_label = st.selectbox(
+            "週*",
+            options=week_labels,
+            index=week_index,
+            key="candidate_search_week_label",
+        )
+        st.session_state["candidate_search_week_offset"] = week_values[week_labels.index(picked_label)]
+        st.session_state["candidate_calendar_week_start"] = _sunday_week_from_today(
+            int(st.session_state["candidate_search_week_offset"])
+        )
+        st.caption(_format_week_range_short(st.session_state["candidate_calendar_week_start"]))
+
+    b1, b2, _bpad = st.columns([1.2, 1.2, 3.6])
+    with b1:
+        clear_clicked = st.button("クリア", use_container_width=True)
+    with b2:
+        search_clicked = st.button(
+            "空きを探す",
+            type="primary",
+            use_container_width=True,
+            on_click=_on_candidate_search_button_click,
         )
 
-    with col_worker:
+    with st.expander("詳細条件（案件・職人・車両）", expanded=False):
+        st.caption(
+            "必要なら案件紐付けや職人指定を使えます。"
+            " 対応済み案件は候補対象外です。"
+        )
+        render_candidate_search_register_ui()
+        cal_col, _ = st.columns([1, 3])
+        with cal_col:
+            if st.button("カレンダー情報収集", key="candidate_search_calendar_collect_btn"):
+                navigate_to_project_list_calendar_collect()
+
+        project_options = {p["project_name"]: p for p in projects}
+        project_name_list = list(project_options.keys())
+
+        selected_project_name = render_searchable_selectbox(
+            "案件（任意）",
+            project_name_list,
+            select_key="candidate_search_project_select",
+            query_key="candidate_search_project_query",
+            placeholder="案件名を入力して絞り込み・選択…",
+            help="選ばなくても空き検索できます。選ぶと住所・移動判定に使います。",
+        )
+        if search_press:
+            _resolved_on_search = resolve_combo_selection(
+                "candidate_search_project_select",
+                project_name_list,
+                query_key="candidate_search_project_query",
+            )
+            if _resolved_on_search:
+                selected_project_name = _resolved_on_search
+        selected_project = project_options.get(selected_project_name)
+
+        vehicle_mode = st.radio(
+            "車両",
+            options=["なし", "あり"],
+            horizontal=True,
+            key="candidate_search_vehicle_mode",
+            help="なし: 職人の Google カレンダーのみで候補を出します。あり: 従来どおり車両の空きも確認します。",
+        )
+        use_vehicle_calendar = vehicle_mode == "あり"
+        if not use_vehicle_calendar:
+            st.caption(
+                "車両の Google カレンダーは使いません。候補確定時も職人カレンダーのみ登録されます。"
+            )
+
+        # 案件を変えたときは人数を案件の必要人数に揃える（詳細利用時のみ）
+        _prev_proj_key = st.session_state.get("_candidate_sync_project_key")
+        _cur_proj_key = selected_project_name or ""
+        if _cur_proj_key != _prev_proj_key:
+            st.session_state["_candidate_sync_project_key"] = _cur_proj_key
+            if selected_project:
+                try:
+                    rw = int(selected_project.get("required_workers") or 0)
+                    if rw > 0:
+                        st.session_state["candidate_search_capacity"] = max(1, rw)
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    dur = int(selected_project.get("work_duration_minutes") or 0)
+                    if dur in _DURATION_OPTIONS:
+                        st.session_state["candidate_search_duration_minutes"] = dur
+                except (TypeError, ValueError):
+                    pass
+
+        worker_options: List[Dict[str, str]] = []
+        for w in workers:
+            wid = str(w.get("worker_id") or "")
+            wname = str(w.get("name") or wid)
+            wrank = str(w.get("rank") or "").strip()
+            rank_label = wrank if wrank else "ランク未設定"
+            worker_options.append(
+                {
+                    "value": wid,
+                    "label": f"{wname} [{rank_label}]",
+                }
+            )
+        worker_value_to_label = {o["value"]: o["label"] for o in worker_options}
+        worker_values = [o["value"] for o in worker_options]
+        rank_options_raw = settings.get("worker_ranks") or []
+        rank_options = (
+            [str(x).strip() for x in rank_options_raw if str(x).strip()]
+            if isinstance(rank_options_raw, list)
+            else []
+        )
+
         w1, w2, w3 = st.columns([3.0, 1.2, 2.2])
         with w1:
-            st.write("職人")
-        with w2:
-            st.write("条件")
-        with w3:
-            st.write("ランク絞り込み")
-        with w1:
             selected_worker_ids = st.multiselect(
-                " ",
+                "職人",
                 options=worker_values,
                 default=st.session_state.get("worker_multi_select", []),
                 key="worker_multi_select",
                 format_func=lambda v: worker_value_to_label.get(v, v),
                 placeholder="（指定なし）",
-                label_visibility="collapsed",
             )
         with w2:
             include_mode = st.selectbox(
-                " ",
+                "条件",
                 options=["含む", "含まない"],
                 key="worker_include_mode",
-                label_visibility="collapsed",
             )
         with w3:
             st.multiselect(
-                " ",
+                "ランク絞り込み",
                 options=rank_options,
                 default=st.session_state.get("worker_rank_filters", []),
                 key="worker_rank_filters",
                 placeholder="ランク絞り込み（複数選択）",
-                label_visibility="collapsed",
             )
 
-    with col_buttons:
-        st.write("")
-        st.write("")
-        # PCでも改行しにくいよう、列幅を少し広めに
-        b1, b2 = st.columns([1.2, 1.2])
-        with b1:
-            clear_clicked = st.button(
-                "クリア",
-                use_container_width=True,
-            )
-        with b2:
-            search_clicked = st.button(
-                "検索",
-                type="primary",
-                use_container_width=True,
-                on_click=_on_candidate_search_button_click,
-            )
+    # expander 外でも参照できるよう既定値を用意
+    project_options = {p["project_name"]: p for p in projects}
+    project_name_list = list(project_options.keys())
+    if "selected_project_name" not in locals():
+        selected_project_name = resolve_combo_selection(
+            "candidate_search_project_select",
+            project_name_list,
+            query_key="candidate_search_project_query",
+        )
+        selected_project = project_options.get(selected_project_name)
+    if "use_vehicle_calendar" not in locals():
+        use_vehicle_calendar = st.session_state.get("candidate_search_vehicle_mode", "なし") == "あり"
+    if "include_mode" not in locals():
+        include_mode = str(st.session_state.get("worker_include_mode") or "含む")
 
-    # nowrap-row の閉じタグ
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    required_capacity = int(st.session_state.get("candidate_search_capacity", 0))
+    required_capacity = int(st.session_state.get("candidate_search_capacity", 1) or 1)
+    work_duration_minutes = int(
+        st.session_state.get("candidate_search_duration_minutes", 120) or 120
+    )
     loc_ov: Dict[str, str] = st.session_state.setdefault("candidate_location_overrides", {})
 
     def _workers_filtered_by_rank(src: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1913,7 +2039,11 @@ button {
             for x in (st.session_state.get("worker_multi_select") or [])
             if str(x).strip()
         }
-        selected = {str(x).strip() for x in (st.session_state.get("worker_rank_filters") or []) if str(x).strip()}
+        selected = {
+            str(x).strip()
+            for x in (st.session_state.get("worker_rank_filters") or [])
+            if str(x).strip()
+        }
         rows = list(src)
         if selected_workers:
             rows = [w for w in rows if str(w.get("worker_id") or "").strip() in selected_workers]
@@ -1935,8 +2065,14 @@ button {
         excl_job = {str(x) for x in cjob.get("excluded", [])}
         must_inc_job = [str(x) for x in cjob.get("must_include", [])]
         pj_n = (cjob.get("project_name") or "").strip()
-        proj_job = project_options.get(pj_n) if pj_n else None
+        selected_for_job = project_options.get(pj_n) if pj_n else None
         cap_job = int(cjob.get("required_capacity", 0))
+        dur_job = int(cjob.get("work_duration_minutes") or 120)
+        proj_job = _build_search_project(
+            selected_for_job,
+            required_capacity=cap_job,
+            work_duration_minutes=dur_job,
+        )
         use_vc_job = bool(cjob.get("use_vehicle_calendar", False))
         try:
             settings_job = get_settings()
@@ -2152,6 +2288,9 @@ button {
             "worker_include_mode",
             "worker_rank_filters",
             "candidate_search_capacity",
+            "candidate_search_duration_minutes",
+            "candidate_search_week_offset",
+            "candidate_search_week_label",
             "candidate_location_overrides",
         ):
             if k in st.session_state:
@@ -2166,6 +2305,9 @@ button {
         _clear_candidate_search_ui_busy()
         inject_clear_force_busy_overlay()
         st.session_state.pop("_candidate_search_masters", None)
+        st.session_state["candidate_search_capacity"] = 1
+        st.session_state["candidate_search_duration_minutes"] = 120
+        st.session_state["candidate_search_week_offset"] = 0
         st.session_state["candidate_calendar_week_start"] = sunday_week_containing(date.today())
         st.rerun()
 
@@ -2260,7 +2402,7 @@ button {
         # 検索実行前はカレンダー枠だけ表示しない（画像に近い挙動）
         return
 
-    # 案件未選択でも「人数が選択されている」場合は候補表示する（要望⑧）
+    # 人数・作業時間があれば案件未選択でも候補表示する
     if search_clicked or search_press:
         _final_name = resolve_combo_selection(
             "candidate_search_project_select",
@@ -2270,19 +2412,22 @@ button {
         if _final_name:
             selected_project_name = _final_name
             selected_project = project_options.get(_final_name)
-        required_capacity = int(st.session_state.get("candidate_search_capacity", 0))
+        required_capacity = int(st.session_state.get("candidate_search_capacity", 1) or 1)
+        work_duration_minutes = int(
+            st.session_state.get("candidate_search_duration_minutes", 120) or 120
+        )
 
-    if not selected_project and required_capacity <= 0 and (search_clicked or search_press):
-        st.error("案件が選択されていません。検索を行う前に案件を選択するか、人数を指定してください。")
+    if required_capacity <= 0 and (search_clicked or search_press):
+        st.error("人数を1人以上指定してください。")
         _clear_candidate_search_ui_busy()
         inject_clear_force_busy_overlay()
         return
 
-    if week_nav_trigger and not selected_project and required_capacity <= 0:
+    if week_nav_trigger and required_capacity <= 0:
         prev_ws = st.session_state.pop("_week_nav_undo", None)
         if prev_ws is not None:
             st.session_state["candidate_calendar_week_start"] = prev_ws
-        st.error("週を移動して再検索するには、案件を選択するか人数を指定してください。")
+        st.error("週を移動して再検索するには、人数を指定してください。")
         _clear_candidate_search_ui_busy()
         inject_clear_force_busy_overlay()
         return
@@ -2318,6 +2463,13 @@ button {
             if week_end_cutoff <= now_jst:
                 ws_target = ws_target + timedelta(days=7)
                 st.session_state["candidate_calendar_week_start"] = ws_target
+                # 週セレクトも翌週側へ寄せる
+                try:
+                    base = sunday_week_containing(date.today())
+                    offset = max(0, (ws_target - base).days // 7)
+                    st.session_state["candidate_search_week_offset"] = min(offset, 3)
+                except Exception:
+                    pass
                 st.info("表示週が過去枠のみのため、翌週に切り替えて検索します。")
             selected_ids_set = {
                 str(x).strip()
@@ -2343,6 +2495,7 @@ button {
                 "search_started_at": datetime.now(ZoneInfo("Asia/Tokyo")).isoformat(),
                 "project_name": selected_project_name or "",
                 "required_capacity": required_capacity,
+                "work_duration_minutes": work_duration_minutes,
                 "excluded": list(excluded_for_real),
                 "must_include": list(must_include_worker_ids),
                 "from_search_btn": bool(search_clicked or week_nav_trigger),
@@ -2365,40 +2518,58 @@ button {
     worker_id_to_name = {w["worker_id"]: w["name"] for w in workers}
     vehicle_id_to_name = {v["vehicle_id"]: v["name"] for v in vehicles}
 
-    cal_ready = False
-    with nullcontext():
-        st.subheader("候補")
-        if not filtered:
-            if browse_only_view or not _has_candidate_search_results():
-                st.caption("予定カレンダーを表示しています。候補を探すには検索を実行してください。")
-            else:
-                st.info(
-                    "候補が見つかりませんでした。案件・職人・車両の連携、人数、就業時間、またはカレンダー上の空き状況を確認してください。"
-                    "（特定の日だけ午前で途切れる場合は、その日の Google カレンダーに午後の予定が入っている可能性があります。）"
-                )
+    try:
+        cal_settings = get_settings()
+    except FirestoreConnectionError:
+        cal_settings = {}
+    workers_by_id = {str(w["worker_id"]): w for w in workers}
+    display_candidates = [
+        c
+        for c in (filtered or [])
+        if isinstance(c.get("start_at"), datetime)
+        and not is_company_closed_day(c["start_at"].date(), cal_settings)
+        and not candidate_includes_worker_off(c, workers_by_id)
+    ]
+    display_candidates = sorted(
+        display_candidates,
+        key=lambda c: c.get("start_at") or datetime.max.replace(tzinfo=ZoneInfo("Asia/Tokyo")),
+    )
 
-        # ----------------------------
-        # 下部：週カレンダー形式の候補表示（色ブロック）
-        # ----------------------------
-        # 週移動（前週/次週）— 押下時は表示週の7日分を再検索
-        ws = st.session_state["candidate_calendar_week_start"]
+    st.subheader("空き枠")
+    if not display_candidates:
+        if browse_only_view or not _has_candidate_search_results():
+            st.caption("上の「空きを探す」を押すと、条件に合う直近の空き枠がカードで表示されます。")
+        else:
+            st.info(
+                "空き枠が見つかりませんでした。人数・作業時間・週、職人連携、就業時間、カレンダー上の空きを確認してください。"
+            )
+    else:
+        _render_free_slot_cards(
+            display_candidates,
+            worker_id_to_name=worker_id_to_name,
+        )
 
-        st.caption("表示週（日曜始まり）")
+    ws = st.session_state["candidate_calendar_week_start"]
+    with st.expander("週を切り替えて再検索 / 週カレンダー（任意）", expanded=False):
+        st.caption("必要なら表示週を変えて再検索できます。")
         q1, q2, q3, q4 = st.columns(4)
         with q1:
             if st.button("今週", key="week_jump_0", use_container_width=True):
+                st.session_state["candidate_search_week_offset"] = 0
                 _go_to_calendar_week(_sunday_week_from_today(0), trigger_research=True)
         with q2:
             if st.button("来週", key="week_jump_1", use_container_width=True):
+                st.session_state["candidate_search_week_offset"] = 1
                 _go_to_calendar_week(_sunday_week_from_today(1), trigger_research=True)
         with q3:
             if st.button("再来週", key="week_jump_2", use_container_width=True):
+                st.session_state["candidate_search_week_offset"] = 2
                 _go_to_calendar_week(_sunday_week_from_today(2), trigger_research=True)
         with q4:
             if st.button("翌々週", key="week_jump_3", use_container_width=True):
+                st.session_state["candidate_search_week_offset"] = 3
                 _go_to_calendar_week(_sunday_week_from_today(3), trigger_research=True)
 
-        # 週ナビゲーション（＜ 日付範囲 ＞）: ボタンで同一セッション内の rerun（タブ遷移しない）
         st.markdown('<div class="week-nav-wrap">', unsafe_allow_html=True)
         col_prev, col_month, col_next = st.columns([1.0, 2.0, 1.0])
         with col_prev:
@@ -2413,112 +2584,12 @@ button {
             if st.button("＞", key="week_next_btn"):
                 _go_to_calendar_week(ws + timedelta(days=7), trigger_research=True)
         st.markdown("</div>", unsafe_allow_html=True)
-        if not _has_candidate_search_results():
-            st.caption("検索前は予定カレンダーのみ表示します。候補を見るには検索を実行してください。")
 
-        cal_day_offsets = calendar_display_day_offsets()
-        cache_key = (
-            f"calendar_week_events_{ws.isoformat()}_"
-            f"{'veh' if use_vehicle_calendar else 'worker'}_7d"
-        )
-        if cache_key not in st.session_state:
-            last_meta = st.session_state.get("_last_search_calendar_bundle") or {}
-            reuse_bundle = None
-            if (
-                isinstance(last_meta, dict)
-                and last_meta.get("week_start") == ws.isoformat()
-                and bool(last_meta.get("use_vehicle_calendar")) == use_vehicle_calendar
-            ):
-                reuse_bundle = last_meta.get("bundle")
-
-            def _store_week_events(week_events: List[Dict[str, Any]], week_warns: List[str]) -> None:
-                st.session_state[cache_key] = week_events
-                if week_warns:
-                    st.session_state["candidate_search_warnings_flash"] = list(
-                        dict.fromkeys(
-                            (st.session_state.get("candidate_search_warnings_flash") or [])
-                            + week_warns
-                        )
-                    )
-
-            try:
-                try:
-                    settings_for_cal = get_settings()
-                except FirestoreConnectionError:
-                    settings_for_cal = {}
-                gcal_tok2 = st.session_state.get("google_calendar_tokens") or {}
-                vf_sess2 = gcal_tok2.get("vehicle_fleet") if isinstance(gcal_tok2, dict) else None
-                if reuse_bundle:
-                    week_events, week_warns = week_busy_events_from_bundle(
-                        reuse_bundle,
-                        workers=workers,
-                        vehicles=vehicles,
-                        session_tokens=st.session_state.get("google_calendar_tokens"),
-                        settings=settings_for_cal,
-                        vehicle_fleet_session=vf_sess2,
-                        use_vehicle_calendar=use_vehicle_calendar,
-                    )
-                    _store_week_events(week_events, week_warns)
-                else:
-                    with visible_spinner("カレンダー予定を取得中…"):
-                        week_events, week_warns = collect_week_busy_events(
-                            week_start=ws,
-                            workers=workers,
-                            vehicles=vehicles,
-                            session_tokens=st.session_state.get("google_calendar_tokens"),
-                            settings=settings_for_cal,
-                            vehicle_fleet_session=vf_sess2,
-                            use_vehicle_calendar=use_vehicle_calendar,
-                            search_day_offsets=cal_day_offsets,
-                        )
-                        _store_week_events(week_events, week_warns)
-            except Exception:
-                st.session_state[cache_key] = []
-
-        week_ev = st.session_state.get(cache_key) or []
-        with st.expander(
-            "この週のカレンダー予定（職人・車両マスタの参照カレンダーIDで取得）",
-            expanded=False,
-        ):
-            st.caption(
-                "ブラウザで開いている Google アカウントと、マスタのカレンダーID／OAuth が一致しないと、"
-                "ここに表示される予定とブラウザの週表示が食い違うことがあります。"
-            )
-            if not week_ev:
-                st.info(
-                    "この週で取得できた予定がありません。"
-                    "未連携・権限不足・参照カレンダーIDの誤りの可能性があります。"
-                )
-            else:
-                st.dataframe(
-                    pd.DataFrame(format_week_events_jst_table_rows(week_ev)),
-                    hide_index=True,
-                    use_container_width=True,
-                )
-
-        footer_note = (
-            "※ 青い枠は「カレンダー上の空きとして採用した候補」です（同一時刻に複数の職人の組み合わせがある場合は別枠として表示されます）。"
-            "上の展開で参照IDに紐づく予定を確認できます。"
-        )
-
-        try:
-            cal_settings = get_settings()
-        except FirestoreConnectionError:
-            cal_settings = {}
-        dsh, deh = work_hours_display_hours(cal_settings)
         try:
             slot_gran = int(cal_settings.get("time_slot_minutes") or 30)
         except (TypeError, ValueError):
             slot_gran = 30
-
-        workers_by_id = {str(w["worker_id"]): w for w in workers}
-        display_candidates = [
-            c
-            for c in (filtered or [])
-            if isinstance(c.get("start_at"), datetime)
-            and not is_company_closed_day(c["start_at"].date(), cal_settings)
-            and not candidate_includes_worker_off(c, workers_by_id)
-        ]
+        dsh, deh = work_hours_display_hours(cal_settings)
         _render_week_calendar(
             candidates=display_candidates,
             week_start_date=st.session_state["candidate_calendar_week_start"],
@@ -2527,12 +2598,7 @@ button {
             day_end_hour=deh,
             worker_id_to_name=worker_id_to_name,
             vehicle_id_to_name=vehicle_id_to_name,
-            footer_note=footer_note,
-        )
-    if filtered:
-        st.caption(
-            "青い枠をクリック／タップすると予約確定ポップアップが開きます。"
-            "枠左上の時刻が開始時刻です。検索の刻み幅は共通設定の値のままです。"
+            footer_note="※ 補助表示です。通常は上の空きカードから開いてください。",
         )
 
     dcid = st.session_state.get("candidate_dialog_id")
@@ -2569,12 +2635,7 @@ button {
             def _show_candidate_detail() -> None:
                 wid = f"{dcid}_{tap_nonce}"
                 result_key = f"dialog_decide_result_{wid}"
-                title_key = f"dialog_event_title_{wid}"
-                st.write(f"**候補ID**: {target.get('candidate_id')}")
-                st.write(f"**日付**: {_format_date_jp(start_at_d.date())}")
-                st.write(
-                    f"**時間帯**: {start_at_d.strftime('%H:%M')} 〜 {end_at_d.strftime('%H:%M')}"
-                )
+                st.write(f"**日時**: {_format_slot_card_label(start_at_d, end_at_d)}")
                 st.write(f"**対応可能人数**: {target.get('capacity')} 人")
                 st.write("**職人**")
                 if target.get("worker_adjacent_events"):
@@ -2609,26 +2670,27 @@ button {
                     st.caption(f"資材ルールによる追加拘束の目安: 約{float(mex):.0f}分")
                 processing_key = f"dialog_decide_processing_{wid}"
                 processing = bool(st.session_state.get(processing_key, False))
+                project_name_key = f"dialog_project_name_{wid}"
+                project_address_key = f"dialog_project_address_{wid}"
                 if not selected_project:
                     st.text_input(
-                        "予定タイトル",
-                        key=title_key,
-                        placeholder="Googleカレンダーに表示するタイトル（入力した文字がそのまま使われます）",
+                        "案件名*",
+                        key=project_name_key,
+                        placeholder="例: ○○様 ガラス交換",
                         disabled=processing,
                     )
-                    st.caption("案件未選択のため、タイトルは入力内容がそのまま各カレンダーの予定名になります。")
+                    st.text_input(
+                        "現場住所（任意）",
+                        key=project_address_key,
+                        placeholder="後から案件一覧で編集もできます",
+                        disabled=processing,
+                    )
+                    st.caption("決定すると案件を簡易作成し、Googleカレンダーへ登録します。")
                 decide_result = st.session_state.get(result_key)
                 if processing:
                     st.info("処理中です。しばらくお待ちください…")
                 elif decide_result == "success":
-                    if selected_project:
-                        st.success("カレンダー登録が完了しました。内容を確認して「閉じる」を押してください。")
-                    else:
-                        st.success(
-                            "Googleカレンダーへの登録が完了しました。"
-                            "（案件未選択のため、案件情報は更新していません）"
-                            "内容を確認して「閉じる」を押してください。"
-                        )
+                    st.success("カレンダー登録が完了しました。内容を確認して「閉じる」を押してください。")
                 elif decide_result == "partial":
                     st.warning("一部の登録に失敗しました。内容を確認して「閉じる」を押してください。")
                 elif decide_result == "failed":
@@ -2643,7 +2705,7 @@ button {
                     )
                 with col_decide:
                     if st.button(
-                        "決定",
+                        "カレンダーに入れる",
                         type="primary",
                         key=f"dialog_decide_{wid}",
                         disabled=processing or decide_result in ("success", "partial"),
@@ -2652,12 +2714,39 @@ button {
                         st.rerun()
 
                 if processing:
+                    project_for_commit = selected_project
                     custom_title = ""
                     if not selected_project:
-                        custom_title = str(st.session_state.get(title_key) or "").strip()
-                        if not custom_title:
-                            st.error("予定タイトルを入力してから「決定」を押してください。")
+                        project_name_input = str(st.session_state.get(project_name_key) or "").strip()
+                        if not project_name_input:
+                            st.error("案件名を入力してから「カレンダーに入れる」を押してください。")
                             st.session_state.pop(processing_key, None)
+                            return
+                        address_input = str(st.session_state.get(project_address_key) or "").strip()
+                        try:
+                            project_for_commit = create_quick_project(
+                                project_name=project_name_input,
+                                required_workers=int(
+                                    target.get("capacity")
+                                    or st.session_state.get("candidate_search_capacity")
+                                    or 1
+                                ),
+                                work_duration_minutes=int(
+                                    st.session_state.get("candidate_search_duration_minutes") or 120
+                                ),
+                                address=address_input,
+                                current_user_name=st.session_state.get("current_user_name"),
+                            )
+                            st.session_state.pop("_candidate_search_masters", None)
+                        except FirestoreSaveError as e:
+                            st.error(f"案件の作成に失敗しました: {e}")
+                            st.session_state.pop(processing_key, None)
+                            st.session_state[result_key] = "failed"
+                            return
+                        except FirestoreConnectionError:
+                            st.error(DB_UNAVAILABLE_MESSAGE)
+                            st.session_state.pop(processing_key, None)
+                            st.session_state[result_key] = "failed"
                             return
                     gcal_tok = st.session_state.get("google_calendar_tokens") or {}
                     vf_sess = (
@@ -2673,7 +2762,7 @@ button {
                         with visible_spinner("カレンダーへ登録中…"):
                             ok, msgs, save_project_schedule, new_event_refs = (
                                 commit_candidate_to_calendars(
-                                    project=selected_project,
+                                    project=project_for_commit,
                                     candidate=target,
                                     workers=workers,
                                     vehicles=vehicles,
@@ -2695,7 +2784,7 @@ button {
                         st.session_state.pop(processing_key, None)
                         st.session_state[result_key] = "failed"
                         st.rerun()
-                    if selected_project:
+                    if project_for_commit:
                         tz = ZoneInfo("Asia/Tokyo")
                         sa = start_at_d
                         ea = end_at_d
@@ -2716,7 +2805,7 @@ button {
                             if ok:
                                 patch_fields["google_calendar_event_refs"] = new_event_refs
                             patch_project_fields(
-                                str(selected_project["project_id"]),
+                                str(project_for_commit["project_id"]),
                                 patch_fields,
                                 current_user_name=st.session_state.get("current_user_name"),
                             )
