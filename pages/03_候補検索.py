@@ -121,7 +121,13 @@ def _apply_search_defaults_from_settings(
 
 
 def _trigger_initial_free_slot_search() -> None:
-    """画面入場時に既定条件で空き検索を開始する."""
+    """画面入場時に既定条件で空き検索を開始する.
+
+    `_candidate_search_btn_pressed` だけだと、マスタ取得失敗などでジョブ作成前に
+    消費されてしまい、bootstrapped 済み・未検索のまま止まることがある。
+    `candidate_search_auto_pending` はジョブ作成時まで残す。
+    """
+    st.session_state["candidate_search_auto_pending"] = True
     st.session_state["_candidate_search_btn_pressed"] = True
     st.session_state["candidate_search_ui_busy"] = True
 
@@ -1737,11 +1743,17 @@ def _render_candidate_search_page_body() -> None:
         st.session_state.pop("candidate_dialog_id", None)
         st.session_state.pop("week_nav_trigger_search", None)
         st.session_state.pop("candidate_search_bootstrapped", None)
+        st.session_state.pop("candidate_search_auto_pending", None)
 
     settings_boot = _safe_settings()
     _apply_search_defaults_from_settings(settings_boot, force=False)
-    if not st.session_state.get("candidate_search_bootstrapped"):
-        st.session_state["candidate_search_bootstrapped"] = True
+    # 未検索の入場時のみ自動検索を仕掛ける（bootstrapped はジョブ開始時に立てる）
+    if (
+        not st.session_state.get("candidate_search_bootstrapped")
+        and not st.session_state.get("candidate_search_job")
+        and "candidate_results" not in st.session_state
+        and not st.session_state.get("candidate_search_auto_pending")
+    ):
         _trigger_initial_free_slot_search()
 
     registered_from_dialog = st.session_state.pop(CANDIDATE_REGISTER_DIALOG_RESULT_KEY, None)
@@ -1890,6 +1902,7 @@ button {
     cjob_early = st.session_state.get("candidate_search_job")
     cal_early = bool(st.session_state.get("candidate_search_calendar_pending"))
     search_press = bool(st.session_state.get("_candidate_search_btn_pressed"))
+    auto_pending = bool(st.session_state.get("candidate_search_auto_pending"))
     st.session_state.pop("_candidate_search_btn_pressed", None)
     masters_cache = st.session_state.get("_candidate_search_masters")
     # 検索中以外の操作（新規登録フォームのチェックボックス等）でも毎回 Firestore を取り直さない
@@ -1905,9 +1918,12 @@ button {
         or display_pending
         or candidate_search_busy_active()
         or search_press
+        or auto_pending
         or week_nav_trigger
     )
-    _sanitize_stale_candidate_search_busy(starting_search=search_press or week_nav_trigger)
+    _sanitize_stale_candidate_search_busy(
+        starting_search=search_press or auto_pending or week_nav_trigger
+    )
     if cjob_early is not None or display_pending:
         _inject_candidate_search_busy_if_needed()
     top_spinner_msg = (
@@ -2523,7 +2539,8 @@ button {
         inject_clear_force_busy_overlay()
         st.session_state.pop("_candidate_search_masters", None)
         _apply_search_defaults_from_settings(_safe_settings(), force=True)
-        st.session_state["candidate_search_bootstrapped"] = True
+        st.session_state.pop("candidate_search_bootstrapped", None)
+        st.session_state.pop("candidate_search_auto_pending", None)
         _trigger_initial_free_slot_search()
         st.rerun()
 
@@ -2601,12 +2618,14 @@ button {
 
     week_calendar_browse = bool(st.session_state.pop("week_calendar_browse", False))
     browse_only_view = week_calendar_browse
+    auto_pending = bool(st.session_state.get("candidate_search_auto_pending"))
 
     # 週移動での再実行時にもカレンダーを維持（来週・再来週の予定閲覧も含む）
     if (
         not search_clicked
         and not search_press
         and not week_nav_trigger
+        and not auto_pending
         and not week_calendar_browse
         and "candidate_results" not in st.session_state
         and not st.session_state.get("candidate_search_job")
@@ -2619,7 +2638,7 @@ button {
         return
 
     # 人数・作業時間があれば案件未選択でも候補表示する
-    if search_clicked or search_press:
+    if search_clicked or search_press or auto_pending:
         _final_name = resolve_combo_selection(
             "candidate_search_project_select",
             project_name_list,
@@ -2633,8 +2652,9 @@ button {
             st.session_state.get("candidate_search_duration_minutes", 120) or 120
         )
 
-    if required_capacity <= 0 and (search_clicked or search_press):
+    if required_capacity <= 0 and (search_clicked or search_press or auto_pending):
         st.error("人数を1人以上指定してください。")
+        st.session_state.pop("candidate_search_auto_pending", None)
         _clear_candidate_search_ui_busy()
         inject_clear_force_busy_overlay()
         return
@@ -2649,11 +2669,13 @@ button {
         return
 
     try:
-        # 検索ボタン／週ナビ → カレンダー1回取得＋表示チャンク日数分の分割計算（candidate_search_job ブロック）
-        run_search = search_clicked or search_press or week_nav_trigger
+        # 検索ボタン／週ナビ／初期自動検索 → カレンダー1回取得＋分割計算
+        run_search = search_clicked or search_press or week_nav_trigger or auto_pending
         if run_search:
             st.session_state["candidate_search_ui_busy"] = True
             st.session_state.pop("candidate_results", None)
+            st.session_state.pop("candidate_search_auto_pending", None)
+            st.session_state["candidate_search_bootstrapped"] = True
             _reset_candidate_dialog_session(clear_plotly=True)
             st.session_state.pop("candidate_search_warnings_flash", None)
             for _mk in list(st.session_state.keys()):
