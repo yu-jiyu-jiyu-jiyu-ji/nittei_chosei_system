@@ -60,7 +60,70 @@ from utils.project_register_ui import (
     CANDIDATE_REGISTER_DIALOG_RESULT_KEY,
     render_candidate_search_register_ui,
 )
+from utils.provisional_title_util import (
+    normalize_project_name_from_title,
+    suggest_title_from_adjacent,
+)
 from utils.session_util import apply_registered_project_to_candidate_search, init_session_state
+
+
+def _safe_settings() -> Dict[str, Any]:
+    try:
+        return get_settings()
+    except FirestoreConnectionError:
+        return {}
+    except Exception:
+        return {}
+
+
+def _snap_duration_to_options(minutes: int) -> int:
+    opts = list(range(MIN_WORK_DURATION_MINUTES, MAX_WORK_DURATION_MINUTES + 1, 30))
+    if minutes in opts:
+        return minutes
+    return min(opts, key=lambda x: abs(x - minutes))
+
+
+def _apply_search_defaults_from_settings(
+    settings: Optional[Dict[str, Any]] = None,
+    *,
+    force: bool = False,
+) -> None:
+    """空き検索のセッション初期値を共通設定から入れる."""
+    cfg = settings if isinstance(settings, dict) else _safe_settings()
+    try:
+        capacity = max(1, min(MAX_REQUIRED_WORKERS, int(cfg.get("default_search_capacity") or 2)))
+    except (TypeError, ValueError):
+        capacity = 2
+    try:
+        duration = _snap_duration_to_options(int(cfg.get("default_search_duration_minutes") or 120))
+    except (TypeError, ValueError):
+        duration = 120
+    try:
+        week_offset = max(0, min(3, int(cfg.get("default_search_week_offset") or 0)))
+    except (TypeError, ValueError):
+        week_offset = 0
+    vehicle_mode = "あり" if cfg.get("default_use_vehicle_calendar") else "なし"
+
+    def _set(key: str, value: Any) -> None:
+        if force or key not in st.session_state:
+            st.session_state[key] = value
+
+    _set("candidate_search_capacity", capacity)
+    _set("candidate_search_duration_minutes", duration)
+    _set("candidate_search_week_offset", week_offset)
+    _set("candidate_week_pick_mode", "ショートカット")
+    _set("candidate_week_anchor_date", date.today())
+    _set("candidate_week_year", date.today().year)
+    _set("candidate_week_month", date.today().month)
+    _set("candidate_weekday_filters", [])
+    _set("candidate_search_vehicle_mode", vehicle_mode)
+    _set("candidate_calendar_week_start", _sunday_week_from_today(week_offset))
+
+
+def _trigger_initial_free_slot_search() -> None:
+    """画面入場時に既定条件で空き検索を開始する."""
+    st.session_state["_candidate_search_btn_pressed"] = True
+    st.session_state["candidate_search_ui_busy"] = True
 
 
 def _on_candidate_search_button_click() -> None:
@@ -1660,15 +1723,8 @@ def _render_candidate_search_page_body() -> None:
         menu_items=STREAMLIT_MENU_ITEMS,
     )
     init_session_state()
-    if "candidate_search_vehicle_mode" not in st.session_state:
-        st.session_state["candidate_search_vehicle_mode"] = "なし"
 
-    registered_from_dialog = st.session_state.pop(CANDIDATE_REGISTER_DIALOG_RESULT_KEY, None)
-    if registered_from_dialog:
-        apply_registered_project_to_candidate_search(registered_from_dialog)
-        st.rerun()
-
-    # 候補検索ページへ再入場したときは、前回候補を残さず毎回リフレッシュする（マスタはキャッシュ再利用）。
+    # 他画面から戻ってきたら結果を捨て、既定条件で再検索する
     if st.session_state.get("_active_page_id") != "candidate_search":
         st.session_state.pop("candidate_results", None)
         st.session_state.pop("candidate_search_job", None)
@@ -1680,6 +1736,19 @@ def _render_candidate_search_page_body() -> None:
         _clear_candidate_search_ui_busy()
         st.session_state.pop("candidate_dialog_id", None)
         st.session_state.pop("week_nav_trigger_search", None)
+        st.session_state.pop("candidate_search_bootstrapped", None)
+
+    settings_boot = _safe_settings()
+    _apply_search_defaults_from_settings(settings_boot, force=False)
+    if not st.session_state.get("candidate_search_bootstrapped"):
+        st.session_state["candidate_search_bootstrapped"] = True
+        _trigger_initial_free_slot_search()
+
+    registered_from_dialog = st.session_state.pop(CANDIDATE_REGISTER_DIALOG_RESULT_KEY, None)
+    if registered_from_dialog:
+        apply_registered_project_to_candidate_search(registered_from_dialog)
+        st.rerun()
+
     st.session_state["_active_page_id"] = "candidate_search"
     display_pending = bool(st.session_state.get("candidate_search_display_pending"))
     dialog_pending = bool(st.session_state.get("candidate_dialog_id"))
@@ -1700,7 +1769,10 @@ def _render_candidate_search_page_body() -> None:
         inject_clear_force_busy_overlay()
 
     st.title("空き日程")
-    st.caption("人数と作業時間を指定して、直近の空き枠をカードで表示します。開いて確認し、そのままカレンダー登録できます。")
+    st.caption(
+        "既定の人数・作業時間で直近の空きを表示します。"
+        "条件を変えて「空きを探す」で再検索し、カードからカレンダー登録できます。"
+    )
 
     notice = st.session_state.pop("schedule_commit_notice", None)
     if notice:
@@ -1914,10 +1986,12 @@ button {
     st.subheader("条件")
     st.caption(
         "必須は人数・作業時間です。対象週は1週間単位、曜日と案件は任意です。"
+        " 既定値は共通設定で変更できます。"
     )
 
+    # 既定は入場時に _apply_search_defaults_from_settings 済み
     if "candidate_search_capacity" not in st.session_state:
-        st.session_state["candidate_search_capacity"] = 1
+        st.session_state["candidate_search_capacity"] = 2
     if "candidate_search_duration_minutes" not in st.session_state:
         st.session_state["candidate_search_duration_minutes"] = 120
     if "candidate_search_week_offset" not in st.session_state:
@@ -1932,6 +2006,8 @@ button {
         st.session_state["candidate_week_month"] = date.today().month
     if "candidate_weekday_filters" not in st.session_state:
         st.session_state["candidate_weekday_filters"] = []
+    if "candidate_search_vehicle_mode" not in st.session_state:
+        st.session_state["candidate_search_vehicle_mode"] = "なし"
 
     project_options = {p["project_name"]: p for p in projects}
     project_name_list = list(project_options.keys())
@@ -2432,6 +2508,7 @@ button {
             "candidate_week_in_month_label",
             "candidate_weekday_filters",
             "candidate_location_overrides",
+            "candidate_search_vehicle_mode",
         ):
             if k in st.session_state:
                 del st.session_state[k]
@@ -2445,15 +2522,9 @@ button {
         _clear_candidate_search_ui_busy()
         inject_clear_force_busy_overlay()
         st.session_state.pop("_candidate_search_masters", None)
-        st.session_state["candidate_search_capacity"] = 1
-        st.session_state["candidate_search_duration_minutes"] = 120
-        st.session_state["candidate_search_week_offset"] = 0
-        st.session_state["candidate_week_pick_mode"] = "ショートカット"
-        st.session_state["candidate_week_anchor_date"] = date.today()
-        st.session_state["candidate_week_year"] = date.today().year
-        st.session_state["candidate_week_month"] = date.today().month
-        st.session_state["candidate_weekday_filters"] = []
-        st.session_state["candidate_calendar_week_start"] = sunday_week_containing(date.today())
+        _apply_search_defaults_from_settings(_safe_settings(), force=True)
+        st.session_state["candidate_search_bootstrapped"] = True
+        _trigger_initial_free_slot_search()
         st.rerun()
 
     # 案件情報（画像では条件の下に説明/詳細があるが、ここでは必要情報のみ簡潔に表示）
@@ -2697,6 +2768,18 @@ button {
             and ((c["start_at"].date() - ws).days in allowed_offsets)
         ]
 
+    try:
+        max_display = max(1, int(cal_settings.get("max_candidate_count") or 20))
+    except (TypeError, ValueError):
+        max_display = 20
+    total_found = len(display_candidates)
+    if total_found > max_display:
+        display_candidates = display_candidates[:max_display]
+        st.caption(
+            f"見つかった空き {total_found} 件のうち、開始が早い順に {max_display} 件を表示"
+            "（上限は共通設定で変更可）。"
+        )
+
     nav1, nav2, nav3 = st.columns([1.2, 3.6, 1.2])
     with nav1:
         if st.button("＜ 前の週", key="week_prev_main_btn", use_container_width=True):
@@ -2720,7 +2803,7 @@ button {
 
     if not display_candidates:
         if browse_only_view or not _has_candidate_search_results():
-            st.caption("上の「空きを探す」を押すと、対象週の空き枠がカードで表示されます。")
+            st.caption("空きを自動検索中です。条件を変える場合は上で指定して「空きを探す」を押してください。")
         else:
             st.info(
                 "空き枠が見つかりませんでした。人数・作業時間・曜日、職人連携、就業時間、カレンダー上の空きを確認してください。"
@@ -2820,12 +2903,25 @@ button {
                 project_name_key = f"dialog_project_name_{wid}"
                 project_address_key = f"dialog_project_address_{wid}"
                 if not selected_project:
+                    try:
+                        settings_for_title = get_settings()
+                    except FirestoreConnectionError:
+                        settings_for_title = {}
+                    suggested_title, title_source = suggest_title_from_adjacent(
+                        target,
+                        start_at=start_at_d,
+                        settings=settings_for_title,
+                    )
+                    if project_name_key not in st.session_state:
+                        st.session_state[project_name_key] = suggested_title
                     st.text_input(
-                        "案件名*",
+                        "案件名（仮タイトル）*",
                         key=project_name_key,
                         placeholder="例: ○○様 ガラス交換",
                         disabled=processing,
+                        help="既存予定のタイトルを参考に自動入力しています。確定前に自由に編集できます。",
                     )
+                    st.caption(f"提案元: {title_source}")
                     st.text_input(
                         "現場住所（任意）",
                         key=project_address_key,
@@ -2864,7 +2960,9 @@ button {
                     project_for_commit = selected_project
                     custom_title = ""
                     if not selected_project:
-                        project_name_input = str(st.session_state.get(project_name_key) or "").strip()
+                        project_name_input = normalize_project_name_from_title(
+                            str(st.session_state.get(project_name_key) or "")
+                        )
                         if not project_name_input:
                             st.error("案件名を入力してから「カレンダーに入れる」を押してください。")
                             st.session_state.pop(processing_key, None)

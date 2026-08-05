@@ -10,7 +10,13 @@ except ImportError:  # pragma: no cover
     _jpholiday = None  # type: ignore[assignment]
 
 from services.firestore_service import FirestoreConnectionError, FirestoreSaveError
-from services.setting_service import get_settings, reset_to_defaults, save_settings
+from services.setting_service import (
+    PROVISIONAL_TITLE_MODE_EXISTING,
+    PROVISIONAL_TITLE_MODE_FORMAT,
+    get_settings,
+    reset_to_defaults,
+    save_settings,
+)
 from services.vehicle_service import (
     VEHICLE_STATUS,
     create_vehicle,
@@ -107,13 +113,35 @@ def _render_common_settings_tab() -> None:
             "実カレンダー候補検索は、当日を含む週（日曜〜土曜）に限定しています。"
         )
         st.write(f"**候補刻み（分）**：{settings.get('time_slot_minutes', '-')}")
-        st.write(
-            f"**候補最大件数（保存値・将来用）**：{settings.get('max_candidate_count', '-')}"
-        )
-        st.caption("候補検索は条件を満たす空き枠をすべて列挙します（件数上限はかけていません）。")
+        st.write(f"**空き表示の上限件数**：{settings.get('max_candidate_count', '-')}")
+        st.caption("候補検索の空きカードは、開始が早い順にこの件数まで表示します。")
         ranks = settings.get("worker_ranks") or []
         if isinstance(ranks, list):
             st.write(f"**職人ランク候補**：{'、'.join(str(x) for x in ranks if str(x).strip()) or '-'}")
+
+        st.subheader("空き検索の既定値")
+        _week_labels = {0: "今週", 1: "来週", 2: "再来週", 3: "翌々週"}
+        _wo = int(settings.get("default_search_week_offset") or 0)
+        st.write(f"**人数**：{settings.get('default_search_capacity', '-')}")
+        st.write(f"**作業時間（分）**：{settings.get('default_search_duration_minutes', '-')}")
+        st.write(f"**初期対象週**：{_week_labels.get(_wo, f'{_wo}週先')}")
+        st.write(
+            f"**車両**：{'あり' if settings.get('default_use_vehicle_calendar') else 'なし'}"
+        )
+        _tm = str(settings.get("provisional_title_mode") or PROVISIONAL_TITLE_MODE_EXISTING)
+        st.write(
+            "**仮タイトル生成**："
+            + (
+                "既存予定を参考"
+                if _tm == PROVISIONAL_TITLE_MODE_EXISTING
+                else "書式固定"
+            )
+        )
+        st.write(f"**仮タイトル書式（フォールバック）**：{settings.get('provisional_title_format', '-')}")
+        st.caption(
+            "候補検索を開いたときにこの既定で空きを自動表示します。"
+            " 仮タイトルは確定時に編集できます。"
+        )
 
         st.subheader("就業時間（候補検索）")
         st.write(
@@ -213,12 +241,12 @@ def _render_common_settings_tab() -> None:
                 key="form_time_slot_minutes",
             )
             max_candidate_count = st.number_input(
-                "候補最大件数（将来用・現状は未使用）*",
+                "空き表示の上限件数*",
                 min_value=1,
                 step=1,
                 value=int(settings.get("max_candidate_count", 20)),
                 key="form_max_candidate_count",
-                help="検索結果は現状、上限なくすべて表示します。",
+                help="空きカードを開始が早い順に何件まで表示するか。",
             )
             ranks_raw = settings.get("worker_ranks") or []
             if isinstance(ranks_raw, list):
@@ -230,6 +258,75 @@ def _render_common_settings_tab() -> None:
                 value=ranks_text_default,
                 key="form_worker_ranks",
                 help="候補検索のランク絞り込み・職人マスタ登録に使う候補値です。",
+            )
+
+            st.subheader("空き検索の既定値")
+            st.caption("候補検索を開いたときの初期条件です。画面上でもその場で変更できます。")
+            col_def1, col_def2 = st.columns(2)
+            with col_def1:
+                default_search_capacity = st.number_input(
+                    "人数*",
+                    min_value=1,
+                    max_value=9,
+                    step=1,
+                    value=int(settings.get("default_search_capacity", 2)),
+                    key="form_default_search_capacity",
+                )
+            with col_def2:
+                default_search_duration_minutes = st.number_input(
+                    "作業時間（分）*",
+                    min_value=60,
+                    max_value=480,
+                    step=30,
+                    value=int(settings.get("default_search_duration_minutes", 120)),
+                    key="form_default_search_duration_minutes",
+                )
+            _week_opt_labels = ["今週", "来週", "再来週", "翌々週"]
+            _wo_cur = int(settings.get("default_search_week_offset") or 0)
+            _wo_cur = max(0, min(3, _wo_cur))
+            default_search_week_label = st.selectbox(
+                "初期対象週*",
+                options=_week_opt_labels,
+                index=_wo_cur,
+                key="form_default_search_week_offset",
+            )
+            default_search_week_offset = _week_opt_labels.index(default_search_week_label)
+            default_use_vehicle_calendar = st.checkbox(
+                "車両カレンダーも使う（初期値）",
+                value=bool(settings.get("default_use_vehicle_calendar", False)),
+                key="form_default_use_vehicle_calendar",
+                help="オフ＝職人カレンダーのみ（推奨の初期値）。",
+            )
+            _title_mode_cur = str(
+                settings.get("provisional_title_mode") or PROVISIONAL_TITLE_MODE_EXISTING
+            )
+            _title_mode_labels = {
+                PROVISIONAL_TITLE_MODE_EXISTING: "既存予定を参考",
+                PROVISIONAL_TITLE_MODE_FORMAT: "書式固定",
+            }
+            provisional_title_mode_label = st.radio(
+                "仮タイトル生成*",
+                options=list(_title_mode_labels.values()),
+                index=0
+                if _title_mode_cur != PROVISIONAL_TITLE_MODE_FORMAT
+                else 1,
+                horizontal=True,
+                key="form_provisional_title_mode",
+                help="既存予定を参考: 直前・直後の現場タイトルを提案。なければ書式を使う。",
+            )
+            provisional_title_mode = (
+                PROVISIONAL_TITLE_MODE_FORMAT
+                if provisional_title_mode_label == _title_mode_labels[PROVISIONAL_TITLE_MODE_FORMAT]
+                else PROVISIONAL_TITLE_MODE_EXISTING
+            )
+            provisional_title_format = st.text_input(
+                "仮タイトル書式（フォールバック）*",
+                value=str(
+                    settings.get("provisional_title_format")
+                    or "空き確保 YYYY/MM/DD HH:MM"
+                ),
+                key="form_provisional_title_format",
+                help="使える記号: YYYY / MM / DD / HH:MM",
             )
 
             st.subheader("就業時間（候補検索）")
@@ -410,6 +507,12 @@ def _render_common_settings_tab() -> None:
                         "search_range_days": search_range_days,
                         "time_slot_minutes": time_slot_minutes,
                         "max_candidate_count": max_candidate_count,
+                        "default_search_capacity": default_search_capacity,
+                        "default_search_duration_minutes": default_search_duration_minutes,
+                        "default_search_week_offset": default_search_week_offset,
+                        "default_use_vehicle_calendar": default_use_vehicle_calendar,
+                        "provisional_title_mode": provisional_title_mode,
+                        "provisional_title_format": provisional_title_format,
                         "worker_ranks": [
                             r.strip()
                             for r in str(worker_ranks_text).splitlines()

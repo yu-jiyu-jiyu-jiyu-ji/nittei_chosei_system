@@ -16,6 +16,14 @@ from services.firestore_service import (
     require_firestore_client,
 )
 
+# 仮タイトル生成: existing=直前直後の既存予定を参考 / format=書式固定
+PROVISIONAL_TITLE_MODE_EXISTING = "existing"
+PROVISIONAL_TITLE_MODE_FORMAT = "format"
+PROVISIONAL_TITLE_MODE_OPTIONS = (
+    PROVISIONAL_TITLE_MODE_EXISTING,
+    PROVISIONAL_TITLE_MODE_FORMAT,
+)
+
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "setting_id": "system",
     "office_address": "東京都杉並区阿佐谷〇〇",
@@ -23,6 +31,13 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "search_range_days": 90,
     "time_slot_minutes": 30,
     "max_candidate_count": 20,
+    # 空き検索の初期表示（候補検索を開いたときの既定）
+    "default_search_capacity": 2,
+    "default_search_duration_minutes": 120,
+    "default_search_week_offset": 0,  # 0=今週, 1=来週, …
+    "default_use_vehicle_calendar": False,
+    "provisional_title_format": "空き確保 YYYY/MM/DD HH:MM",
+    "provisional_title_mode": PROVISIONAL_TITLE_MODE_EXISTING,
     "traffic_buffer_morning_minutes": 20,
     "traffic_buffer_evening_minutes": 20,
     "traffic_buffer_morning_start": "07:00",
