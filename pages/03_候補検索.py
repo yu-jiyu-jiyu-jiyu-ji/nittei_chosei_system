@@ -120,6 +120,50 @@ def _apply_search_defaults_from_settings(
     _set("candidate_calendar_week_start", _sunday_week_from_today(week_offset))
 
 
+_EMPTY_CANDIDATE_WARNING = (
+    "条件を満たす実カレンダー候補がありませんでした。"
+    "暫定住所の未入力や、連携・API キーを確認してください。"
+)
+
+
+def _apply_pending_week_widget_state() -> None:
+    """ウィジェット描画前に、遅延した週指定の session_state を反映する."""
+    if "_pending_week_pick_mode" in st.session_state:
+        st.session_state["candidate_week_pick_mode"] = st.session_state.pop(
+            "_pending_week_pick_mode"
+        )
+    if "_pending_week_anchor_date" in st.session_state:
+        st.session_state["candidate_week_anchor_date"] = st.session_state.pop(
+            "_pending_week_anchor_date"
+        )
+
+
+def _on_week_shortcut_click(offset: int) -> None:
+    """今週/来週などのショートカット（on_click: ウィジェット生成前に状態更新）."""
+    st.session_state["candidate_week_pick_mode"] = "ショートカット"
+    st.session_state["candidate_search_week_offset"] = int(offset)
+    st.session_state["candidate_calendar_week_start"] = _sunday_week_from_today(int(offset))
+    st.session_state["week_nav_trigger_search"] = True
+    st.session_state["candidate_search_ui_busy"] = True
+
+
+def _on_week_nav_click(delta_days: int) -> None:
+    """空き枠下の前週/次週（on_click）."""
+    ws = st.session_state.get("candidate_calendar_week_start")
+    if not isinstance(ws, date):
+        ws = sunday_week_containing(date.today())
+    new_ws = ws + timedelta(days=int(delta_days))
+    st.session_state["_pending_week_pick_mode"] = "日付で指定"
+    st.session_state["_pending_week_anchor_date"] = new_ws
+    st.session_state["candidate_calendar_week_start"] = new_ws
+    st.session_state["week_nav_trigger_search"] = True
+    st.session_state["candidate_search_ui_busy"] = True
+    st.session_state.pop(PLOTLY_CALENDAR_KEY, None)
+    for _ck in list(st.session_state.keys()):
+        if isinstance(_ck, str) and _ck.startswith("calendar_week_events_"):
+            st.session_state.pop(_ck, None)
+
+
 def _trigger_initial_free_slot_search() -> None:
     """画面入場時に既定条件で空き検索を開始する.
 
@@ -1747,6 +1791,7 @@ def _render_candidate_search_page_body() -> None:
 
     settings_boot = _safe_settings()
     _apply_search_defaults_from_settings(settings_boot, force=False)
+    _apply_pending_week_widget_state()
     # 未検索の入場時のみ自動検索を仕掛ける（bootstrapped はジョブ開始時に立てる）
     if (
         not st.session_state.get("candidate_search_bootstrapped")
@@ -1792,7 +1837,9 @@ def _render_candidate_search_page_body() -> None:
     post_register_notice = st.session_state.pop("candidate_search_post_register_notice", None)
     if post_register_notice:
         st.success(post_register_notice)
-    flash_warnings = list(dict.fromkeys(st.session_state.get("candidate_search_warnings_flash") or []))
+    flash_warnings = list(
+        dict.fromkeys(st.session_state.pop("candidate_search_warnings_flash", None) or [])
+    )
     for msg in flash_warnings:
         st.warning(msg)
     # 旧実装の ?candidate_id= リンクは multipage で白画面になることがあるため廃止。残っていればクエリだけ除去して案内する。
@@ -2093,25 +2140,37 @@ button {
     if mode == "ショートカット":
         sc1, sc2, sc3, sc4 = st.columns(4)
         with sc1:
-            if st.button("今週", key="week_shortcut_0", use_container_width=True):
-                st.session_state["candidate_search_week_offset"] = 0
-                st.session_state["candidate_calendar_week_start"] = _sunday_week_from_today(0)
-                st.rerun()
+            st.button(
+                "今週",
+                key="week_shortcut_0",
+                use_container_width=True,
+                on_click=_on_week_shortcut_click,
+                args=(0,),
+            )
         with sc2:
-            if st.button("来週", key="week_shortcut_1", use_container_width=True):
-                st.session_state["candidate_search_week_offset"] = 1
-                st.session_state["candidate_calendar_week_start"] = _sunday_week_from_today(1)
-                st.rerun()
+            st.button(
+                "来週",
+                key="week_shortcut_1",
+                use_container_width=True,
+                on_click=_on_week_shortcut_click,
+                args=(1,),
+            )
         with sc3:
-            if st.button("再来週", key="week_shortcut_2", use_container_width=True):
-                st.session_state["candidate_search_week_offset"] = 2
-                st.session_state["candidate_calendar_week_start"] = _sunday_week_from_today(2)
-                st.rerun()
+            st.button(
+                "再来週",
+                key="week_shortcut_2",
+                use_container_width=True,
+                on_click=_on_week_shortcut_click,
+                args=(2,),
+            )
         with sc4:
-            if st.button("翌々週", key="week_shortcut_3", use_container_width=True):
-                st.session_state["candidate_search_week_offset"] = 3
-                st.session_state["candidate_calendar_week_start"] = _sunday_week_from_today(3)
-                st.rerun()
+            st.button(
+                "翌々週",
+                key="week_shortcut_3",
+                use_container_width=True,
+                on_click=_on_week_shortcut_click,
+                args=(3,),
+            )
         st.caption(
             f"選択中: {_format_week_range_short(_sunday_week_from_today(int(st.session_state.get('candidate_search_week_offset') or 0)))}"
         )
@@ -2147,12 +2206,11 @@ button {
         _m = int(st.session_state.get("candidate_week_month") or date.today().month)
         _month_weeks = _nth_sunday_weeks_in_month(_y, _m)
         _week_labels = [lb for _, _, lb in _month_weeks] or ["（該当週なし）"]
-        _cur_label = str(st.session_state.get("candidate_week_in_month_label") or "")
-        _idx = _week_labels.index(_cur_label) if _cur_label in _week_labels else 0
+        if st.session_state.get("candidate_week_in_month_label") not in _week_labels:
+            st.session_state["candidate_week_in_month_label"] = _week_labels[0]
         st.selectbox(
             "月内の週",
             options=_week_labels,
-            index=_idx,
             key="candidate_week_in_month_label",
         )
 
@@ -2374,16 +2432,21 @@ button {
                     shared_events_by_calendar_id=cjob["bundle"],
                     use_vehicle_calendar=use_vc_job,
                     search_started_at=job_started_dt,
+                    warn_if_empty=False,
                 )
             cjob["accum"].extend(part)
             cjob["warnings_acc"].extend(warns)
             cjob["step"] = step + 1
             st.rerun()
         else:
-            st.session_state["candidate_results"] = cjob["accum"]
-            st.session_state["candidate_search_warnings_flash"] = list(
-                dict.fromkeys(cjob.get("warnings_acc") or [])
-            )
+            accum = list(cjob.get("accum") or [])
+            st.session_state["candidate_results"] = accum
+            warns_final = list(dict.fromkeys(cjob.get("warnings_acc") or []))
+            if accum:
+                warns_final = [w for w in warns_final if w != _EMPTY_CANDIDATE_WARNING]
+            elif _EMPTY_CANDIDATE_WARNING not in warns_final:
+                warns_final.append(_EMPTY_CANDIDATE_WARNING)
+            st.session_state["candidate_search_warnings_flash"] = warns_final
             bundle_done = cjob.get("bundle")
             if bundle_done:
                 st.session_state["_last_search_calendar_bundle"] = {
@@ -2701,8 +2764,9 @@ button {
             if week_end_cutoff <= now_jst:
                 ws_target = ws_target + timedelta(days=7)
                 st.session_state["candidate_calendar_week_start"] = ws_target
-                st.session_state["candidate_week_pick_mode"] = "日付で指定"
-                st.session_state["candidate_week_anchor_date"] = ws_target
+                # ウィジェット生成後の key 書き換えは白画面になるため、次回描画前に反映
+                st.session_state["_pending_week_pick_mode"] = "日付で指定"
+                st.session_state["_pending_week_anchor_date"] = ws_target
                 st.info("表示週が過去枠のみのため、翌週に切り替えて検索します。")
             selected_ids_set = {
                 str(x).strip()
@@ -2804,10 +2868,13 @@ button {
 
     nav1, nav2, nav3 = st.columns([1.2, 3.6, 1.2])
     with nav1:
-        if st.button("＜ 前の週", key="week_prev_main_btn", use_container_width=True):
-            st.session_state["candidate_week_pick_mode"] = "日付で指定"
-            st.session_state["candidate_week_anchor_date"] = ws - timedelta(days=7)
-            _go_to_calendar_week(ws - timedelta(days=7), trigger_research=True)
+        st.button(
+            "＜ 前の週",
+            key="week_prev_main_btn",
+            use_container_width=True,
+            on_click=_on_week_nav_click,
+            args=(-7,),
+        )
     with nav2:
         st.markdown(
             f"<div style='text-align:center;font-weight:700;padding-top:0.35rem;'>"
@@ -2818,10 +2885,13 @@ button {
         if weekday_filters:
             st.caption("曜日フィルタ: " + "・".join(weekday_filters))
     with nav3:
-        if st.button("次の週 ＞", key="week_next_main_btn", use_container_width=True):
-            st.session_state["candidate_week_pick_mode"] = "日付で指定"
-            st.session_state["candidate_week_anchor_date"] = ws + timedelta(days=7)
-            _go_to_calendar_week(ws + timedelta(days=7), trigger_research=True)
+        st.button(
+            "次の週 ＞",
+            key="week_next_main_btn",
+            use_container_width=True,
+            on_click=_on_week_nav_click,
+            args=(7,),
+        )
 
     if not display_candidates:
         if browse_only_view or not _has_candidate_search_results():

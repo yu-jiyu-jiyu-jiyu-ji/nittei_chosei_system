@@ -726,6 +726,7 @@ def search_candidates(
     shared_events_by_calendar_id: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     use_vehicle_calendar: bool = True,
     search_started_at: Optional[datetime] = None,
+    warn_if_empty: bool = True,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """候補一覧と警告メッセージ群を返す.
 
@@ -733,6 +734,7 @@ def search_candidates(
     limit_search_days: 指定時はその日だけを走査（UI の分割検索・タイムアウト対策用）。
     shared_events_by_calendar_id: 週の予定を呼び出し元で取得済みのとき渡す（Google カレンダー API を再実行しない）。
     search_started_at: 分割検索ジョブ全体の開始時刻（タイムアウトを日ごとにリセットしない）。
+    warn_if_empty: False のとき候補ゼロでも包括警告を出さない（日単位分割検索用）。
     """
     warnings: List[str] = []
     loc_ov = location_overrides or {}
@@ -1404,10 +1406,11 @@ def search_candidates(
                 "候補ゼロの主因として、車両カレンダー参照不可（404 / invalid_grant 等）が疑われます。"
                 "車両ごとの取得失敗メッセージを確認し、対象車両の OAuth 再連携またはカレンダー共有設定を見直してください。"
             )
-        warnings.append(
-            "条件を満たす実カレンダー候補がありませんでした。"
-            "暫定住所の未入力や、連携・API キーを確認してください。"
-        )
+        if warn_if_empty:
+            warnings.append(
+                "条件を満たす実カレンダー候補がありませんでした。"
+                "暫定住所の未入力や、連携・API キーを確認してください。"
+            )
         return [], warnings
 
     if not maps_ok:
