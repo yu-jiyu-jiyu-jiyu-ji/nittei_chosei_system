@@ -24,6 +24,7 @@ from services.candidate_search_service import (
     calendar_display_day_offsets,
     collect_missing_previous_locations,
     collect_week_busy_events,
+    enrich_candidate_travel_for_display,
     fetch_week_calendar_events_bundle,
     week_busy_events_from_bundle,
     format_week_events_jst_table_rows,
@@ -124,6 +125,85 @@ _EMPTY_CANDIDATE_WARNING = (
     "条件を満たす実カレンダー候補がありませんでした。"
     "暫定住所の未入力や、連携・API キーを確認してください。"
 )
+_CAL_BUNDLE_CACHE_KEY = "_calendar_bundle_cache"
+_CAL_BUNDLE_TTL_SEC = 180
+
+
+def _prioritize_searchable_day_offsets(week_start: date, offsets: List[int]) -> List[int]:
+    """過去日を除き、直近日から検索する（先出し用）."""
+    today = date.today()
+    future: List[int] = []
+    for off in offsets:
+        try:
+            d = week_start + timedelta(days=int(off))
+        except (TypeError, ValueError):
+            continue
+        if d >= today:
+            future.append(int(off))
+    return future if future else [int(o) for o in offsets]
+
+
+def _calendar_bundle_cache_key(
+    *,
+    week_start: date,
+    use_vehicle: bool,
+    workers: List[Dict[str, Any]],
+    excluded: List[str],
+    capacity: int,
+) -> str:
+    cal_ids = sorted(
+        {
+            str(w.get("calendar_id") or "").strip()
+            for w in workers
+            if str(w.get("calendar_id") or "").strip()
+            and str(w.get("worker_id") or "").strip() not in set(excluded)
+        }
+    )
+    return (
+        f"{week_start.isoformat()}|vc={int(bool(use_vehicle))}|"
+        f"cap={capacity}|excl={','.join(sorted(str(x) for x in excluded))}|"
+        f"cals={','.join(cal_ids)}"
+    )
+
+
+def _get_cached_calendar_bundle(cache_key: str) -> Optional[Tuple[Dict[str, Any], List[str]]]:
+    cache = st.session_state.get(_CAL_BUNDLE_CACHE_KEY)
+    if not isinstance(cache, dict):
+        return None
+    entry = cache.get(cache_key)
+    if not isinstance(entry, dict):
+        return None
+    try:
+        age = datetime.now(ZoneInfo("Asia/Tokyo")).timestamp() - float(entry.get("at") or 0)
+    except (TypeError, ValueError):
+        return None
+    if age > _CAL_BUNDLE_TTL_SEC:
+        return None
+    bundle = entry.get("bundle")
+    if not isinstance(bundle, dict):
+        return None
+    warns = entry.get("warnings") or []
+    return bundle, list(warns) if isinstance(warns, list) else []
+
+
+def _store_calendar_bundle_cache(
+    cache_key: str,
+    bundle: Dict[str, Any],
+    warnings: List[str],
+) -> None:
+    cache = st.session_state.get(_CAL_BUNDLE_CACHE_KEY)
+    if not isinstance(cache, dict):
+        cache = {}
+    cache[cache_key] = {
+        "at": datetime.now(ZoneInfo("Asia/Tokyo")).timestamp(),
+        "bundle": bundle,
+        "warnings": list(warnings or []),
+    }
+    # 古いエントリを軽く間引く
+    if len(cache) > 12:
+        ordered = sorted(cache.items(), key=lambda kv: float((kv[1] or {}).get("at") or 0))
+        cache = dict(ordered[-12:])
+    st.session_state[_CAL_BUNDLE_CACHE_KEY] = cache
 
 
 def _apply_pending_week_widget_state() -> None:
@@ -226,7 +306,10 @@ def _sanitize_stale_candidate_search_busy(*, starting_search: bool = False) -> N
 
 
 def _inject_candidate_search_busy_if_needed() -> None:
-    """分割検索〜カレンダー描画完了まで全画面オーバーレイを表示."""
+    """分割検索〜カレンダー描画完了まで全画面オーバーレイを表示.
+
+    直近の空きが先に出たあとは全画面を外し、追記検索中はキャプションで示す。
+    """
     if st.session_state.get("candidate_search_display_pending"):
         inject_force_busy_marker("カレンダー表示中…")
         return
@@ -235,13 +318,21 @@ def _inject_candidate_search_busy_if_needed() -> None:
         return
     step_top = int(cjob.get("step", -99))
     n_top = len(cjob.get("day_offsets") or calendar_display_day_offsets())
+    has_partial = bool(st.session_state.get("candidate_results"))
     if step_top == -1:
         busy_msg = "カレンダー取得中…"
-    elif step_top < n_top:
-        busy_msg = f"検索中…（{format_search_progress_pct(step_top, n_top)}）"
-    else:
+        if cjob.get("bundle_from_cache"):
+            busy_msg = "キャッシュ済みカレンダーを準備中…"
+        inject_force_busy_marker(busy_msg)
         return
-    inject_force_busy_marker(busy_msg)
+    if not has_partial and step_top < n_top:
+        inject_force_busy_marker(
+            f"検索中…（{format_search_progress_pct(step_top, n_top)}）"
+        )
+        return
+    # 部分結果あり: 全画面は出さず、後段キャプションに任せる
+    _clear_candidate_search_ui_busy()
+    inject_clear_force_busy_overlay()
 
 
 def _begin_candidate_search_display_phase() -> None:
@@ -2382,20 +2473,35 @@ button {
             job_started_dt = datetime.now(ZoneInfo("Asia/Tokyo"))
 
         if step == -1:
-            with visible_spinner("カレンダー取得中…"):
-                bundle, wpre = fetch_week_calendar_events_bundle(
-                    project=proj_job,
-                    workers=workers_for_search,
-                    vehicles=vehicles,
-                    settings=settings_job,
-                    ui_capacity=cap_job,
-                    session_tokens=st.session_state.get("google_calendar_tokens"),
-                    vehicle_fleet_session=vf_sess,
-                    excluded_worker_ids=excl_job,
-                    search_week_start=ws_job,
-                    search_day_offsets=day_offsets_job,
-                    use_vehicle_calendar=use_vc_job,
-                )
+            cache_key = _calendar_bundle_cache_key(
+                week_start=ws_job,
+                use_vehicle=use_vc_job,
+                workers=workers_for_search,
+                excluded=list(excl_job),
+                capacity=cap_job,
+            )
+            cached = _get_cached_calendar_bundle(cache_key)
+            if cached is not None:
+                bundle, wpre = cached
+                cjob["bundle_from_cache"] = True
+            else:
+                cjob["bundle_from_cache"] = False
+                with visible_spinner("カレンダー取得中…"):
+                    bundle, wpre = fetch_week_calendar_events_bundle(
+                        project=proj_job,
+                        workers=workers_for_search,
+                        vehicles=vehicles,
+                        settings=settings_job,
+                        ui_capacity=cap_job,
+                        session_tokens=st.session_state.get("google_calendar_tokens"),
+                        vehicle_fleet_session=vf_sess,
+                        excluded_worker_ids=excl_job,
+                        search_week_start=ws_job,
+                        search_day_offsets=day_offsets_job,
+                        use_vehicle_calendar=use_vc_job,
+                    )
+                if bundle is not None:
+                    _store_calendar_bundle_cache(cache_key, bundle, wpre or [])
             if wpre:
                 cjob["warnings_acc"].extend(wpre)
             if bundle is None:
@@ -2405,12 +2511,13 @@ button {
                 st.session_state.pop("candidate_search_job", None)
                 st.session_state.pop("candidate_search_calendar_pending", None)
                 st.session_state.pop("candidate_search_display_pending", None)
+                st.session_state.pop("candidate_search_partial", None)
                 _clear_candidate_search_ui_busy()
                 inject_clear_force_busy_overlay()
                 st.rerun()
             cjob["bundle"] = bundle
             cjob["step"] = 0
-            st.rerun()
+            # 即 rerun せず描画へ通し、ページ末尾で継続する（体感改善）
         elif step < n_search_days:
             d = ws_job + timedelta(days=day_offsets_job[step])
             with visible_spinner(
@@ -2433,11 +2540,17 @@ button {
                     use_vehicle_calendar=use_vc_job,
                     search_started_at=job_started_dt,
                     warn_if_empty=False,
+                    apply_travel_constraints=False,
                 )
             cjob["accum"].extend(part)
             cjob["warnings_acc"].extend(warns)
             cjob["step"] = step + 1
-            st.rerun()
+            if cjob["accum"]:
+                st.session_state["candidate_results"] = list(cjob["accum"])
+                st.session_state["candidate_search_partial"] = True
+                _clear_candidate_search_ui_busy()
+                inject_clear_force_busy_overlay()
+            # 即 rerun せず、結果を描画してから末尾で継続
         else:
             accum = list(cjob.get("accum") or [])
             st.session_state["candidate_results"] = accum
@@ -2458,9 +2571,11 @@ button {
             st.session_state.pop("candidate_search_job", None)
             st.session_state.pop("_week_nav_undo", None)
             st.session_state.pop("candidate_search_display_pending", None)
+            st.session_state.pop("candidate_search_partial", None)
             _reset_candidate_dialog_session(clear_plotly=True)
             _clear_candidate_search_ui_busy()
-            st.rerun()
+            inject_clear_force_busy_overlay()
+            # fall through to render final results
 
     if selected_project:
         _mp_wids = sorted(str(w.get("worker_id", "")) for w in workers_for_search)
@@ -2786,8 +2901,11 @@ button {
                 for x in (st.session_state.get("candidate_weekday_filters") or [])
                 if str(x).strip()
             ]
-            day_offsets = _day_offsets_for_weekdays(weekday_for_job)
+            day_offsets = _prioritize_searchable_day_offsets(
+                ws_target, _day_offsets_for_weekdays(weekday_for_job)
+            )
             st.session_state.pop("_candidate_search_btn_pressed", None)
+            st.session_state.pop("candidate_search_partial", None)
             st.session_state["candidate_search_job"] = {
                 "step": -1,
                 "accum": [],
@@ -2894,34 +3012,53 @@ button {
         )
 
     if not display_candidates:
-        if browse_only_view or not _has_candidate_search_results():
-            st.caption("空きを自動検索中です。条件を変える場合は上で指定して「空きを探す」を押してください。")
+        if (
+            browse_only_view
+            or not _has_candidate_search_results()
+            or st.session_state.get("candidate_search_job")
+        ):
+            st.caption("空きを検索しています。直近日から順に表示します…")
         else:
             st.info(
                 "空き枠が見つかりませんでした。人数・作業時間・曜日、職人連携、就業時間、カレンダー上の空きを確認してください。"
             )
     else:
+        cjob_now = st.session_state.get("candidate_search_job")
+        if cjob_now is not None:
+            step_now = int(cjob_now.get("step", 0))
+            n_now = len(cjob_now.get("day_offsets") or [])
+            st.info(
+                f"直近の空きを先に表示中です。残りを追加検索しています"
+                f"（{format_search_progress_pct(max(0, step_now), max(1, n_now))}）。"
+            )
         _render_free_slot_cards(
             display_candidates,
             worker_id_to_name=worker_id_to_name,
         )
 
     with st.expander("週カレンダー（任意・補助表示）", expanded=False):
-        try:
-            slot_gran = int(cal_settings.get("time_slot_minutes") or 30)
-        except (TypeError, ValueError):
-            slot_gran = 30
-        dsh, deh = work_hours_display_hours(cal_settings)
-        _render_week_calendar(
-            candidates=display_candidates,
-            week_start_date=st.session_state["candidate_calendar_week_start"],
-            slot_minutes=slot_gran,
-            day_start_hour=dsh,
-            day_end_hour=deh,
-            worker_id_to_name=worker_id_to_name,
-            vehicle_id_to_name=vehicle_id_to_name,
-            footer_note="※ 補助表示です。通常は上の空きカードから開いてください。",
+        st.caption("必要なときだけ表示します（描画が重いため初期はオフ）。")
+        show_cal = st.checkbox(
+            "週カレンダーを表示する",
+            key="candidate_show_week_calendar",
+            value=False,
         )
+        if show_cal:
+            try:
+                slot_gran = int(cal_settings.get("time_slot_minutes") or 30)
+            except (TypeError, ValueError):
+                slot_gran = 30
+            dsh, deh = work_hours_display_hours(cal_settings)
+            _render_week_calendar(
+                candidates=display_candidates,
+                week_start_date=st.session_state["candidate_calendar_week_start"],
+                slot_minutes=slot_gran,
+                day_start_hour=dsh,
+                day_end_hour=deh,
+                worker_id_to_name=worker_id_to_name,
+                vehicle_id_to_name=vehicle_id_to_name,
+                footer_note="※ 補助表示です。通常は上の空きカードから開いてください。",
+            )
 
     dcid = st.session_state.get("candidate_dialog_id")
     tap_nonce = (
@@ -2946,6 +3083,12 @@ button {
         else:
             start_at_d: datetime = target["start_at"]
             end_at_d: datetime = target.get("end_at") or start_at_d
+            # 一覧検索では移動判定を後回しにしているため、詳細表示時に補完
+            target = enrich_candidate_travel_for_display(
+                target,
+                project=selected_project,
+                settings=cal_settings,
+            )
             workers_text_d = "、".join(
                 worker_id_to_name.get(wid, wid) for wid in target.get("worker_ids", [])
             )
@@ -2972,12 +3115,14 @@ button {
                     )
                 st.write(f"**車両**: {vehicles_text_d or '-'}")
                 tw_d = target.get("travel_to_site_minutes_by_worker") or {}
-                if isinstance(tw_d, dict) and tw_d and not target.get("worker_adjacent_events"):
+                if isinstance(tw_d, dict) and tw_d:
                     tw_parts = []
                     for wid_m, minutes in sorted(tw_d.items()):
                         wn = worker_id_to_name.get(wid_m, wid_m)
                         tw_parts.append(f"{wn} 約{minutes}分")
                     st.write("**移動（前現場→現場）**: " + "、".join(tw_parts))
+                    if target.get("travel_enriched_on_detail"):
+                        st.caption("※ 詳細表示時に移動時間を計算しています。")
                 if target.get("travel_to_site_minutes_max") is not None:
                     st.caption(
                         f"最大移動時間の目安: 約{float(target['travel_to_site_minutes_max']):.0f}分"
@@ -3168,6 +3313,10 @@ button {
 
     if st.session_state.get("candidate_search_display_pending"):
         _finish_candidate_search_display_if_needed()
+    elif st.session_state.get("candidate_search_job") is not None:
+        # ダイアログ表示中は継続 rerun しない（白画面・閉じる不具合防止）
+        if not st.session_state.get("candidate_dialog_id"):
+            st.rerun()
     elif (
         not st.session_state.get("candidate_search_job")
         and st.session_state.get("candidate_search_ui_busy")
@@ -3177,5 +3326,4 @@ button {
 
 if __name__ == "__main__":
     render_page()
-
 

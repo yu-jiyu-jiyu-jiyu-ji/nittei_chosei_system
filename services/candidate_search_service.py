@@ -727,6 +727,7 @@ def search_candidates(
     use_vehicle_calendar: bool = True,
     search_started_at: Optional[datetime] = None,
     warn_if_empty: bool = True,
+    apply_travel_constraints: bool = True,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """候補一覧と警告メッセージ群を返す.
 
@@ -735,6 +736,7 @@ def search_candidates(
     shared_events_by_calendar_id: 週の予定を呼び出し元で取得済みのとき渡す（Google カレンダー API を再実行しない）。
     search_started_at: 分割検索ジョブ全体の開始時刻（タイムアウトを日ごとにリセットしない）。
     warn_if_empty: False のとき候補ゼロでも包括警告を出さない（日単位分割検索用）。
+    apply_travel_constraints: False のとき Maps 移動判定を省略し、空き判定を優先する（詳細表示時に補完）。
     """
     warnings: List[str] = []
     loc_ov = location_overrides or {}
@@ -816,8 +818,11 @@ def search_candidates(
     started = search_started_at if search_started_at is not None else datetime.now(TZ)
 
     project_address = str(project.get("address", "") if project else "").strip()
-    if not project_address:
+    if not project_address and apply_travel_constraints:
         warnings.append("案件住所が空のため、移動時間判定をスキップします。")
+    elif not apply_travel_constraints:
+        # 一覧高速化: 移動は詳細表示時に計算
+        pass
 
     wh_s = _parse_hhmm(str(settings.get("work_hours_start") or "07:00"), 7, 0)
     wh_e = _parse_hhmm(str(settings.get("work_hours_end") or "19:00"), 19, 0)
@@ -975,7 +980,12 @@ def search_candidates(
                 continue
 
             # B: Distance Matrix をスロット単位でまとめて取得（車両あり時のみ・住所ベース）
-            if use_vehicle_calendar and project_address and maps_ok:
+            if (
+                apply_travel_constraints
+                and use_vehicle_calendar
+                and project_address
+                and maps_ok
+            ):
                 dm_pairs: List[Tuple[str, str]] = []
                 pa = project_address.strip()
                 for wid in slot_free_ids:
@@ -1058,7 +1068,7 @@ def search_candidates(
                 ev_w = _week_events(wc, cal_id)
                 owner_em = _calendar_owner_email(w)
                 ok_w = True
-                if use_vehicle_calendar and project_address and maps_ok:
+                if apply_travel_constraints and use_vehicle_calendar and project_address and maps_ok:
                     prev = get_previous_event_before_cached(
                         ev_w, slot_start, day_start=day_start, owner_email=owner_em
                     )
@@ -1163,7 +1173,12 @@ def search_candidates(
                         ok = False
                         break
 
-                    if use_vehicle_calendar and project_address and maps_ok:
+                    if (
+                        apply_travel_constraints
+                        and use_vehicle_calendar
+                        and project_address
+                        and maps_ok
+                    ):
                         prev = get_previous_event_before_cached(
                             ev_w, slot_start, day_start=day_start, owner_email=owner_em
                         )
@@ -1246,7 +1261,12 @@ def search_candidates(
                         ):
                             ok_vehicle = False
                             break
-                        if project_address and maps_ok and office:
+                        if (
+                            apply_travel_constraints
+                            and project_address
+                            and maps_ok
+                            and office
+                        ):
                             extra = material_return_extra_minutes_cached(
                                 ev_v,
                                 day_start,
@@ -1297,40 +1317,41 @@ def search_candidates(
                 assigned_vids = selected_vids
                 travel_by_worker: Dict[str, float] = {}
                 travel_max: Optional[float] = None
-                for wid in worker_ids:
-                    w = wid_to_worker[wid]
-                    cal_id_w = str(w.get("calendar_id") or "").strip()
-                    wc = creds_map[wid]
-                    ev_w = _week_events(wc, cal_id_w)
-                    owner_em = _calendar_owner_email(w)
-                    prev_tw = get_previous_event_before_cached(
-                        ev_w, slot_start, day_start=day_start, owner_email=owner_em
-                    )
-                    if wid in prev_to_site_minutes:
-                        tr_m = prev_to_site_minutes[wid]
-                    elif prev_tw and project_address and maps_ok:
-                        loc_tw = event_location(prev_tw)
-                        pid_tw = prev_tw.get("id") or ""
-                        okey_tw = _location_override_key(wid, str(pid_tw))
-                        if not loc_tw and okey_tw in loc_ov:
-                            loc_tw = loc_ov[okey_tw]
-                        if loc_tw:
-                            tr_m = travel_duration_minutes(loc_tw.strip(), project_address)
+                if apply_travel_constraints:
+                    for wid in worker_ids:
+                        w = wid_to_worker[wid]
+                        cal_id_w = str(w.get("calendar_id") or "").strip()
+                        wc = creds_map[wid]
+                        ev_w = _week_events(wc, cal_id_w)
+                        owner_em = _calendar_owner_email(w)
+                        prev_tw = get_previous_event_before_cached(
+                            ev_w, slot_start, day_start=day_start, owner_email=owner_em
+                        )
+                        if wid in prev_to_site_minutes:
+                            tr_m = prev_to_site_minutes[wid]
+                        elif prev_tw and project_address and maps_ok:
+                            loc_tw = event_location(prev_tw)
+                            pid_tw = prev_tw.get("id") or ""
+                            okey_tw = _location_override_key(wid, str(pid_tw))
+                            if not loc_tw and okey_tw in loc_ov:
+                                loc_tw = loc_ov[okey_tw]
+                            if loc_tw:
+                                tr_m = travel_duration_minutes(loc_tw.strip(), project_address)
+                            else:
+                                tr_m = None
                         else:
                             tr_m = None
-                    else:
-                        tr_m = None
-                    if tr_m is not None:
-                        travel_by_worker[str(wid)] = round(float(tr_m), 1)
-                        travel_max = (
-                            float(tr_m)
-                            if travel_max is None
-                            else max(travel_max, float(tr_m))
-                        )
+                        if tr_m is not None:
+                            travel_by_worker[str(wid)] = round(float(tr_m), 1)
+                            travel_max = (
+                                float(tr_m)
+                                if travel_max is None
+                                else max(travel_max, float(tr_m))
+                            )
 
                 material_completed_count = 0
                 material_extra_val = 0.0
-                if assigned_vids:
+                if apply_travel_constraints and assigned_vids:
                     v0 = vehicle_by_id.get(str(assigned_vids[0]))
                     if v0:
                         vcal0 = str(v0.get("calendar_id") or "").strip()
@@ -1417,6 +1438,43 @@ def search_candidates(
         warnings.append("GOOGLE_MAPS_API_KEY が未設定のため、移動・拠点戻り時間は一部スキップした可能性があります。")
 
     return candidates, warnings
+
+
+def enrich_candidate_travel_for_display(
+    candidate: Dict[str, Any],
+    *,
+    project: Optional[Dict[str, Any]],
+    settings: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """詳細ダイアログ用に、直前現場→現場の移動時間を後から付与する."""
+    out = dict(candidate or {})
+    project_address = str((project or {}).get("address") or "").strip()
+    if not project_address or not maps_api_key_configured():
+        return out
+    adj = out.get("worker_adjacent_events") or {}
+    if not isinstance(adj, dict):
+        return out
+    travel_by_worker: Dict[str, float] = {}
+    travel_max: Optional[float] = None
+    for wid, info in adj.items():
+        if not isinstance(info, dict):
+            continue
+        prev = info.get("prev")
+        if not isinstance(prev, dict):
+            continue
+        loc = str(prev.get("location") or "").strip()
+        if not loc or loc == "住所なし":
+            continue
+        tr = travel_duration_minutes(loc, project_address)
+        if tr is None:
+            continue
+        travel_by_worker[str(wid)] = round(float(tr), 1)
+        travel_max = float(tr) if travel_max is None else max(travel_max, float(tr))
+    if travel_by_worker:
+        out["travel_to_site_minutes_by_worker"] = travel_by_worker
+        out["travel_to_site_minutes_max"] = travel_max
+        out["travel_enriched_on_detail"] = True
+    return out
 
 
 def _events_to_week_busy_rows(
