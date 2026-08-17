@@ -33,8 +33,19 @@ def inject_force_busy_marker(title: str = "検索・カレンダー表示中…"
     )
 
 
+def inject_idle_busy_marker() -> None:
+    """iframe なしでオーバーレイ解除するためのマーカー（スマホの parent JS 失敗対策）."""
+    page_id = html.escape(str(st.session_state.get("_active_page_id") or "app"), quote=True)
+    st.markdown(
+        f'<span class="_st_busy_idle_marker" data-st-page="{page_id}" '
+        f'aria-hidden="true" style="display:none"></span>',
+        unsafe_allow_html=True,
+    )
+
+
 def inject_clear_force_busy_overlay() -> None:
     """強制 busy マーカーと全画面オーバーレイを即時解除（検索完了・フラグ整理用）."""
+    inject_idle_busy_marker()
     page_id = json.dumps(str(st.session_state.get("_active_page_id") or "app"))
     components.html(
         f"<!-- st-clear-force-busy:{page_id} -->\n"
@@ -50,6 +61,8 @@ def inject_clear_force_busy_overlay() -> None:
                 if (S.hideSpinTimer) {{ clearTimeout(S.hideSpinTimer); S.hideSpinTimer = null; }}
                 if (S.pendingTimer) {{ clearTimeout(S.pendingTimer); S.pendingTimer = null; }}
                 S.state = "idle";
+                S.busySince = null;
+                S.timedOut = false;
                 S._candidateForceTitle = null;
             }}
             var L = doc.getElementById("_st_global_busy_layer");

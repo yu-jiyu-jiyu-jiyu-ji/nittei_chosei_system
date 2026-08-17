@@ -24,11 +24,18 @@ _NAV_ADMIN_PAGES = [
     ("pages/07_問い合わせ管理.py", "問い合わせ管理", "📨"),
 ]
 
+_MEIRYO_FONT_STACK = (
+    '"Meiryo", "メイリオ", "Yu Gothic UI", "Yu Gothic", '
+    '"Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif'
+)
+
 _SIDEBAR_NAV_CSS = """<style>
 [data-testid="stSidebar"] div.nav-links .stButton > button {
     background: transparent; border: none; color: inherit;
     text-align: left; padding: 0.4rem 0.75rem; border-radius: 0.5rem;
     font-size: 0.875rem; cursor: pointer; width: 100%;
+    font-family: "Meiryo", "メイリオ", "Yu Gothic UI", "Yu Gothic",
+        "Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif !important;
 }
 [data-testid="stSidebar"] div.nav-links .stButton > button:hover {
     background: rgba(151,166,195,0.18);
@@ -189,6 +196,8 @@ def _inject_page_busy_reset(page_id: str) -> None:
                 if (S.hideSpinTimer) {{ clearTimeout(S.hideSpinTimer); S.hideSpinTimer = null; }}
                 if (S.pendingTimer) {{ clearTimeout(S.pendingTimer); S.pendingTimer = null; }}
                 S.state = "idle";
+                S.busySince = null;
+                S.timedOut = false;
                 S._candidateForceTitle = null;
             }}
             var L = doc.getElementById("_st_global_busy_layer");
@@ -207,12 +216,14 @@ def _inject_global_busy_overlay() -> None:
         <script>
         (function() {
             var doc = window.parent.document;
+            var OVERLAY_VERSION = 5;
             var SPIN_HIDE_MS = 480;
             var PENDING_MAX_MS = 2200;
+            var FORCE_MAX_MS = 30000;
             var MO_DEBOUNCE_MS = 40;
+            var MEIRYO = '"Meiryo", "メイリオ", "Yu Gothic UI", "Yu Gothic", "Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif';
 
             function ensureStyle() {
-                if (doc.getElementById("_st_global_busy_layer_style")) return;
                 var css = "#_st_global_busy_layer{position:fixed;inset:0;z-index:999900;display:flex;"
                     + "align-items:center;justify-content:center;pointer-events:none;opacity:0;"
                     + "transition:opacity 0.12s ease-out;}"
@@ -223,17 +234,20 @@ def _inject_global_busy_overlay() -> None:
                     + "#_st_global_busy_layer ._st_busy_card{position:relative;z-index:1;"
                     + "min-width:min(22rem,90vw);max-width:90vw;padding:1.75rem 2rem;border-radius:1rem;"
                     + "background:#f8fafc;box-shadow:0 25px 50px -12px rgba(0,0,0,0.35);"
-                    + "text-align:center;font-family:system-ui,sans-serif;color:#0f172a;}"
+                    + "text-align:center;font-family:" + MEIRYO + ";color:#0f172a;}"
                     + "#_st_global_busy_layer ._st_busy_ring{width:3rem;height:3rem;margin:0 auto 1rem;"
                     + "border:0.35rem solid #cbd5e1;border-top-color:#2563eb;border-radius:50%;"
                     + "animation:_st_busy_spin 0.75s linear infinite;}"
                     + "@keyframes _st_busy_spin{to{transform:rotate(360deg);}}"
                     + "#_st_global_busy_layer ._st_busy_title{font-size:1.15rem;font-weight:600;margin:0 0 0.35rem;}"
                     + "#_st_global_busy_layer ._st_busy_sub{font-size:0.85rem;margin:0;opacity:0.75;line-height:1.4;}";
-                var st = doc.createElement("style");
-                st.id = "_st_global_busy_layer_style";
+                var st = doc.getElementById("_st_global_busy_layer_style");
+                if (!st) {
+                    st = doc.createElement("style");
+                    st.id = "_st_global_busy_layer_style";
+                    doc.head.appendChild(st);
+                }
                 st.textContent = css;
-                doc.head.appendChild(st);
             }
 
             function ensureLayer() {
@@ -254,16 +268,11 @@ def _inject_global_busy_overlay() -> None:
                 return doc.getElementById("_st_global_busy_layer");
             }
 
+            var S = doc._stGlobalBusyOverlay || (doc._stGlobalBusyOverlay = {});
+
             function applyForceBusyTitle() {
-                var pageId = doc.body.getAttribute("data-st-active-page-id") || "";
                 var nodes = doc.querySelectorAll("._st_force_busy_marker, #_st_force_busy_marker");
-                var m = null;
-                for (var i = 0; i < nodes.length; i++) {
-                    if ((nodes[i].getAttribute("data-st-page") || "") === pageId) {
-                        m = nodes[i];
-                        break;
-                    }
-                }
+                var m = nodes.length ? nodes[nodes.length - 1] : null;
                 var L = layerEl();
                 if (!m || !L) return;
                 var t = m.getAttribute("data-busy-title");
@@ -278,16 +287,16 @@ def _inject_global_busy_overlay() -> None:
                 var L = layerEl();
                 if (!L) return;
                 if (on) {
+                    if (!S.busySince) S.busySince = Date.now();
                     L.classList.add("_st_busy_on");
                     if (S.state === "pending") L.classList.add("_st_busy_pending");
                     else L.classList.remove("_st_busy_pending");
                     if (S.state === "force" || forceBusyActive()) applyForceBusyTitle();
                 } else {
+                    S.busySince = null;
                     L.classList.remove("_st_busy_on", "_st_busy_pending");
                 }
             }
-
-            var S = doc._stGlobalBusyOverlay || (doc._stGlobalBusyOverlay = {});
 
             function clearHideSpin() {
                 if (S.hideSpinTimer) {
@@ -324,15 +333,19 @@ def _inject_global_busy_overlay() -> None:
                 return (r.width > 0 && r.height > 0);
             }
 
+            function idleBusyActive() {
+                return !!doc.querySelector("._st_busy_idle_marker");
+            }
+
             function forceBusyActive() {
-                var pageId = doc.body.getAttribute("data-st-active-page-id") || "";
+                if (idleBusyActive()) return false;
                 var nodes = doc.querySelectorAll("._st_force_busy_marker, #_st_force_busy_marker");
-                for (var i = 0; i < nodes.length; i++) {
-                    if ((nodes[i].getAttribute("data-st-page") || "") === pageId) {
-                        return true;
-                    }
-                }
-                return false;
+                return nodes.length > 0;
+            }
+
+            function busyTooLong() {
+                if (!S.busySince) return false;
+                return (Date.now() - S.busySince) >= FORCE_MAX_MS;
             }
 
             function releaseBusyOverlay() {
@@ -360,11 +373,30 @@ def _inject_global_busy_overlay() -> None:
                 var L = layerEl();
                 if (!L) return;
 
+                if (S.timedOut) {
+                    if (!hasSpinner() && !forceBusyActive() && S.state !== "pending") {
+                        S.timedOut = false;
+                    } else {
+                        releaseBusyOverlay();
+                        return;
+                    }
+                }
+
+                if (busyTooLong() && S.state !== "idle") {
+                    S.timedOut = true;
+                    releaseBusyOverlay();
+                    return;
+                }
+
                 if (hasSpinner() || forceBusyActive()) {
                     clearHideSpin();
                     clearPending();
                     S.state = hasSpinner() ? "spin" : "force";
                     setBusy(true);
+                    return;
+                }
+
+                if (S.state === "pending") {
                     return;
                 }
 
@@ -392,7 +424,7 @@ def _inject_global_busy_overlay() -> None:
             }
 
             function shouldWatchBusyDom() {
-                return S.state !== "idle" || hasSpinner() || forceBusyActive();
+                return S.state !== "idle" || hasSpinner() || forceBusyActive() || !!S.timedOut;
             }
 
             function scheduleSync() {
@@ -414,7 +446,6 @@ def _inject_global_busy_overlay() -> None:
                 if (t.closest("[data-testid=\\"stFileUploader\\"]")) return false;
                 if (t.closest('a[href^="http"]') || t.closest('a[href^="https"]')) return false;
                 if (t.closest("[data-testid=\\"stSidebar\\"]") && t.closest("button")) {
-                    /* サイドバー遷移では pending オーバーレイを出さない（解除漏れで永久表示になる） */
                     if (S.state === "pending" || S.state === "force") {
                         clearPending();
                         S.state = "idle";
@@ -423,7 +454,6 @@ def _inject_global_busy_overlay() -> None:
                     return false;
                 }
                 if (t.closest("[data-testid=\\"stFormSubmitButton\\"]")) return true;
-                /* フォーム内は送信まで再実行しない（± 等で読込オーバーレイを出さない） */
                 if (t.closest("[data-testid=\\"stForm\\"]")) return false;
                 if (t.closest("[data-testid=\\"stSelectbox\\"]")) return false;
                 if (t.closest("[data-testid=\\"stMultiSelect\\"]")) return false;
@@ -439,11 +469,46 @@ def _inject_global_busy_overlay() -> None:
                 return false;
             }
 
+            function onPointerDown(e) {
+                if (!isRerunTriggerTarget(e.target)) return;
+                if (hasSpinner() || forceBusyActive()) return;
+                if (S.state === "spin" || S.state === "force") return;
+                S.timedOut = false;
+                S.busySince = Date.now();
+                S.state = "pending";
+                setBusy(true);
+                clearPending();
+                S.pendingTimer = setTimeout(function() {
+                    S.pendingTimer = null;
+                    if (S.state === "pending" && !hasSpinner() && !forceBusyActive()) {
+                        S.state = "idle";
+                        setBusy(false);
+                    }
+                }, PENDING_MAX_MS);
+            }
+
+            if (S.overlayVersion !== OVERLAY_VERSION) {
+                if (S.pointerHandler) {
+                    try { doc.removeEventListener("pointerdown", S.pointerHandler, true); } catch (e4) {}
+                }
+                if (S.syncInterval) {
+                    try { clearInterval(S.syncInterval); } catch (e5) {}
+                    S.syncInterval = null;
+                }
+                if (S.mo) {
+                    try { S.mo.disconnect(); } catch (e6) {}
+                    S.mo = null;
+                }
+                S.handlersInstalled = false;
+                S.overlayVersion = OVERLAY_VERSION;
+            }
+
             if (!S.handlersInstalled) {
                 S.handlersInstalled = true;
                 clearHideSpin();
                 clearPending();
                 clearMoDeb();
+                S.timedOut = false;
                 setBusy(false);
                 S.state = "idle";
                 S.mo = new MutationObserver(scheduleSync);
@@ -452,23 +517,10 @@ def _inject_global_busy_overlay() -> None:
                     S.observedBody = doc.body;
                 } catch (e3) {}
 
-                doc.addEventListener("pointerdown", function(e) {
-                    if (!isRerunTriggerTarget(e.target)) return;
-                    if (hasSpinner() || forceBusyActive()) return;
-                    if (S.state === "spin" || S.state === "force") return;
-                    S.state = "pending";
-                    setBusy(true);
-                    clearPending();
-                    S.pendingTimer = setTimeout(function() {
-                        S.pendingTimer = null;
-                        if (S.state === "pending" && !hasSpinner() && !forceBusyActive()) {
-                            S.state = "idle";
-                            setBusy(false);
-                        }
-                    }, PENDING_MAX_MS);
-                }, true);
+                S.pointerHandler = onPointerDown;
+                doc.addEventListener("pointerdown", S.pointerHandler, true);
 
-                setInterval(function() {
+                S.syncInterval = setInterval(function() {
                     if (!shouldWatchBusyDom()) return;
                     syncFromDom();
                 }, 350);
@@ -489,6 +541,8 @@ def _clear_candidate_search_busy_if_left_page() -> None:
         st.session_state.pop("candidate_search_job", None)
         st.session_state.pop("candidate_search_calendar_pending", None)
         st.session_state.pop("candidate_search_display_pending", None)
+        st.session_state.pop("candidate_search_display_pending_at", None)
+
 
 def inject_wide_layout(*, skip_busy_reset: bool = False) -> None:
     """全ページで幅を統一するCSS・各種JSパッチを注入.
@@ -502,13 +556,56 @@ def inject_wide_layout(*, skip_busy_reset: bool = False) -> None:
     page_id = str(st.session_state.get("_active_page_id") or "app")
     if not skip_busy_reset:
         _inject_page_busy_reset(page_id)
+        from utils.loading_util import inject_idle_busy_marker
+
+        inject_idle_busy_marker()
     should_collapse = st.session_state.pop("_sidebar_collapse", False)
 
-    base_css = """
-        [data-testid="stAppViewContainer"] > section { max-width: 100%; }
-        .main .block-container { max-width: 100%; padding: 1rem 2rem; }
-        #MainMenu {visibility: hidden;}
-        iframe[height="0"] { display: none; }
+    base_css = f"""
+        [data-testid="stAppViewContainer"] > section {{ max-width: 100%; }}
+        .main .block-container {{ max-width: 100%; padding: 1rem 2rem; }}
+        #MainMenu {{visibility: hidden;}}
+        iframe[height="0"] {{ display: none; }}
+        html, body, .stApp,
+        [data-testid="stAppViewContainer"],
+        [data-testid="stHeader"],
+        [data-testid="stToolbar"],
+        [data-testid="stSidebar"],
+        [data-testid="stBottomBlockContainer"],
+        [data-testid="stDialog"],
+        [data-testid="stMarkdownContainer"],
+        [data-testid="stWidgetLabel"],
+        [data-testid="stCaptionContainer"],
+        [data-testid="stText"],
+        [data-testid="stHeading"] {{
+            font-family: {_MEIRYO_FONT_STACK} !important;
+        }}
+        .stButton > button,
+        .stDownloadButton > button,
+        [data-testid="stBaseButton-secondary"],
+        [data-testid="stBaseButton-primary"],
+        [data-testid="stBaseButton-header"],
+        [data-testid="stRadio"] label,
+        [data-baseweb="radio"],
+        [data-baseweb="select"],
+        [data-baseweb="input"],
+        [data-baseweb="textarea"],
+        [data-baseweb="popover"],
+        [data-baseweb="menu"],
+        [data-baseweb="modal"],
+        [data-baseweb="tag"],
+        input, textarea, select, button, label,
+        p, h1, h2, h3, h4, h5, h6, li, td, th, span {{
+            font-family: {_MEIRYO_FONT_STACK} !important;
+        }}
+        [data-testid="stIconMaterial"],
+        [data-testid="stIconMaterial"] *,
+        .material-symbols-rounded,
+        .material-symbols-outlined,
+        .material-icons {{
+            font-family: "Material Symbols Rounded", "Material Symbols Outlined",
+                "Material Icons" !important;
+        }}
     """
 
     st.markdown(f"<style>{base_css}</style>", unsafe_allow_html=True)

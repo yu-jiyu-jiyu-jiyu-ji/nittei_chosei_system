@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from collections import defaultdict
@@ -290,11 +290,50 @@ def _clear_candidate_search_ui_busy() -> None:
     st.session_state.pop("candidate_search_ui_busy", None)
 
 
+def _parse_jst_iso(raw: Any) -> Optional[datetime]:
+    if isinstance(raw, datetime):
+        dt = raw
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            dt = datetime.fromisoformat(raw.strip())
+        except Exception:
+            return None
+    else:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo("Asia/Tokyo"))
+    return dt
+
+
 def _sanitize_stale_candidate_search_busy(*, starting_search: bool = False) -> None:
     """ジョブ無しで busy だけ残るとオーバーレイが消えない。検索開始直前は ui_busy を消さない."""
+    if starting_search:
+        return
+    now = datetime.now(ZoneInfo("Asia/Tokyo"))
+    cjob = st.session_state.get("candidate_search_job")
+    started = _parse_jst_iso((cjob or {}).get("search_started_at")) if isinstance(cjob, dict) else None
+    if started is not None and (now - started).total_seconds() > 90:
+        st.session_state.pop("candidate_search_job", None)
+        st.session_state.pop("candidate_search_calendar_pending", None)
+        st.session_state.pop("candidate_search_display_pending", None)
+        st.session_state.pop("candidate_search_display_pending_at", None)
+        st.session_state.pop("candidate_search_partial", None)
+        _clear_candidate_search_ui_busy()
+        inject_clear_force_busy_overlay()
+        return
+    pending_at = _parse_jst_iso(st.session_state.get("candidate_search_display_pending_at"))
     if (
-        starting_search
-        or st.session_state.get("candidate_search_job") is not None
+        st.session_state.get("candidate_search_display_pending")
+        and pending_at is not None
+        and (now - pending_at).total_seconds() > 90
+    ):
+        st.session_state.pop("candidate_search_display_pending", None)
+        st.session_state.pop("candidate_search_display_pending_at", None)
+        _clear_candidate_search_ui_busy()
+        inject_clear_force_busy_overlay()
+        return
+    if (
+        st.session_state.get("candidate_search_job") is not None
         or st.session_state.get("candidate_search_display_pending")
     ):
         return
@@ -338,6 +377,9 @@ def _inject_candidate_search_busy_if_needed() -> None:
 def _begin_candidate_search_display_phase() -> None:
     """分割検索完了後、Plotly カレンダー描画までオーバーレイを維持する."""
     st.session_state["candidate_search_display_pending"] = True
+    st.session_state["candidate_search_display_pending_at"] = datetime.now(
+        ZoneInfo("Asia/Tokyo")
+    ).isoformat()
     st.session_state["candidate_search_ui_busy"] = True
 
 
@@ -345,6 +387,7 @@ def _finish_candidate_search_display_if_needed() -> None:
     """カレンダー表示完了後にオーバーレイを解除（未設定なら何もしない）."""
     if not st.session_state.pop("candidate_search_display_pending", None):
         return
+    st.session_state.pop("candidate_search_display_pending_at", None)
     _clear_candidate_search_ui_busy()
     inject_clear_force_busy_overlay()
 
@@ -1689,6 +1732,10 @@ def _build_candidate_week_plotly_figure(
         "height": plot_h,
         "annotations": annotations,
         "shapes": layout_shapes,
+        "font": dict(
+            family="Meiryo, メイリオ, Yu Gothic UI, Yu Gothic, Hiragino Sans, sans-serif",
+            color="#111",
+        ),
         "margin": dict(
             l=_CALENDAR_MARGIN_LEFT,
             r=_CALENDAR_MARGIN_RIGHT,
@@ -1798,6 +1845,7 @@ def _render_week_calendar(
 .cal-head-cell {
   box-sizing: border-box; text-align: center; padding: 10px 5px;
   font-size: 15px; color: #222; font-weight: 600;
+  font-family: "Meiryo", "メイリオ", "Yu Gothic UI", "Hiragino Sans", sans-serif;
 }
 .candidate-cal-scroll-host,
 .candidate-cal-scroll-x {
@@ -1871,6 +1919,7 @@ def _render_candidate_search_page_body() -> None:
         st.session_state.pop("candidate_search_job", None)
         st.session_state.pop("candidate_search_calendar_pending", None)
         st.session_state.pop("candidate_search_display_pending", None)
+        st.session_state.pop("candidate_search_display_pending_at", None)
         st.session_state.pop("_last_search_calendar_bundle", None)
         st.session_state.pop("_cal_last_component_click", None)
         st.session_state.pop("_cal_last_component_nonce", None)
@@ -1902,6 +1951,7 @@ def _render_candidate_search_page_body() -> None:
     dialog_pending = bool(st.session_state.get("candidate_dialog_id"))
     if dialog_pending:
         st.session_state.pop("candidate_search_display_pending", None)
+        st.session_state.pop("candidate_search_display_pending_at", None)
         display_pending = False
         _clear_candidate_search_ui_busy()
     inject_wide_layout(
