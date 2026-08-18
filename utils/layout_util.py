@@ -192,16 +192,22 @@ def _inject_page_busy_reset(page_id: str) -> None:
                 el.remove();
             }});
             var S = doc._stGlobalBusyOverlay;
+            var L = doc.getElementById("_st_global_busy_layer");
             if (S) {{
                 if (S.hideSpinTimer) {{ clearTimeout(S.hideSpinTimer); S.hideSpinTimer = null; }}
                 if (S.pendingTimer) {{ clearTimeout(S.pendingTimer); S.pendingTimer = null; }}
                 S.state = "idle";
                 S.busySince = null;
                 S.timedOut = false;
+                S.userCancelled = false;
                 S._candidateForceTitle = null;
+                if (S.cancelRevealTimer) {{ clearTimeout(S.cancelRevealTimer); S.cancelRevealTimer = null; }}
             }}
-            var L = doc.getElementById("_st_global_busy_layer");
-            if (L) L.classList.remove("_st_busy_on", "_st_busy_pending");
+            if (L) {{
+                L.classList.remove("_st_busy_on", "_st_busy_pending");
+                var cancelBtn = L.querySelector("._st_busy_cancel");
+                if (cancelBtn) {{ cancelBtn.hidden = true; cancelBtn.style.display = "none"; }}
+            }}
         }})();
         </script>
         """,
@@ -216,10 +222,11 @@ def _inject_global_busy_overlay() -> None:
         <script>
         (function() {
             var doc = window.parent.document;
-            var OVERLAY_VERSION = 5;
+            var OVERLAY_VERSION = 6;
             var SPIN_HIDE_MS = 480;
             var PENDING_MAX_MS = 2200;
             var FORCE_MAX_MS = 30000;
+            var CANCEL_SHOW_MS = 3000;
             var MO_DEBOUNCE_MS = 40;
             var MEIRYO = '"Meiryo", "メイリオ", "Yu Gothic UI", "Yu Gothic", "Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif';
 
@@ -240,7 +247,11 @@ def _inject_global_busy_overlay() -> None:
                     + "animation:_st_busy_spin 0.75s linear infinite;}"
                     + "@keyframes _st_busy_spin{to{transform:rotate(360deg);}}"
                     + "#_st_global_busy_layer ._st_busy_title{font-size:1.15rem;font-weight:600;margin:0 0 0.35rem;}"
-                    + "#_st_global_busy_layer ._st_busy_sub{font-size:0.85rem;margin:0;opacity:0.75;line-height:1.4;}";
+                    + "#_st_global_busy_layer ._st_busy_sub{font-size:0.85rem;margin:0;opacity:0.75;line-height:1.4;}"
+                    + "#_st_global_busy_layer ._st_busy_cancel{display:none;margin:1rem auto 0;min-width:8.5rem;"
+                    + "padding:0.7rem 1.25rem;border:1px solid #94a3b8;border-radius:0.65rem;background:#fff;"
+                    + "color:#0f172a;font-size:1rem;font-weight:600;font-family:" + MEIRYO + ";cursor:pointer;}"
+                    + "#_st_global_busy_layer._st_busy_on ._st_busy_cancel._st_busy_cancel_on{display:inline-block;}";
                 var st = doc.getElementById("_st_global_busy_layer_style");
                 if (!st) {
                     st = doc.createElement("style");
@@ -252,16 +263,20 @@ def _inject_global_busy_overlay() -> None:
 
             function ensureLayer() {
                 ensureStyle();
-                if (doc.getElementById("_st_global_busy_layer")) return;
-                var layer = doc.createElement("div");
-                layer.id = "_st_global_busy_layer";
-                layer.setAttribute("aria-live", "polite");
-                layer.setAttribute("aria-busy", "true");
-                layer.innerHTML = "<div class=\\"_st_busy_back\\"></div>"
-                    + "<div class=\\"_st_busy_card\\"><div class=\\"_st_busy_ring\\"></div>"
-                    + "<p class=\\"_st_busy_title\\">読み込み中です…</p>"
-                    + "<p class=\\"_st_busy_sub\\">しばらくお待ちください（画面の操作は一時的に無効です）</p></div>";
-                doc.body.appendChild(layer);
+                var layer = doc.getElementById("_st_global_busy_layer");
+                if (!layer) {
+                    layer = doc.createElement("div");
+                    layer.id = "_st_global_busy_layer";
+                    layer.setAttribute("aria-live", "polite");
+                    layer.setAttribute("aria-busy", "true");
+                    layer.innerHTML = "<div class=\\"_st_busy_back\\"></div>"
+                        + "<div class=\\"_st_busy_card\\"><div class=\\"_st_busy_ring\\"></div>"
+                        + "<p class=\\"_st_busy_title\\">読み込み中です…</p>"
+                        + "<p class=\\"_st_busy_sub\\">しばらくお待ちください（画面の操作は一時的に無効です）</p>"
+                        + "<button type=\\"button\\" class=\\"_st_busy_cancel\\" hidden>キャンセル</button></div>";
+                    doc.body.appendChild(layer);
+                }
+                ensureCancelButton(layer);
             }
 
             function layerEl() {
@@ -269,6 +284,99 @@ def _inject_global_busy_overlay() -> None:
             }
 
             var S = doc._stGlobalBusyOverlay || (doc._stGlobalBusyOverlay = {});
+
+            function ensureCancelButton(layer) {
+                var card = layer && layer.querySelector("._st_busy_card");
+                if (!card) return;
+                var b = card.querySelector("._st_busy_cancel");
+                if (!b) {
+                    b = doc.createElement("button");
+                    b.type = "button";
+                    b.className = "_st_busy_cancel";
+                    b.textContent = "キャンセル";
+                    b.hidden = true;
+                    card.appendChild(b);
+                }
+                if (!b._stBusyCancelBound) {
+                    b._stBusyCancelBound = true;
+                    b.addEventListener("click", onCancelClick);
+                }
+            }
+
+            function cancellableBusyActive() {
+                var nodes = doc.querySelectorAll("._st_force_busy_marker[data-busy-cancellable=\\"1\\"], #_st_force_busy_marker[data-busy-cancellable=\\"1\\"]");
+                return nodes.length > 0;
+            }
+
+            function hideCancelButton() {
+                var L = layerEl();
+                var b = L && L.querySelector("._st_busy_cancel");
+                if (!b) return;
+                b.hidden = true;
+                b.classList.remove("_st_busy_cancel_on");
+                b.style.display = "none";
+            }
+
+            function syncCancelButton() {
+                var L = layerEl();
+                var b = L && L.querySelector("._st_busy_cancel");
+                if (!b) return;
+                var show = !S.userCancelled
+                    && L.classList.contains("_st_busy_on")
+                    && !L.classList.contains("_st_busy_pending")
+                    && cancellableBusyActive()
+                    && !!S.busySince
+                    && (Date.now() - S.busySince) >= CANCEL_SHOW_MS;
+                b.hidden = !show;
+                if (show) {
+                    b.classList.add("_st_busy_cancel_on");
+                    b.style.display = "inline-block";
+                } else {
+                    b.classList.remove("_st_busy_cancel_on");
+                    b.style.display = "none";
+                }
+            }
+
+            function scheduleCancelReveal() {
+                if (S.cancelRevealTimer) {
+                    clearTimeout(S.cancelRevealTimer);
+                    S.cancelRevealTimer = null;
+                }
+                if (!cancellableBusyActive() || S.userCancelled) {
+                    hideCancelButton();
+                    return;
+                }
+                var wait = CANCEL_SHOW_MS;
+                if (S.busySince) {
+                    wait = Math.max(0, CANCEL_SHOW_MS - (Date.now() - S.busySince));
+                }
+                S.cancelRevealTimer = setTimeout(function() {
+                    S.cancelRevealTimer = null;
+                    syncCancelButton();
+                }, wait);
+            }
+
+            function clickHiddenCancelWidget() {
+                var host = doc.querySelector('[class*="st-key-st_global_busy_cancel"]')
+                    || doc.querySelector("#st_global_busy_cancel")
+                    || doc.querySelector('[data-testid="st_global_busy_cancel"]');
+                var btn = host && host.querySelector("button");
+                if (!btn) {
+                    btn = doc.querySelector('[class*="st-key-st_global_busy_cancel"] button');
+                }
+                if (btn && typeof btn.click === "function") btn.click();
+            }
+
+            function onCancelClick(e) {
+                if (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+                S.userCancelled = true;
+                hideCancelButton();
+                releaseBusyOverlay();
+                clickHiddenCancelWidget();
+            }
 
             function applyForceBusyTitle() {
                 var nodes = doc.querySelectorAll("._st_force_busy_marker, #_st_force_busy_marker");
@@ -292,8 +400,14 @@ def _inject_global_busy_overlay() -> None:
                     if (S.state === "pending") L.classList.add("_st_busy_pending");
                     else L.classList.remove("_st_busy_pending");
                     if (S.state === "force" || forceBusyActive()) applyForceBusyTitle();
+                    scheduleCancelReveal();
                 } else {
                     S.busySince = null;
+                    if (S.cancelRevealTimer) {
+                        clearTimeout(S.cancelRevealTimer);
+                        S.cancelRevealTimer = null;
+                    }
+                    hideCancelButton();
                     L.classList.remove("_st_busy_on", "_st_busy_pending");
                 }
             }
@@ -373,9 +487,10 @@ def _inject_global_busy_overlay() -> None:
                 var L = layerEl();
                 if (!L) return;
 
-                if (S.timedOut) {
+                if (S.timedOut || S.userCancelled) {
                     if (!hasSpinner() && !forceBusyActive() && S.state !== "pending") {
                         S.timedOut = false;
+                        S.userCancelled = false;
                     } else {
                         releaseBusyOverlay();
                         return;
@@ -393,6 +508,7 @@ def _inject_global_busy_overlay() -> None:
                     clearPending();
                     S.state = hasSpinner() ? "spin" : "force";
                     setBusy(true);
+                    syncCancelButton();
                     return;
                 }
 
@@ -424,7 +540,7 @@ def _inject_global_busy_overlay() -> None:
             }
 
             function shouldWatchBusyDom() {
-                return S.state !== "idle" || hasSpinner() || forceBusyActive() || !!S.timedOut;
+                return S.state !== "idle" || hasSpinner() || forceBusyActive() || !!S.timedOut || !!S.userCancelled;
             }
 
             function scheduleSync() {
@@ -509,6 +625,7 @@ def _inject_global_busy_overlay() -> None:
                 clearPending();
                 clearMoDeb();
                 S.timedOut = false;
+                S.userCancelled = false;
                 setBusy(false);
                 S.state = "idle";
                 S.mo = new MutationObserver(scheduleSync);
@@ -542,6 +659,24 @@ def _clear_candidate_search_busy_if_left_page() -> None:
         st.session_state.pop("candidate_search_calendar_pending", None)
         st.session_state.pop("candidate_search_display_pending", None)
         st.session_state.pop("candidate_search_display_pending_at", None)
+
+
+def _on_hidden_busy_cancel() -> None:
+    """オーバーレイ「キャンセル」用。検索ジョブの世代を進めてロールバック対象にする."""
+    from utils.loading_util import bump_busy_cancel_epoch
+
+    bump_busy_cancel_epoch()
+
+
+def _inject_hidden_busy_cancel_button() -> None:
+    """親ドキュメントから click するための隠しボタン（検索ロールバック用）."""
+    from utils.loading_util import BUSY_CANCEL_BUTTON_KEY
+
+    st.button(
+        "読み込みをキャンセル",
+        key=BUSY_CANCEL_BUTTON_KEY,
+        on_click=_on_hidden_busy_cancel,
+    )
 
 
 def inject_wide_layout(*, skip_busy_reset: bool = False) -> None:
@@ -606,9 +741,18 @@ def inject_wide_layout(*, skip_busy_reset: bool = False) -> None:
             font-family: "Material Symbols Rounded", "Material Symbols Outlined",
                 "Material Icons" !important;
         }}
+        [class*="st-key-st_global_busy_cancel"] {{
+            position: absolute !important;
+            left: -10000px !important;
+            width: 1px !important;
+            height: 1px !important;
+            overflow: hidden !important;
+            clip: rect(0, 0, 0, 0) !important;
+        }}
     """
 
     st.markdown(f"<style>{base_css}</style>", unsafe_allow_html=True)
+    _inject_hidden_busy_cancel_button()
     _inject_global_busy_overlay()
     _inject_select_toggle_fix()
     if should_collapse:

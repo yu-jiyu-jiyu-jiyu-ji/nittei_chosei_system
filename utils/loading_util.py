@@ -22,13 +22,32 @@ def visible_spinner(text: str) -> Iterator[None]:
         yield
 
 
+BUSY_CANCEL_BUTTON_KEY = "st_global_busy_cancel"
+
+
+def busy_cancel_epoch() -> int:
+    """読み込みキャンセルの世代。古い検索ジョブを破棄するために使う."""
+    try:
+        return int(st.session_state.get("_st_busy_cancel_epoch") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def bump_busy_cancel_epoch() -> int:
+    nxt = busy_cancel_epoch() + 1
+    st.session_state["_st_busy_cancel_epoch"] = nxt
+    st.session_state["_st_busy_cancelled"] = True
+    return nxt
+
+
 def inject_force_busy_marker(title: str = "検索・カレンダー表示中…") -> None:
     """layout_util の全画面読み込みレイヤーを、再実行の合間も維持する（現ページのみ有効）."""
     safe_title = html.escape(str(title or "検索・カレンダー表示中…"), quote=True)
     page_id = html.escape(str(st.session_state.get("_active_page_id") or ""), quote=True)
     st.markdown(
         f'<span class="_st_force_busy_marker" data-st-page="{page_id}" '
-        f'data-busy-title="{safe_title}" aria-hidden="true" style="display:none"></span>',
+        f'data-busy-title="{safe_title}" data-busy-cancellable="1" '
+        f'aria-hidden="true" style="display:none"></span>',
         unsafe_allow_html=True,
     )
 
@@ -57,16 +76,22 @@ def inject_clear_force_busy_overlay() -> None:
                 el.remove();
             }});
             var S = doc._stGlobalBusyOverlay;
+            var L = doc.getElementById("_st_global_busy_layer");
             if (S) {{
                 if (S.hideSpinTimer) {{ clearTimeout(S.hideSpinTimer); S.hideSpinTimer = null; }}
                 if (S.pendingTimer) {{ clearTimeout(S.pendingTimer); S.pendingTimer = null; }}
                 S.state = "idle";
                 S.busySince = null;
                 S.timedOut = false;
+                S.userCancelled = false;
                 S._candidateForceTitle = null;
+                if (S.cancelRevealTimer) {{ clearTimeout(S.cancelRevealTimer); S.cancelRevealTimer = null; }}
             }}
-            var L = doc.getElementById("_st_global_busy_layer");
-            if (L) L.classList.remove("_st_busy_on", "_st_busy_pending");
+            if (L) {{
+                L.classList.remove("_st_busy_on", "_st_busy_pending");
+                var cancelBtn = L.querySelector("._st_busy_cancel");
+                if (cancelBtn) {{ cancelBtn.hidden = true; cancelBtn.style.display = "none"; }}
+            }}
         }})();
         </script>
         """,

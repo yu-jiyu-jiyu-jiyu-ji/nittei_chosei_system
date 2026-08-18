@@ -49,6 +49,7 @@ from services.vehicle_service import list_vehicles
 from services.worker_service import list_workers
 from utils.layout_util import STREAMLIT_MENU_ITEMS, inject_sidebar_nav, inject_wide_layout
 from utils.loading_util import (
+    busy_cancel_epoch,
     candidate_search_busy_active,
     format_search_progress_pct,
     inject_clear_force_busy_overlay,
@@ -220,6 +221,7 @@ def _apply_pending_week_widget_state() -> None:
 
 def _on_week_shortcut_click(offset: int) -> None:
     """今週/来週などのショートカット（on_click: ウィジェット生成前に状態更新）."""
+    _snapshot_candidate_search_for_rollback()
     st.session_state["candidate_week_pick_mode"] = "ショートカット"
     st.session_state["candidate_search_week_offset"] = int(offset)
     st.session_state["candidate_calendar_week_start"] = _sunday_week_from_today(int(offset))
@@ -229,6 +231,7 @@ def _on_week_shortcut_click(offset: int) -> None:
 
 def _on_week_nav_click(delta_days: int) -> None:
     """空き枠下の前週/次週（on_click）."""
+    _snapshot_candidate_search_for_rollback()
     ws = st.session_state.get("candidate_calendar_week_start")
     if not isinstance(ws, date):
         ws = sunday_week_containing(date.today())
@@ -251,6 +254,7 @@ def _trigger_initial_free_slot_search() -> None:
     消費されてしまい、bootstrapped 済み・未検索のまま止まることがある。
     `candidate_search_auto_pending` はジョブ作成時まで残す。
     """
+    _snapshot_candidate_search_for_rollback()
     st.session_state["candidate_search_auto_pending"] = True
     st.session_state["_candidate_search_btn_pressed"] = True
     st.session_state["candidate_search_ui_busy"] = True
@@ -259,6 +263,7 @@ def _trigger_initial_free_slot_search() -> None:
 def _on_candidate_search_button_click() -> None:
     """「検索」用 on_click。Streamlit はコールバックをスクリプト本体より先に実行するため、
     ページ先頭のマスタ取得でも「検索・カレンダー表示中…」に切り替えられる。"""
+    _snapshot_candidate_search_for_rollback()
     st.session_state["_candidate_search_btn_pressed"] = True
     st.session_state["candidate_search_ui_busy"] = True
     masters = st.session_state.get("_candidate_search_masters") or {}
@@ -288,6 +293,78 @@ def _on_candidate_search_button_click() -> None:
 
 def _clear_candidate_search_ui_busy() -> None:
     st.session_state.pop("candidate_search_ui_busy", None)
+
+
+def _snapshot_candidate_search_for_rollback() -> None:
+    """キャンセル時に戻すため、検索開始前の結果と対象週を退避する."""
+    if st.session_state.get("candidate_search_job") is not None:
+        return
+    results = st.session_state.get("candidate_results")
+    st.session_state["_candidate_search_rollback"] = {
+        "had_results": "candidate_results" in st.session_state,
+        "results": list(results) if isinstance(results, list) else None,
+        "partial": bool(st.session_state.get("candidate_search_partial")),
+        "week_start": st.session_state.get("candidate_calendar_week_start"),
+        "week_offset": st.session_state.get("candidate_search_week_offset"),
+        "week_pick_mode": st.session_state.get("candidate_week_pick_mode"),
+    }
+
+
+def _restore_candidate_search_rollback() -> None:
+    """キャンセル後、検索開始前の空き結果と週指定を戻す."""
+    snap = st.session_state.get("_candidate_search_rollback")
+    st.session_state.pop("candidate_search_job", None)
+    st.session_state.pop("candidate_search_calendar_pending", None)
+    st.session_state.pop("candidate_search_display_pending", None)
+    st.session_state.pop("candidate_search_display_pending_at", None)
+    st.session_state.pop("candidate_search_partial", None)
+    st.session_state.pop("week_nav_trigger_search", None)
+    st.session_state.pop("_candidate_search_btn_pressed", None)
+    st.session_state.pop("candidate_search_auto_pending", None)
+    _clear_candidate_search_ui_busy()
+    if not isinstance(snap, dict):
+        st.session_state.pop("candidate_results", None)
+        return
+    if snap.get("had_results"):
+        st.session_state["candidate_results"] = list(snap.get("results") or [])
+    else:
+        st.session_state.pop("candidate_results", None)
+    if snap.get("partial"):
+        st.session_state["candidate_search_partial"] = True
+    ws = snap.get("week_start")
+    if isinstance(ws, date):
+        st.session_state["candidate_calendar_week_start"] = ws
+        st.session_state["_pending_week_anchor_date"] = ws
+    off = snap.get("week_offset")
+    if off is not None:
+        try:
+            st.session_state["candidate_search_week_offset"] = int(off)
+        except (TypeError, ValueError):
+            pass
+    mode = str(snap.get("week_pick_mode") or "").strip()
+    if mode:
+        st.session_state["_pending_week_pick_mode"] = mode
+
+
+def _discard_cancelled_or_stale_candidate_search() -> bool:
+    """キャンセル済み、または世代が古い検索ジョブを破棄してロールバックする."""
+    cancelled = bool(st.session_state.pop("_st_busy_cancelled", False))
+    epoch = busy_cancel_epoch()
+    cjob = st.session_state.get("candidate_search_job")
+    stale_job = False
+    if isinstance(cjob, dict):
+        try:
+            job_epoch = int(cjob.get("epoch") or 0)
+        except (TypeError, ValueError):
+            job_epoch = 0
+        stale_job = job_epoch != epoch
+    if not cancelled and not stale_job:
+        return False
+    _restore_candidate_search_rollback()
+    inject_clear_force_busy_overlay()
+    if cancelled:
+        st.session_state["candidate_search_cancel_notice"] = True
+    return True
 
 
 def _parse_jst_iso(raw: Any) -> Optional[datetime]:
@@ -1929,12 +2006,15 @@ def _render_candidate_search_page_body() -> None:
         st.session_state.pop("candidate_search_bootstrapped", None)
         st.session_state.pop("candidate_search_auto_pending", None)
 
+    _discard_cancelled_or_stale_candidate_search()
+
     settings_boot = _safe_settings()
     _apply_search_defaults_from_settings(settings_boot, force=False)
     _apply_pending_week_widget_state()
     # 未検索の入場時のみ自動検索を仕掛ける（bootstrapped はジョブ開始時に立てる）
     if (
-        not st.session_state.get("candidate_search_bootstrapped")
+        not st.session_state.get("candidate_search_cancel_notice")
+        and not st.session_state.get("candidate_search_bootstrapped")
         and not st.session_state.get("candidate_search_job")
         and "candidate_results" not in st.session_state
         and not st.session_state.get("candidate_search_auto_pending")
@@ -1983,6 +2063,8 @@ def _render_candidate_search_page_body() -> None:
     )
     for msg in flash_warnings:
         st.warning(msg)
+    if st.session_state.pop("candidate_search_cancel_notice", False):
+        st.info("読み込みをキャンセルしました。")
     # 旧実装の ?candidate_id= リンクは multipage で白画面になることがあるため廃止。残っていればクエリだけ除去して案内する。
     if "candidate_id" in st.query_params:
         try:
@@ -2112,11 +2194,13 @@ button {
     _sanitize_stale_candidate_search_busy(
         starting_search=search_press or auto_pending or week_nav_trigger
     )
-    if cjob_early is not None or display_pending:
-        _inject_candidate_search_busy_if_needed()
     top_spinner_msg = (
         "検索・カレンダー表示中…" if show_search_phase else "データを読み込み中…"
     )
+    if cjob_early is not None or display_pending:
+        _inject_candidate_search_busy_if_needed()
+    elif show_search_phase:
+        inject_force_busy_marker(top_spinner_msg)
 
     if reuse_masters:
         projects = masters_cache["projects"]
@@ -2481,7 +2565,10 @@ button {
     include_mode = str(st.session_state.get("worker_include_mode") or "含む")
 
     # 分割検索: ①カレンダーAPIは表示中の4日/3日分のみ ②以降は同一データで1日ずつ計算
-    cjob = st.session_state.get("candidate_search_job")
+    if _discard_cancelled_or_stale_candidate_search():
+        cjob = None
+    else:
+        cjob = st.session_state.get("candidate_search_job")
     if cjob is not None or st.session_state.get("candidate_search_display_pending"):
         _inject_candidate_search_busy_if_needed()
     if cjob is not None:
@@ -2625,6 +2712,7 @@ button {
             _reset_candidate_dialog_session(clear_plotly=True)
             _clear_candidate_search_ui_busy()
             inject_clear_force_busy_overlay()
+            st.session_state.pop("_candidate_search_rollback", None)
             # fall through to render final results
 
     if selected_project:
@@ -2900,6 +2988,8 @@ button {
         # 検索ボタン／週ナビ／初期自動検索 → カレンダー1回取得＋分割計算
         run_search = search_clicked or search_press or week_nav_trigger or auto_pending
         if run_search:
+            if not st.session_state.get("_candidate_search_rollback"):
+                _snapshot_candidate_search_for_rollback()
             st.session_state["candidate_search_ui_busy"] = True
             st.session_state.pop("candidate_results", None)
             st.session_state.pop("candidate_search_auto_pending", None)
@@ -2957,6 +3047,7 @@ button {
             st.session_state.pop("_candidate_search_btn_pressed", None)
             st.session_state.pop("candidate_search_partial", None)
             st.session_state["candidate_search_job"] = {
+                "epoch": busy_cancel_epoch(),
                 "step": -1,
                 "accum": [],
                 "warnings_acc": [],
@@ -3364,8 +3455,9 @@ button {
     if st.session_state.get("candidate_search_display_pending"):
         _finish_candidate_search_display_if_needed()
     elif st.session_state.get("candidate_search_job") is not None:
-        # ダイアログ表示中は継続 rerun しない（白画面・閉じる不具合防止）
-        if not st.session_state.get("candidate_dialog_id"):
+        if _discard_cancelled_or_stale_candidate_search():
+            pass
+        elif not st.session_state.get("candidate_dialog_id"):
             st.rerun()
     elif (
         not st.session_state.get("candidate_search_job")
