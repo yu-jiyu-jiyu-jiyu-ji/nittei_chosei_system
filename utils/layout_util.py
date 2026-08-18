@@ -226,7 +226,7 @@ def _inject_global_busy_overlay() -> None:
             var SPIN_HIDE_MS = 480;
             var PENDING_MAX_MS = 2200;
             var FORCE_MAX_MS = 30000;
-            var CANCEL_SHOW_MS = 3000;
+            var CANCEL_SHOW_MS = 0;
             var SCROLL_CANCEL_PX = 12;
             var MO_DEBOUNCE_MS = 40;
             var MEIRYO = '"Meiryo", "メイリオ", "Yu Gothic UI", "Yu Gothic", "Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif';
