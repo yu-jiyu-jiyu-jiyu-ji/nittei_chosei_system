@@ -90,7 +90,7 @@ def inject_clear_force_busy_overlay() -> None:
             if (L) {{
                 L.classList.remove("_st_busy_on", "_st_busy_pending");
                 var cancelBtn = L.querySelector("._st_busy_cancel");
-                if (cancelBtn) {{ cancelBtn.hidden = true; cancelBtn.style.display = "none"; }}
+                if (cancelBtn) cancelBtn.classList.remove("_st_busy_cancel_on");
             }}
         }})();
         </script>

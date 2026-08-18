@@ -206,7 +206,7 @@ def _inject_page_busy_reset(page_id: str) -> None:
             if (L) {{
                 L.classList.remove("_st_busy_on", "_st_busy_pending");
                 var cancelBtn = L.querySelector("._st_busy_cancel");
-                if (cancelBtn) {{ cancelBtn.hidden = true; cancelBtn.style.display = "none"; }}
+                if (cancelBtn) cancelBtn.classList.remove("_st_busy_cancel_on");
             }}
         }})();
         </script>
@@ -222,11 +222,12 @@ def _inject_global_busy_overlay() -> None:
         <script>
         (function() {
             var doc = window.parent.document;
-            var OVERLAY_VERSION = 6;
+            var OVERLAY_VERSION = 7;
             var SPIN_HIDE_MS = 480;
             var PENDING_MAX_MS = 2200;
             var FORCE_MAX_MS = 30000;
             var CANCEL_SHOW_MS = 3000;
+            var SCROLL_CANCEL_PX = 12;
             var MO_DEBOUNCE_MS = 40;
             var MEIRYO = '"Meiryo", "メイリオ", "Yu Gothic UI", "Yu Gothic", "Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif';
 
@@ -248,10 +249,11 @@ def _inject_global_busy_overlay() -> None:
                     + "@keyframes _st_busy_spin{to{transform:rotate(360deg);}}"
                     + "#_st_global_busy_layer ._st_busy_title{font-size:1.15rem;font-weight:600;margin:0 0 0.35rem;}"
                     + "#_st_global_busy_layer ._st_busy_sub{font-size:0.85rem;margin:0;opacity:0.75;line-height:1.4;}"
-                    + "#_st_global_busy_layer ._st_busy_cancel{display:none;margin:1rem auto 0;min-width:8.5rem;"
+                    + "#_st_global_busy_layer ._st_busy_cancel{margin:1rem auto 0;min-width:8.5rem;"
                     + "padding:0.7rem 1.25rem;border:1px solid #94a3b8;border-radius:0.65rem;background:#fff;"
-                    + "color:#0f172a;font-size:1rem;font-weight:600;font-family:" + MEIRYO + ";cursor:pointer;}"
-                    + "#_st_global_busy_layer._st_busy_on ._st_busy_cancel._st_busy_cancel_on{display:inline-block;}";
+                    + "color:#0f172a;font-size:1rem;font-weight:600;font-family:" + MEIRYO + ";cursor:pointer;"
+                    + "display:none !important;}"
+                    + "#_st_global_busy_layer._st_busy_on ._st_busy_cancel._st_busy_cancel_on{display:inline-block !important;}";
                 var st = doc.getElementById("_st_global_busy_layer_style");
                 if (!st) {
                     st = doc.createElement("style");
@@ -273,7 +275,7 @@ def _inject_global_busy_overlay() -> None:
                         + "<div class=\\"_st_busy_card\\"><div class=\\"_st_busy_ring\\"></div>"
                         + "<p class=\\"_st_busy_title\\">読み込み中です…</p>"
                         + "<p class=\\"_st_busy_sub\\">しばらくお待ちください（画面の操作は一時的に無効です）</p>"
-                        + "<button type=\\"button\\" class=\\"_st_busy_cancel\\" hidden>キャンセル</button></div>";
+                        + "<button type=\\"button\\" class=\\"_st_busy_cancel\\">キャンセル</button></div>";
                     doc.body.appendChild(layer);
                 }
                 ensureCancelButton(layer);
@@ -294,7 +296,6 @@ def _inject_global_busy_overlay() -> None:
                     b.type = "button";
                     b.className = "_st_busy_cancel";
                     b.textContent = "キャンセル";
-                    b.hidden = true;
                     card.appendChild(b);
                 }
                 if (!b._stBusyCancelBound) {
@@ -304,7 +305,8 @@ def _inject_global_busy_overlay() -> None:
             }
 
             function cancellableBusyActive() {
-                var nodes = doc.querySelectorAll("._st_force_busy_marker[data-busy-cancellable=\\"1\\"], #_st_force_busy_marker[data-busy-cancellable=\\"1\\"]");
+                if (idleBusyActive()) return false;
+                var nodes = doc.querySelectorAll("._st_force_busy_marker, #_st_force_busy_marker");
                 return nodes.length > 0;
             }
 
@@ -312,40 +314,33 @@ def _inject_global_busy_overlay() -> None:
                 var L = layerEl();
                 var b = L && L.querySelector("._st_busy_cancel");
                 if (!b) return;
-                b.hidden = true;
+                b.removeAttribute("hidden");
                 b.classList.remove("_st_busy_cancel_on");
-                b.style.display = "none";
             }
 
             function syncCancelButton() {
+                ensureCancelButton(layerEl());
                 var L = layerEl();
                 var b = L && L.querySelector("._st_busy_cancel");
                 if (!b) return;
+                b.removeAttribute("hidden");
                 var show = !S.userCancelled
                     && L.classList.contains("_st_busy_on")
                     && !L.classList.contains("_st_busy_pending")
+                    && (S.state === "spin" || S.state === "force")
                     && cancellableBusyActive()
                     && !!S.busySince
                     && (Date.now() - S.busySince) >= CANCEL_SHOW_MS;
-                b.hidden = !show;
-                if (show) {
-                    b.classList.add("_st_busy_cancel_on");
-                    b.style.display = "inline-block";
-                } else {
-                    b.classList.remove("_st_busy_cancel_on");
-                    b.style.display = "none";
-                }
+                if (show) b.classList.add("_st_busy_cancel_on");
+                else b.classList.remove("_st_busy_cancel_on");
             }
 
             function scheduleCancelReveal() {
-                if (S.cancelRevealTimer) {
-                    clearTimeout(S.cancelRevealTimer);
-                    S.cancelRevealTimer = null;
-                }
-                if (!cancellableBusyActive() || S.userCancelled) {
+                if (S.userCancelled) {
                     hideCancelButton();
                     return;
                 }
+                if (S.cancelRevealTimer) return;
                 var wait = CANCEL_SHOW_MS;
                 if (S.busySince) {
                     wait = Math.max(0, CANCEL_SHOW_MS - (Date.now() - S.busySince));
@@ -590,7 +585,10 @@ def _inject_global_busy_overlay() -> None:
                 if (hasSpinner() || forceBusyActive()) return;
                 if (S.state === "spin" || S.state === "force") return;
                 S.timedOut = false;
+                S.userCancelled = false;
                 S.busySince = Date.now();
+                S.pointerStartX = (e.clientX != null) ? e.clientX : 0;
+                S.pointerStartY = (e.clientY != null) ? e.clientY : 0;
                 S.state = "pending";
                 setBusy(true);
                 clearPending();
@@ -603,9 +601,24 @@ def _inject_global_busy_overlay() -> None:
                 }, PENDING_MAX_MS);
             }
 
+            function onPointerMove(e) {
+                if (S.state !== "pending") return;
+                var x = (e.clientX != null) ? e.clientX : 0;
+                var y = (e.clientY != null) ? e.clientY : 0;
+                var dx = x - (S.pointerStartX || 0);
+                var dy = y - (S.pointerStartY || 0);
+                if ((dx * dx + dy * dy) < (SCROLL_CANCEL_PX * SCROLL_CANCEL_PX)) return;
+                clearPending();
+                S.state = "idle";
+                setBusy(false);
+            }
+
             if (S.overlayVersion !== OVERLAY_VERSION) {
                 if (S.pointerHandler) {
                     try { doc.removeEventListener("pointerdown", S.pointerHandler, true); } catch (e4) {}
+                }
+                if (S.pointerMoveHandler) {
+                    try { doc.removeEventListener("pointermove", S.pointerMoveHandler, true); } catch (e4b) {}
                 }
                 if (S.syncInterval) {
                     try { clearInterval(S.syncInterval); } catch (e5) {}
@@ -635,7 +648,9 @@ def _inject_global_busy_overlay() -> None:
                 } catch (e3) {}
 
                 S.pointerHandler = onPointerDown;
+                S.pointerMoveHandler = onPointerMove;
                 doc.addEventListener("pointerdown", S.pointerHandler, true);
+                doc.addEventListener("pointermove", S.pointerMoveHandler, true);
 
                 S.syncInterval = setInterval(function() {
                     if (!shouldWatchBusyDom()) return;

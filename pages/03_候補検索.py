@@ -1180,14 +1180,7 @@ def _inject_calendar_scroll_setup() -> Any:
   }}
 
   function emitGestureSuppress() {{
-    try {{
-      if (window.Streamlit && window.Streamlit.setComponentValue) {{
-        window.Streamlit.setComponentValue(JSON.stringify({{
-          event: "gesture",
-          at: Date.now()
-        }}));
-      }}
-    }} catch (e) {{}}
+    return;
   }}
 
   function markScrollGesture(host, plotDiv) {{
